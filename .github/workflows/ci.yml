@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  typecheck-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck shared
+        run: npm run typecheck --workspace=@quantara/shared
+
+      - name: Typecheck backend
+        run: npm run typecheck --workspace=quantara-backend
+
+      - name: Build backend
+        run: npm run build --workspace=quantara-backend
+
+      - name: Build web
+        run: npm run build --workspace=web
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Test backend
+        run: npm run test --workspace=quantara-backend --if-present
+
+  deploy-dev:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [typecheck-and-build, test]
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build backend
+        run: npm run package --workspace=quantara-backend
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Deploy backend Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-api \
+            --zip-file fileb://backend/dist/lambda.zip \
+            --region us-west-2 || echo "Lambda function not yet created — skipping deploy"

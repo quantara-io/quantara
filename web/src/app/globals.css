@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+:root {
+  /* Brand — Theme A (Cyan/Navy) */
+  --color-cyan-50:  #E6FAFF;
+  --color-cyan-100: #BFF0FF;
+  --color-cyan-300: #6EE7F9;
+  --color-cyan-500: #4FD1FF;
+  --color-cyan-600: #2BB8EA;
+  --color-cyan-700: #1896C4;
+
+  --color-blue-300: #7FA8FF;
+  --color-blue-400: #4D85FF;
+  --color-blue-500: #2E7BFF;
+  --color-blue-600: #1E5EE0;
+  --color-blue-700: #1844B0;
+
+  --color-bg-base:     #05091F;
+  --color-bg-surface:  #0F1735;
+  --color-bg-elevated: #1A2347;
+
+  --color-border-subtle: #1F2A4A;
+  --color-border-strong: #2E3B66;
+
+  --color-text-primary:   #FFFFFF;
+  --color-text-secondary: #B8C4E3;
+  --color-text-muted:     #6B7AA8;
+  --color-text-disabled:  #3E4A70;
+
+  --color-success: #2EE6A8;
+  --color-warning: #FFB547;
+  --color-danger:  #FF5C7A;
+
+  --shadow-glow-cyan: 0 0 24px 0 rgba(79, 209, 255, 0.45);
+  --shadow-glow-blue: 0 0 32px 0 rgba(46, 123, 255, 0.35);
+}
+
+@theme inline {
+  --color-background: var(--color-bg-base);
+  --color-foreground: var(--color-text-primary);
+
+  --color-cyan-50:  #E6FAFF;
+  --color-cyan-100: #BFF0FF;
+  --color-cyan-300: #6EE7F9;
+  --color-cyan-500: #4FD1FF;
+  --color-cyan-600: #2BB8EA;
+  --color-cyan-700: #1896C4;
+
+  --color-blue-300: #7FA8FF;
+  --color-blue-400: #4D85FF;
+  --color-blue-500: #2E7BFF;
+  --color-blue-600: #1E5EE0;
+  --color-blue-700: #1844B0;
+
+  --color-surface-base:     #05091F;
+  --color-surface-card:     #0F1735;
+  --color-surface-elevated: #1A2347;
+
+  --color-border-subtle: #1F2A4A;
+  --color-border-strong: #2E3B66;
+
+  --color-text-primary:   #FFFFFF;
+  --color-text-secondary: #B8C4E3;
+  --color-text-muted:     #6B7AA8;
+
+  --color-success: #2EE6A8;
+  --color-warning: #FFB547;
+  --color-danger:  #FF5C7A;
+
+  --font-display: 'Space Grotesk', 'Inter', sans-serif;
+  --font-sans:    'Inter', -apple-system, sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, monospace;
+}
+
+body {
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
