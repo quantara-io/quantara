@@ -4,14 +4,11 @@ await build({
   bundle: true,
   platform: "node",
   target: "node24",
-  format: "esm",
+  format: "cjs",
   sourcemap: true,
   minify: true,
   entryPoints: ["src/index.ts"],
   outfile: "dist/index.js",
-  banner: {
-    js: 'import { createRequire } from "module"; const require = createRequire(import.meta.url);',
-  },
   external: [
     "@aws-sdk/client-dynamodb",
     "@aws-sdk/lib-dynamodb",
