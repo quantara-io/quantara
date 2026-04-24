@@ -13,6 +13,7 @@ await build({
     "@aws-sdk/client-dynamodb",
     "@aws-sdk/lib-dynamodb",
     "@aws-sdk/client-bedrock-runtime",
+    "@aws-sdk/client-ssm",
   ],
 });
 

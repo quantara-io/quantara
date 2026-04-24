@@ -82,6 +82,20 @@ resource "aws_iam_role_policy" "lambda_secrets" {
   })
 }
 
+resource "aws_iam_role_policy" "lambda_ssm" {
+  name = "${local.prefix}-ssm"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter", "ssm:GetParametersByPath"]
+      Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/quantara/${var.environment}/*"
+    }]
+  })
+}
+
 # Build the app from source
 locals {
   source_hash = sha256(join("", [
@@ -133,6 +147,8 @@ resource "aws_lambda_function" "api" {
       TABLE_DEAL_INTERESTS = aws_dynamodb_table.deal_interests.name
       TABLE_CAMPAIGNS     = aws_dynamodb_table.campaigns.name
       CORS_ORIGIN         = var.cors_origin
+      CLOUDFRONT_URL      = "https://${aws_cloudfront_distribution.api.domain_name}"
+      DOCS_ALLOWED_IPS    = var.docs_allowed_ips
       ENVIRONMENT         = var.environment
       LOG_LEVEL           = var.log_level
     }

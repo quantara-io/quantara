@@ -8,6 +8,8 @@ out/
 *.tfplan
 tfplan
 **/.terraform/*
+*.tfvars
+!*.tfvars.example
 
 .env
 .env.*

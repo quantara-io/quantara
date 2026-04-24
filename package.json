@@ -16,5 +16,10 @@
   },
   "engines": {
     "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1032.0",
+    "@aws-sdk/client-ecs": "^3.1032.0",
+    "@aws-sdk/client-lambda": "^3.1032.0"
   }
 }

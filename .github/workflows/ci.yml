@@ -10,6 +10,8 @@ permissions:
 
 env:
   NODE_VERSION: '24'
+  AWS_REGION: us-west-2
+  ECR_REPO: quantara-dev-ingestion
 
 jobs:
   typecheck-and-build:
@@ -30,8 +32,14 @@ jobs:
       - name: Typecheck backend
         run: npm run typecheck --workspace=quantara-backend
 
+      - name: Typecheck ingestion
+        run: npm run typecheck --workspace=quantara-ingestion
+
       - name: Build backend
         run: npm run build --workspace=quantara-backend
+
+      - name: Build ingestion
+        run: npm run build --workspace=quantara-ingestion
 
       - name: Build web
         run: npm run build --workspace=web
@@ -69,17 +77,69 @@ jobs:
 
       - run: npm ci
 
-      - name: Build backend
-        run: npm run package --workspace=quantara-backend
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-west-2
+          aws-region: ${{ env.AWS_REGION }}
+
+      # --- Backend API Lambda ---
+      - name: Build backend
+        run: npm run package --workspace=quantara-backend
 
       - name: Deploy backend Lambda
         run: |
           aws lambda update-function-code \
             --function-name quantara-dev-api \
             --zip-file fileb://backend/dist/lambda.zip \
-            --region us-west-2 || echo "Lambda function not yet created — skipping deploy"
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      # --- Ingestion Lambdas ---
+      - name: Package ingestion Lambdas
+        run: npm run package --workspace=quantara-ingestion
+
+      - name: Deploy ingestion Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-ingestion \
+            --zip-file fileb://ingestion/dist/ingestion.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy backfill Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-backfill \
+            --zip-file fileb://ingestion/dist/backfill.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy news-backfill Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-news-backfill \
+            --zip-file fileb://ingestion/dist/news-backfill.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy enrichment Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-enrichment \
+            --zip-file fileb://ingestion/dist/enrichment.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      # --- Fargate ingestion service ---
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        run: |
+          ECR_URL=${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
+          docker build -f ingestion/Dockerfile -t ${ECR_URL}:latest -t ${ECR_URL}:${{ github.sha }} .
+          docker push ${ECR_URL}:latest
+          docker push ${ECR_URL}:${{ github.sha }}
+
+      - name: Force ECS redeploy
+        run: |
+          aws ecs update-service \
+            --cluster quantara-dev-ingestion \
+            --service quantara-dev-ingestion \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}

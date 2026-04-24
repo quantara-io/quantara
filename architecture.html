@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quantara — System Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    background: #0a0e17;
+    color: #c8d6e5;
+    padding: 40px;
+    min-height: 100vh;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    color: #00e5ff;
+    margin-bottom: 8px;
+    letter-spacing: 1px;
+  }
+  .subtitle {
+    font-size: 12px;
+    color: #5a6a7a;
+    margin-bottom: 40px;
+  }
+  svg {
+    width: 100%;
+    max-width: 1200px;
+    display: block;
+    margin: 0 auto;
+  }
+  .legend {
+    display: flex;
+    gap: 24px;
+    justify-content: center;
+    margin-top: 32px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: #5a6a7a;
+  }
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+  }
+  .section-label {
+    font-size: 13px;
+    color: #3a4a5a;
+    text-align: center;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .tables-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    max-width: 1200px;
+    margin: 0 auto 40px;
+  }
+  .table-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-size: 11px;
+  }
+  .table-card .name {
+    color: #f59e0b;
+    font-weight: 600;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  .table-card .keys {
+    color: #64748b;
+    line-height: 1.6;
+  }
+  .table-card .keys span {
+    color: #94a3b8;
+  }
+</style>
+</head>
+<body>
+
+<h1>QUANTARA GLOBAL — SYSTEM ARCHITECTURE</h1>
+<p class="subtitle">Ingestion Layer + Backend API — AWS us-west-2 — Dev Account 442725244722</p>
+
+<svg viewBox="0 0 1100 840" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#3b82f6" stroke-width="1.2"/>
+    </marker>
+    <marker id="arrow-cyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#00e5ff" stroke-width="1.2"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#f59e0b" stroke-width="1.2"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#10b981" stroke-width="1.2"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#a78bfa" stroke-width="1.2"/>
+    </marker>
+    <marker id="arrow-rose" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#f43f5e" stroke-width="1.2"/>
+    </marker>
+  </defs>
+
+  <!-- ============================================================ -->
+  <!-- EXTERNAL DATA SOURCES (top row) -->
+  <!-- ============================================================ -->
+
+  <rect x="20" y="15" width="170" height="55" rx="6" fill="none" stroke="#334155" stroke-width="1"/>
+  <text x="105" y="35" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">EXCHANGE APIs</text>
+  <text x="105" y="50" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">Binance US / Coinbase</text>
+  <text x="105" y="62" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">/ Kraken</text>
+
+  <rect x="210" y="15" width="170" height="55" rx="6" fill="none" stroke="#334155" stroke-width="1"/>
+  <text x="295" y="35" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">NEWS APIs</text>
+  <text x="295" y="50" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">Alpaca / RSS feeds</text>
+  <text x="295" y="62" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">/ Alt.me Fear&amp;Greed</text>
+
+  <rect x="400" y="15" width="170" height="55" rx="6" fill="none" stroke="#f43f5e" stroke-width="1"/>
+  <text x="485" y="35" text-anchor="middle" fill="#f43f5e" font-size="10" font-family="monospace">ON-CHAIN DATA</text>
+  <text x="485" y="50" text-anchor="middle" fill="#fb7185" font-size="8" font-family="monospace">Whale Alert / Alchemy</text>
+  <text x="485" y="62" text-anchor="middle" fill="#fb7185" font-size="8" font-family="monospace">/ CryptoQuant</text>
+
+  <!-- Clients -->
+  <rect x="770" y="10" width="290" height="65" rx="6" fill="none" stroke="#334155" stroke-width="1"/>
+  <text x="915" y="28" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">CLIENTS</text>
+
+  <rect x="782" y="38" width="82" height="28" rx="4" fill="#1e293b" stroke="#10b981" stroke-width="0.8"/>
+  <text x="823" y="50" text-anchor="middle" fill="#34d399" font-size="8" font-family="monospace">Landing</text>
+  <text x="823" y="60" text-anchor="middle" fill="#475569" font-size="7" font-family="monospace">Next.js</text>
+
+  <rect x="872" y="38" width="82" height="28" rx="4" fill="#1e293b" stroke="#3b82f6" stroke-width="0.8"/>
+  <text x="913" y="50" text-anchor="middle" fill="#60a5fa" font-size="8" font-family="monospace">Dashboard</text>
+  <text x="913" y="60" text-anchor="middle" fill="#475569" font-size="7" font-family="monospace">React + Vite</text>
+
+  <rect x="962" y="38" width="82" height="28" rx="4" fill="#1e293b" stroke="#a78bfa" stroke-width="0.8"/>
+  <text x="1003" y="50" text-anchor="middle" fill="#c4b5fd" font-size="8" font-family="monospace">Mobile</text>
+  <text x="1003" y="60" text-anchor="middle" fill="#475569" font-size="7" font-family="monospace">Flutter</text>
+
+  <!-- ============================================================ -->
+  <!-- FARGATE SERVICE (center-left) -->
+  <!-- ============================================================ -->
+
+  <rect x="20" y="110" width="560" height="200" rx="8" fill="#0f172a" stroke="#1e40af" stroke-width="1.5"/>
+  <text x="40" y="135" fill="#3b82f6" font-size="11" font-weight="bold" font-family="monospace">ECS FARGATE — INGESTION SERVICE</text>
+  <text x="430" y="135" fill="#1e3a5f" font-size="9" font-family="monospace">ARM64 / 0.25 vCPU / 512MB</text>
+
+  <!-- Market Stream Manager -->
+  <rect x="40" y="150" width="155" height="60" rx="5" fill="#1e293b" stroke="#2563eb" stroke-width="1"/>
+  <text x="117" y="172" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="monospace">MarketStream</text>
+  <text x="117" y="185" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="monospace">Manager</text>
+  <text x="117" y="202" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">CCXT Pro WebSocket</text>
+
+  <!-- News Poller -->
+  <rect x="210" y="150" width="155" height="60" rx="5" fill="#1e293b" stroke="#2563eb" stroke-width="1"/>
+  <text x="287" y="175" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="monospace">NewsPoller</text>
+  <text x="287" y="202" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">Alpaca + RSS + F&G</text>
+
+  <!-- Whale Monitor -->
+  <rect x="380" y="150" width="180" height="60" rx="5" fill="#1e293b" stroke="#f43f5e" stroke-width="1"/>
+  <text x="470" y="172" text-anchor="middle" fill="#fb7185" font-size="10" font-family="monospace">WhaleMonitor</text>
+  <text x="470" y="190" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">Alchemy WebSocket</text>
+  <text x="470" y="202" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">+ Whale Alert polling</text>
+
+  <!-- Health endpoint -->
+  <rect x="40" y="225" width="520" height="25" rx="4" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+  <text x="300" y="242" text-anchor="middle" fill="#475569" font-size="9" font-family="monospace">:8080/health — streams + news + whale status + uptime</text>
+
+  <!-- Whale signals box inside fargate -->
+  <rect x="40" y="260" width="520" height="30" rx="4" fill="#111827" stroke="#f43f5e44" stroke-width="1"/>
+  <text x="300" y="279" text-anchor="middle" fill="#fb718566" font-size="8" font-family="monospace">whale signals: exchange deposits/withdrawals, large txs, correlated wallet moves, Exchange Whale Ratio</text>
+
+  <!-- Arrows from sources to Fargate -->
+  <line x1="105" y1="70" x2="117" y2="148" stroke="#00e5ff" stroke-width="1.2" marker-end="url(#arrow-cyan)" stroke-dasharray="4,3"/>
+  <text x="70" y="108" fill="#00e5ff" font-size="8" font-family="monospace">WebSocket</text>
+
+  <line x1="295" y1="70" x2="287" y2="148" stroke="#00e5ff" stroke-width="1.2" marker-end="url(#arrow-cyan)" stroke-dasharray="4,3"/>
+  <text x="255" y="108" fill="#00e5ff" font-size="8" font-family="monospace">REST poll</text>
+
+  <line x1="485" y1="70" x2="470" y2="148" stroke="#f43f5e" stroke-width="1.2" marker-end="url(#arrow-rose)" stroke-dasharray="4,3"/>
+  <text x="490" y="108" fill="#f43f5e" font-size="8" font-family="monospace">WebSocket + REST</text>
+
+  <!-- ============================================================ -->
+  <!-- LAMBDA FUNCTIONS (right of Fargate) -->
+  <!-- ============================================================ -->
+
+  <rect x="620" y="120" width="160" height="45" rx="6" fill="#1a1a2e" stroke="#f59e0b" stroke-width="1"/>
+  <text x="636" y="138" fill="#f59e0b" font-size="9" font-family="monospace" font-weight="bold">LAMBDA</text>
+  <text x="700" y="150" text-anchor="middle" fill="#fbbf24" font-size="10" font-family="monospace">backfill</text>
+  <text x="700" y="160" text-anchor="middle" fill="#475569" font-size="7" font-family="monospace">CCXT REST / 15m</text>
+
+  <rect x="620" y="175" width="160" height="45" rx="6" fill="#1a1a2e" stroke="#f59e0b" stroke-width="1"/>
+  <text x="636" y="193" fill="#f59e0b" font-size="9" font-family="monospace" font-weight="bold">LAMBDA</text>
+  <text x="700" y="205" text-anchor="middle" fill="#fbbf24" font-size="10" font-family="monospace">news-backfill</text>
+  <text x="700" y="215" text-anchor="middle" fill="#475569" font-size="7" font-family="monospace">Alpaca paginate</text>
+
+  <rect x="620" y="230" width="160" height="45" rx="6" fill="#1a1a2e" stroke="#f59e0b" stroke-width="1"/>
+  <text x="636" y="248" fill="#f59e0b" font-size="9" font-family="monospace" font-weight="bold">LAMBDA</text>
+  <text x="700" y="260" text-anchor="middle" fill="#fbbf24" font-size="10" font-family="monospace">ingestion</text>
+  <text x="700" y="270" text-anchor="middle" fill="#475569" font-size="7" font-family="monospace">5-min EventBridge</text>
+
+  <!-- ============================================================ -->
+  <!-- SQS QUEUES (middle row) -->
+  <!-- ============================================================ -->
+
+  <rect x="20" y="340" width="130" height="50" rx="6" fill="#1a1a2e" stroke="#a78bfa" stroke-width="1"/>
+  <text x="85" y="360" text-anchor="middle" fill="#a78bfa" font-size="9" font-family="monospace" font-weight="bold">SQS</text>
+  <text x="85" y="378" text-anchor="middle" fill="#c4b5fd" font-size="9" font-family="monospace">market-events</text>
+
+  <rect x="170" y="340" width="130" height="50" rx="6" fill="#1a1a2e" stroke="#a78bfa" stroke-width="1"/>
+  <text x="235" y="360" text-anchor="middle" fill="#a78bfa" font-size="9" font-family="monospace" font-weight="bold">SQS</text>
+  <text x="235" y="378" text-anchor="middle" fill="#c4b5fd" font-size="9" font-family="monospace">enrichment</text>
+
+  <rect x="320" y="340" width="130" height="50" rx="6" fill="#1a1a2e" stroke="#a78bfa" stroke-width="1"/>
+  <text x="385" y="360" text-anchor="middle" fill="#a78bfa" font-size="9" font-family="monospace" font-weight="bold">SQS</text>
+  <text x="385" y="378" text-anchor="middle" fill="#c4b5fd" font-size="9" font-family="monospace">enriched-news</text>
+
+  <rect x="470" y="340" width="130" height="50" rx="6" fill="#1a1a2e" stroke="#f43f5e" stroke-width="1"/>
+  <text x="535" y="360" text-anchor="middle" fill="#f43f5e" font-size="9" font-family="monospace" font-weight="bold">SQS</text>
+  <text x="535" y="378" text-anchor="middle" fill="#fb7185" font-size="9" font-family="monospace">whale-events</text>
+
+  <!-- Arrows: Fargate → SQS -->
+  <line x1="85" y1="310" x2="85" y2="338" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#arrow-purple)"/>
+  <text x="30" y="330" fill="#a78bfa" font-size="7" font-family="monospace">candle close</text>
+
+  <line x1="235" y1="310" x2="235" y2="338" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#arrow-purple)"/>
+  <text x="200" y="330" fill="#a78bfa" font-size="7" font-family="monospace">raw news</text>
+
+  <line x1="470" y1="310" x2="535" y2="338" stroke="#f43f5e" stroke-width="1.2" marker-end="url(#arrow-rose)"/>
+  <text x="490" y="325" fill="#f43f5e" font-size="7" font-family="monospace">whale txs</text>
+
+  <!-- ============================================================ -->
+  <!-- ENRICHMENT LAMBDA -->
+  <!-- ============================================================ -->
+
+  <rect x="170" y="430" width="160" height="50" rx="6" fill="#1a1a2e" stroke="#10b981" stroke-width="1.5"/>
+  <text x="186" y="448" fill="#10b981" font-size="9" font-family="monospace" font-weight="bold">LAMBDA</text>
+  <text x="250" y="460" text-anchor="middle" fill="#34d399" font-size="10" font-family="monospace">enrichment</text>
+  <text x="250" y="473" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">Bedrock Claude Haiku</text>
+
+  <line x1="235" y1="390" x2="250" y2="428" stroke="#10b981" stroke-width="1.2" marker-end="url(#arrow-green)"/>
+  <text x="255" y="415" fill="#10b981" font-size="8" font-family="monospace">trigger</text>
+
+  <!-- Enrichment → enriched-news SQS -->
+  <line x1="330" y1="455" x2="385" y2="392" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#arrow-purple)"/>
+
+  <!-- ============================================================ -->
+  <!-- GENIE SIGNAL ENGINE (future — center) -->
+  <!-- ============================================================ -->
+
+  <rect x="20" y="510" width="580" height="70" rx="8" fill="none" stroke="#00e5ff" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="40" y="535" fill="#00e5ff" font-size="11" font-weight="bold" font-family="monospace">GENIE SIGNAL ENGINE</text>
+  <text x="310" y="535" fill="#0e7490" font-size="9" font-family="monospace">future — consumes all 4 SQS queues</text>
+
+  <rect x="40" y="545" width="120" height="25" rx="4" fill="#0f172a" stroke="#00e5ff44" stroke-width="0.8"/>
+  <text x="100" y="562" text-anchor="middle" fill="#00e5ff66" font-size="8" font-family="monospace">Market Signals</text>
+
+  <rect x="175" y="545" width="120" height="25" rx="4" fill="#0f172a" stroke="#00e5ff44" stroke-width="0.8"/>
+  <text x="235" y="562" text-anchor="middle" fill="#00e5ff66" font-size="8" font-family="monospace">News Sentiment</text>
+
+  <rect x="310" y="545" width="120" height="25" rx="4" fill="#0f172a" stroke="#f43f5e44" stroke-width="0.8"/>
+  <text x="370" y="562" text-anchor="middle" fill="#fb718566" font-size="8" font-family="monospace">Whale Activity</text>
+
+  <rect x="445" y="545" width="140" height="25" rx="4" fill="#0f172a" stroke="#00e5ff44" stroke-width="0.8"/>
+  <text x="515" y="562" text-anchor="middle" fill="#00e5ff66" font-size="8" font-family="monospace">Buy / Sell / Hold</text>
+
+  <!-- SQS → Genie -->
+  <line x1="85" y1="390" x2="85" y2="508" stroke="#334155" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrow)"/>
+  <line x1="385" y1="390" x2="385" y2="508" stroke="#334155" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrow)"/>
+  <line x1="535" y1="390" x2="535" y2="508" stroke="#334155" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrow)"/>
+
+  <!-- ============================================================ -->
+  <!-- DYNAMODB (bottom-left) -->
+  <!-- ============================================================ -->
+
+  <rect x="20" y="620" width="450" height="200" rx="8" fill="#0f172a" stroke="#f59e0b" stroke-width="1"/>
+  <text x="40" y="645" fill="#f59e0b" font-size="11" font-weight="bold" font-family="monospace">DYNAMODB</text>
+  <text x="175" y="645" fill="#78350f" font-size="9" font-family="monospace">PAY_PER_REQUEST / PITR</text>
+
+  <rect x="40" y="660" width="90" height="32" rx="4" fill="#1e293b" stroke="#92400e" stroke-width="0.8"/>
+  <text x="85" y="680" text-anchor="middle" fill="#fbbf24" font-size="9" font-family="monospace">prices</text>
+
+  <rect x="140" y="660" width="90" height="32" rx="4" fill="#1e293b" stroke="#92400e" stroke-width="0.8"/>
+  <text x="185" y="680" text-anchor="middle" fill="#fbbf24" font-size="9" font-family="monospace">candles</text>
+
+  <rect x="240" y="660" width="100" height="32" rx="4" fill="#1e293b" stroke="#92400e" stroke-width="0.8"/>
+  <text x="290" y="680" text-anchor="middle" fill="#fbbf24" font-size="9" font-family="monospace">news_events</text>
+
+  <rect x="350" y="660" width="100" height="32" rx="4" fill="#1e293b" stroke="#f43f5e" stroke-width="0.8"/>
+  <text x="400" y="675" text-anchor="middle" fill="#fb7185" font-size="8" font-family="monospace">whale</text>
+  <text x="400" y="686" text-anchor="middle" fill="#fb7185" font-size="8" font-family="monospace">_events</text>
+
+  <rect x="40" y="700" width="90" height="32" rx="4" fill="#1e293b" stroke="#92400e" stroke-width="0.8"/>
+  <text x="85" y="715" text-anchor="middle" fill="#fbbf24" font-size="8" font-family="monospace">ingestion</text>
+  <text x="85" y="726" text-anchor="middle" fill="#fbbf24" font-size="8" font-family="monospace">_metadata</text>
+
+  <rect x="140" y="700" width="90" height="32" rx="4" fill="#1e293b" stroke="#475569" stroke-width="0.8"/>
+  <text x="185" y="720" text-anchor="middle" fill="#94a3b8" font-size="9" font-family="monospace">signals</text>
+
+  <rect x="240" y="700" width="90" height="32" rx="4" fill="#1e293b" stroke="#475569" stroke-width="0.8"/>
+  <text x="285" y="720" text-anchor="middle" fill="#94a3b8" font-size="9" font-family="monospace">users</text>
+
+  <rect x="340" y="700" width="110" height="32" rx="4" fill="#1e293b" stroke="#475569" stroke-width="0.8"/>
+  <text x="395" y="720" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">+7 more tables</text>
+
+  <!-- Legend dots -->
+  <rect x="40" y="745" width="8" height="8" rx="2" fill="#f59e0b"/>
+  <text x="55" y="753" fill="#475569" font-size="8" font-family="monospace">ingestion tables</text>
+  <rect x="160" y="745" width="8" height="8" rx="2" fill="#f43f5e"/>
+  <text x="175" y="753" fill="#475569" font-size="8" font-family="monospace">whale (new)</text>
+  <rect x="255" y="745" width="8" height="8" rx="2" fill="#475569"/>
+  <text x="270" y="753" fill="#475569" font-size="8" font-family="monospace">app tables</text>
+
+  <!-- Arrows: Fargate/Lambda → DynamoDB -->
+  <path d="M117,310 L85,610 L85,618" fill="none" stroke="#f59e0b" stroke-width="1" marker-end="url(#arrow-amber)"/>
+  <path d="M700,275 L700,600 L190,618" fill="none" stroke="#f59e0b" stroke-width="1" marker-end="url(#arrow-amber)" stroke-dasharray="3,2"/>
+
+  <!-- Enrichment Lambda → DynamoDB -->
+  <line x1="250" y1="480" x2="290" y2="618" stroke="#10b981" stroke-width="1" marker-end="url(#arrow-green)"/>
+  <text x="255" y="555" fill="#10b981" font-size="8" font-family="monospace">update</text>
+
+  <!-- Whale → DynamoDB -->
+  <path d="M470,310 L470,420 L400,618" fill="none" stroke="#f43f5e" stroke-width="1" marker-end="url(#arrow-rose)"/>
+
+  <!-- ============================================================ -->
+  <!-- S3 -->
+  <!-- ============================================================ -->
+
+  <rect x="520" y="640" width="150" height="50" rx="6" fill="#0f172a" stroke="#06b6d4" stroke-width="1"/>
+  <text x="595" y="660" text-anchor="middle" fill="#06b6d4" font-size="10" font-family="monospace" font-weight="bold">S3</text>
+  <text x="595" y="675" text-anchor="middle" fill="#67e8f9" font-size="9" font-family="monospace">data-archive</text>
+  <text x="595" y="687" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">IA 30d / Glacier 90d</text>
+
+  <path d="M700,140 L750,140 L750,665 L672,665" fill="none" stroke="#06b6d4" stroke-width="1" marker-end="url(#arrow-cyan)" stroke-dasharray="3,2"/>
+  <text x="755" y="400" fill="#06b6d4" font-size="8" font-family="monospace" transform="rotate(90,755,400)">archive raw data</text>
+
+  <!-- ============================================================ -->
+  <!-- BACKEND API (right side) -->
+  <!-- ============================================================ -->
+
+  <rect x="770" y="120" width="280" height="200" rx="8" fill="#0f172a" stroke="#10b981" stroke-width="1.5"/>
+  <text x="790" y="145" fill="#10b981" font-size="11" font-weight="bold" font-family="monospace">BACKEND API</text>
+  <text x="940" y="145" fill="#064e3b" font-size="9" font-family="monospace">Hono + Lambda</text>
+
+  <rect x="790" y="158" width="110" height="30" rx="4" fill="#1e293b" stroke="#065f46" stroke-width="0.8"/>
+  <text x="845" y="177" text-anchor="middle" fill="#34d399" font-size="9" font-family="monospace">/api/genie</text>
+
+  <rect x="920" y="158" width="110" height="30" rx="4" fill="#1e293b" stroke="#065f46" stroke-width="0.8"/>
+  <text x="975" y="177" text-anchor="middle" fill="#34d399" font-size="9" font-family="monospace">/api/coach</text>
+
+  <rect x="790" y="198" width="110" height="30" rx="4" fill="#1e293b" stroke="#065f46" stroke-width="0.8"/>
+  <text x="845" y="217" text-anchor="middle" fill="#34d399" font-size="9" font-family="monospace">/api/dealflow</text>
+
+  <rect x="920" y="198" width="110" height="30" rx="4" fill="#1e293b" stroke="#065f46" stroke-width="0.8"/>
+  <text x="975" y="217" text-anchor="middle" fill="#34d399" font-size="9" font-family="monospace">/api/marketing</text>
+
+  <rect x="830" y="245" width="160" height="30" rx="4" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+  <text x="910" y="264" text-anchor="middle" fill="#475569" font-size="9" font-family="monospace">API Gateway v2 (HTTP)</text>
+
+  <rect x="830" y="285" width="160" height="25" rx="4" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+  <text x="910" y="302" text-anchor="middle" fill="#475569" font-size="9" font-family="monospace">Aldero JWT Auth</text>
+
+  <!-- Clients → API -->
+  <line x1="915" y1="75" x2="910" y2="118" stroke="#10b981" stroke-width="1.2" marker-end="url(#arrow-green)"/>
+  <text x="925" y="100" fill="#10b981" font-size="8" font-family="monospace">HTTPS</text>
+
+  <!-- API → DynamoDB -->
+  <path d="M850,320 L850,600 L450,618" fill="none" stroke="#f59e0b" stroke-width="1" marker-end="url(#arrow-amber)" stroke-dasharray="3,2"/>
+  <text x="860" y="480" fill="#f59e0b" font-size="8" font-family="monospace" transform="rotate(90,860,480)">read/write</text>
+
+  <!-- ============================================================ -->
+  <!-- BEDROCK -->
+  <!-- ============================================================ -->
+
+  <rect x="770" y="640" width="200" height="55" rx="6" fill="#0f172a" stroke="#a78bfa" stroke-width="1"/>
+  <text x="870" y="660" text-anchor="middle" fill="#a78bfa" font-size="10" font-family="monospace" font-weight="bold">AMAZON BEDROCK</text>
+  <text x="870" y="676" text-anchor="middle" fill="#c4b5fd" font-size="9" font-family="monospace">Claude Haiku 3.5</text>
+  <text x="870" y="690" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">sentiment / events / summary</text>
+
+  <path d="M330,465 L770,670" fill="none" stroke="#a78bfa" stroke-width="1" marker-end="url(#arrow-purple)" stroke-dasharray="4,3"/>
+  <text x="550" y="555" fill="#a78bfa" font-size="8" font-family="monospace">InvokeModel</text>
+
+  <!-- ============================================================ -->
+  <!-- BLOCKCHAIN LAYER (future, bottom-right) -->
+  <!-- ============================================================ -->
+
+  <rect x="770" y="720" width="200" height="55" rx="6" fill="none" stroke="#334155" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="870" y="740" text-anchor="middle" fill="#334155" font-size="10" font-family="monospace">BLOCKCHAIN (future)</text>
+  <text x="870" y="755" text-anchor="middle" fill="#334155" font-size="9" font-family="monospace">Polygon + Sequence</text>
+  <text x="870" y="768" text-anchor="middle" fill="#334155" font-size="8" font-family="monospace">Chainlink oracle feeds</text>
+
+  <!-- ============================================================ -->
+  <!-- SSM -->
+  <!-- ============================================================ -->
+
+  <rect x="620" y="340" width="160" height="40" rx="6" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+  <text x="700" y="358" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">SSM Parameter Store</text>
+  <text x="700" y="372" text-anchor="middle" fill="#475569" font-size="8" font-family="monospace">Alpaca / Whale Alert keys</text>
+
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#3b82f6"></div> Fargate (long-running)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#f59e0b"></div> Lambda (event-driven)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#a78bfa"></div> SQS / Bedrock</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#f43f5e"></div> Whale monitoring (new)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#10b981"></div> Backend API</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#06b6d4"></div> Storage (S3)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#00e5ff"></div> Genie Signal Engine</div>
+  <div class="legend-item"><div class="legend-swatch" style="border:1px dashed #334155;background:none"></div> Future (not built)</div>
+</div>
+
+<p class="section-label">Tech Stack</p>
+<div class="tables-grid" style="grid-template-columns: 1fr 1fr; max-width: 800px;">
+  <div class="table-card" style="border-left: 3px solid #00e5ff;">
+    <div class="name" style="color:#00e5ff">Frontend</div>
+    <div class="keys"><span>Next.js</span> (Landing — SSR/SSG)<br><span>React + Vite</span> (Dashboard — SPA)<br><span>Flutter</span> (Mobile — iOS/Android)</div>
+  </div>
+  <div class="table-card" style="border-left: 3px solid #10b981;">
+    <div class="name" style="color:#10b981">Backend</div>
+    <div class="keys"><span>Node.js / TypeScript</span><br>Hono on AWS Lambda</div>
+  </div>
+  <div class="table-card" style="border-left: 3px solid #f59e0b;">
+    <div class="name" style="color:#f59e0b">Database</div>
+    <div class="keys"><span>DynamoDB</span><br>PAY_PER_REQUEST / 13+ tables</div>
+  </div>
+  <div class="table-card" style="border-left: 3px solid #3b82f6;">
+    <div class="name" style="color:#3b82f6">Infrastructure</div>
+    <div class="keys"><span>AWS</span><br>Lambda, Fargate, API Gateway,<br>SQS, S3, Bedrock, ECR, VPC</div>
+  </div>
+  <div class="table-card" style="border-left: 3px solid #f43f5e;">
+    <div class="name" style="color:#f43f5e">Whale Monitoring</div>
+    <div class="keys"><span>Whale Alert</span> (cross-chain alerts)<br><span>Alchemy</span> (ETH/Polygon WebSocket)<br><span>CryptoQuant</span> (Exchange Whale Ratio)</div>
+  </div>
+  <div class="table-card" style="border-left: 3px solid #a78bfa; opacity: 0.6;">
+    <div class="name" style="color:#a78bfa">Blockchain <span style="font-size:9px;color:#475569">(future)</span></div>
+    <div class="keys"><span>Polygon</span> + Sequence contracts<br><span>Chainlink</span> oracle data feeds</div>
+  </div>
+</div>
+
+<p class="section-label">DynamoDB Table Schemas</p>
+<div class="tables-grid">
+  <div class="table-card">
+    <div class="name">prices</div>
+    <div class="keys">PK: <span>pair</span><br>SK: <span>timestamp</span><br>TTL: 7 days</div>
+  </div>
+  <div class="table-card">
+    <div class="name">candles</div>
+    <div class="keys">PK: <span>pair</span><br>SK: <span>exchange#tf#ts</span><br>GSI: <span>exchange-index</span><br>TTL: 7d-365d by tf</div>
+  </div>
+  <div class="table-card">
+    <div class="name">news_events</div>
+    <div class="keys">PK: <span>newsId</span><br>SK: <span>publishedAt</span><br>GSI: <span>currency-index</span><br>TTL: 30 days</div>
+  </div>
+  <div class="table-card" style="border-color: #f43f5e44;">
+    <div class="name" style="color:#fb7185">whale_events</div>
+    <div class="keys">PK: <span>chain#txHash</span><br>SK: <span>timestamp</span><br>GSI: <span>wallet-index</span><br>TTL: 90 days</div>
+  </div>
+  <div class="table-card">
+    <div class="name">ingestion_metadata</div>
+    <div class="keys">PK: <span>metaKey</span><br>No TTL (permanent)</div>
+  </div>
+  <div class="table-card">
+    <div class="name">signals</div>
+    <div class="keys">PK: <span>pair</span><br>SK: <span>createdAt</span><br>TTL on expiresAt</div>
+  </div>
+  <div class="table-card">
+    <div class="name">users</div>
+    <div class="keys">PK: <span>userId</span><br>GSI: <span>email-index</span></div>
+  </div>
+  <div class="table-card">
+    <div class="name">deals</div>
+    <div class="keys">PK: <span>dealId</span><br>GSI: <span>author-index</span></div>
+  </div>
+  <div class="table-card">
+    <div class="name">+5 more</div>
+    <div class="keys">signal_history<br>coach_sessions<br>coach_messages<br>deal_interests<br>campaigns</div>
+  </div>
+</div>
+
+</body>
+</html>

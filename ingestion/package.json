@@ -1,0 +1,33 @@
+{
+  "name": "quantara-ingestion",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "package": "node esbuild.config.js && node scripts/package-lambda.js",
+    "typecheck": "tsc --noEmit",
+    "dev": "AWS_REGION=us-west-2 AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- tsx src/local.ts",
+    "dev:stream": "AWS_REGION=us-west-2 AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- tsx src/service.ts",
+    "start": "node dist/service.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.750.0",
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/client-sqs": "^3.750.0",
+    "@aws-sdk/client-ssm": "^3.750.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.750.0",
+    "@aws-sdk/lib-dynamodb": "^3.750.0",
+    "@quantara/shared": "*",
+    "ccxt": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.0",
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0"
+  }
+}

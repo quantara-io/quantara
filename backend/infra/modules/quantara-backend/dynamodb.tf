@@ -169,3 +169,112 @@ resource "aws_dynamodb_table" "campaigns" {
 
   point_in_time_recovery { enabled = true }
 }
+
+resource "aws_dynamodb_table" "candles" {
+  name         = "${local.prefix}-candles"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pair"
+  range_key    = "sk"
+
+  attribute {
+    name = "pair"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  attribute {
+    name = "exchange"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "exchange-index"
+    hash_key        = "exchange"
+    range_key       = "sk"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "news_events" {
+  name         = "${local.prefix}-news-events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "newsId"
+  range_key    = "publishedAt"
+
+  attribute {
+    name = "newsId"
+    type = "S"
+  }
+
+  attribute {
+    name = "publishedAt"
+    type = "S"
+  }
+
+  attribute {
+    name = "currency"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "currency-index"
+    hash_key        = "currency"
+    range_key       = "publishedAt"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "ingestion_metadata" {
+  name         = "${local.prefix}-ingestion-metadata"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "metaKey"
+
+  attribute {
+    name = "metaKey"
+    type = "S"
+  }
+
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "prices" {
+  name         = "${local.prefix}-prices"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pair"
+  range_key    = "timestamp"
+
+  attribute {
+    name = "pair"
+    type = "S"
+  }
+
+  attribute {
+    name = "timestamp"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+}
