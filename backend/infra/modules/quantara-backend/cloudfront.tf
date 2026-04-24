@@ -49,7 +49,7 @@ resource "aws_cloudfront_distribution" "api" {
     }
 
     min_ttl     = 0
-    default_ttl = 300  # 5 min cache for docs
+    default_ttl = 300 # 5 min cache for docs
     max_ttl     = 3600
   }
 

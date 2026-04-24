@@ -49,19 +49,6 @@ variable "ingestion_interval_minutes" {
   default     = 5
 }
 
-variable "alpaca_key_id" {
-  description = "Alpaca API key ID for news data."
-  type        = string
-  default     = ""
-}
-
-variable "alpaca_secret_key" {
-  description = "Alpaca API secret key for news data."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 variable "docs_allowed_ips" {
   description = "Comma-separated list of IPs allowed to access /api/docs. Use '*' to allow all."
   type        = string

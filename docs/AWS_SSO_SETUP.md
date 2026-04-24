@@ -101,16 +101,30 @@ Terraform uses the `quantara-management` profile to assume roles into dev/prod:
 ```bash
 cd backend/infra/dev
 terraform init
-terraform plan -var-file=secrets.tfvars
-terraform apply -var-file=secrets.tfvars -auto-approve
+terraform plan
+terraform apply -auto-approve
 ```
 
-The `secrets.tfvars` file contains Alpaca API keys (gitignored). Get it from the existing machine or recreate:
+No `-var-file` is required. Secrets (Alpaca API keys, etc.) live in SSM Parameter Store as `SecureString`:
 
-```hcl
-alpaca_key_id     = "<get from SSM or existing machine>"
-alpaca_secret_key = "<get from SSM or existing machine>"
+| Parameter | Purpose |
+|-----------|---------|
+| `/quantara/<env>/alpaca/key-id`     | Alpaca API key ID |
+| `/quantara/<env>/alpaca/secret-key` | Alpaca API secret |
+
+Set or rotate them with:
+
+```bash
+aws ssm put-parameter --profile quantara-dev --region us-west-2 \
+  --name '/quantara/dev/alpaca/key-id' --type SecureString \
+  --value '<key>' --overwrite
+
+aws ssm put-parameter --profile quantara-dev --region us-west-2 \
+  --name '/quantara/dev/alpaca/secret-key' --type SecureString \
+  --value '<secret>' --overwrite
 ```
+
+The Fargate task pulls them via the ECS `secrets` block; the news-backfill Lambda fetches them at runtime. After rotating, force a Fargate redeploy (`aws ecs update-service --force-new-deployment ...`) so the running task picks up the new value.
 
 ## Account IDs
 

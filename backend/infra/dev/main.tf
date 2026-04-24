@@ -39,26 +39,13 @@ provider "aws" {
 module "backend" {
   source = "../modules/quantara-backend"
 
-  environment    = "dev"
-  app_source_dir = "${path.module}/../.."
-  auth_base_url  = "https://quantara-sandbox.aldero.io"
-  app_id         = var.aldero_app_id
-  cors_origin       = "*"
-  log_level         = "debug"
-  docs_allowed_ips  = "68.4.159.0/24,104.28.49.0/24,2a09:bac3::/32"
-  alpaca_key_id     = var.alpaca_key_id
-  alpaca_secret_key = var.alpaca_secret_key
-}
-
-variable "alpaca_key_id" {
-  type    = string
-  default = ""
-}
-
-variable "alpaca_secret_key" {
-  type      = string
-  sensitive = true
-  default   = ""
+  environment      = "dev"
+  app_source_dir   = "${path.module}/../.."
+  auth_base_url    = "https://quantara-sandbox.aldero.io"
+  app_id           = var.aldero_app_id
+  cors_origin      = "*"
+  log_level        = "debug"
+  docs_allowed_ips = "68.4.159.0/24,104.28.49.0/24,2a09:bac3::/32"
 }
 
 output "api_url" {

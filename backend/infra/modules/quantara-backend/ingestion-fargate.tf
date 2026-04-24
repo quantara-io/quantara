@@ -121,6 +121,27 @@ resource "aws_iam_role_policy_attachment" "ingestion_ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_role_policy" "ingestion_ecs_execution_alpaca_ssm" {
+  name = "${local.prefix}-ingestion-ecs-execution-alpaca-ssm"
+  role = aws_iam_role.ingestion_ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = local.alpaca_ssm_param_arns
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = data.aws_kms_alias.ssm.target_key_arn
+      },
+    ]
+  })
+}
+
 resource "aws_iam_role" "ingestion_ecs_task" {
   name = "${local.prefix}-ingestion-ecs-task"
 
@@ -186,8 +207,8 @@ resource "aws_iam_role_policy" "ingestion_ecs_sqs" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["sqs:SendMessage"]
+      Effect = "Allow"
+      Action = ["sqs:SendMessage"]
       Resource = [
         aws_sqs_queue.enrichment.arn,
         aws_sqs_queue.market_events.arn,
@@ -244,8 +265,11 @@ resource "aws_ecs_task_definition" "ingestion" {
       { name = "TABLE_METADATA", value = aws_dynamodb_table.ingestion_metadata.name },
       { name = "ENRICHMENT_QUEUE_URL", value = aws_sqs_queue.enrichment.url },
       { name = "MARKET_EVENTS_QUEUE_URL", value = aws_sqs_queue.market_events.url },
-      { name = "ALPACA_KEY_ID", value = var.alpaca_key_id },
-      { name = "ALPACA_SECRET_KEY", value = var.alpaca_secret_key },
+    ]
+
+    secrets = [
+      { name = "ALPACA_KEY_ID", valueFrom = local.alpaca_ssm_param_arns[0] },
+      { name = "ALPACA_SECRET_KEY", valueFrom = local.alpaca_ssm_param_arns[1] },
     ]
 
     logConfiguration = {

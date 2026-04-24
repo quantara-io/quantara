@@ -135,22 +135,22 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      AUTH_BASE_URL       = var.auth_base_url
-      APP_ID              = var.app_id
-      TABLE_PREFIX        = "${local.prefix}-"
-      TABLE_USERS         = aws_dynamodb_table.users.name
-      TABLE_SIGNALS       = aws_dynamodb_table.signals.name
+      AUTH_BASE_URL        = var.auth_base_url
+      APP_ID               = var.app_id
+      TABLE_PREFIX         = "${local.prefix}-"
+      TABLE_USERS          = aws_dynamodb_table.users.name
+      TABLE_SIGNALS        = aws_dynamodb_table.signals.name
       TABLE_SIGNAL_HISTORY = aws_dynamodb_table.signal_history.name
       TABLE_COACH_SESSIONS = aws_dynamodb_table.coach_sessions.name
       TABLE_COACH_MESSAGES = aws_dynamodb_table.coach_messages.name
-      TABLE_DEALS         = aws_dynamodb_table.deals.name
+      TABLE_DEALS          = aws_dynamodb_table.deals.name
       TABLE_DEAL_INTERESTS = aws_dynamodb_table.deal_interests.name
-      TABLE_CAMPAIGNS     = aws_dynamodb_table.campaigns.name
-      CORS_ORIGIN         = var.cors_origin
-      CLOUDFRONT_URL      = "https://${aws_cloudfront_distribution.api.domain_name}"
-      DOCS_ALLOWED_IPS    = var.docs_allowed_ips
-      ENVIRONMENT         = var.environment
-      LOG_LEVEL           = var.log_level
+      TABLE_CAMPAIGNS      = aws_dynamodb_table.campaigns.name
+      CORS_ORIGIN          = var.cors_origin
+      CLOUDFRONT_URL       = "https://${aws_cloudfront_distribution.api.domain_name}"
+      DOCS_ALLOWED_IPS     = var.docs_allowed_ips
+      ENVIRONMENT          = var.environment
+      LOG_LEVEL            = var.log_level
     }
   }
 

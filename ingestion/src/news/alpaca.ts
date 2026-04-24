@@ -1,9 +1,35 @@
+import { SSMClient, GetParametersCommand } from "@aws-sdk/client-ssm";
 import type { NewsRecord } from "./types.js";
 
 const BASE_URL = "https://data.alpaca.markets/v1beta1/news";
 
-const ALPACA_KEY_ID = process.env.ALPACA_KEY_ID ?? "";
-const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY ?? "";
+const ENVIRONMENT = process.env.ENVIRONMENT ?? "dev";
+const ssm = new SSMClient({});
+
+let credsPromise: Promise<{ keyId: string; secretKey: string }> | null = null;
+
+function loadAlpacaCreds(): Promise<{ keyId: string; secretKey: string }> {
+  if (credsPromise) return credsPromise;
+  credsPromise = (async () => {
+    const keyIdName = `/quantara/${ENVIRONMENT}/alpaca/key-id`;
+    const secretName = `/quantara/${ENVIRONMENT}/alpaca/secret-key`;
+    const result = await ssm.send(
+      new GetParametersCommand({
+        Names: [keyIdName, secretName],
+        WithDecryption: true,
+      }),
+    );
+    const byName = new Map((result.Parameters ?? []).map((p) => [p.Name, p.Value]));
+    const keyId = byName.get(keyIdName);
+    const secretKey = byName.get(secretName);
+    if (!keyId || !secretKey) {
+      credsPromise = null;
+      throw new Error(`Missing Alpaca SSM parameters: ${keyIdName}, ${secretName}`);
+    }
+    return { keyId, secretKey };
+  })();
+  return credsPromise;
+}
 
 interface AlpacaNewsItem {
   id: number;
@@ -38,11 +64,12 @@ export async function fetchAlpacaNews(options?: {
   if (options?.start) params.set("start", options.start);
   params.set("sort", "desc");
 
+  const { keyId, secretKey } = await loadAlpacaCreds();
   const url = `${BASE_URL}?${params}`;
   const res = await fetch(url, {
     headers: {
-      "APCA-API-KEY-ID": ALPACA_KEY_ID,
-      "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+      "APCA-API-KEY-ID": keyId,
+      "APCA-API-SECRET-KEY": secretKey,
     },
   });
 

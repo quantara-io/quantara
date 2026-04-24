@@ -65,6 +65,27 @@ resource "aws_iam_role_policy" "ingestion_dynamodb" {
   })
 }
 
+resource "aws_iam_role_policy" "ingestion_alpaca_ssm" {
+  name = "${local.prefix}-ingestion-alpaca-ssm"
+  role = aws_iam_role.ingestion_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = local.alpaca_ssm_param_arns
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = data.aws_kms_alias.ssm.target_key_arn
+      },
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "ingestion_s3" {
   name = "${local.prefix}-ingestion-s3"
   role = aws_iam_role.ingestion_lambda.id
@@ -153,11 +174,11 @@ resource "aws_lambda_function" "backfill" {
 
   environment {
     variables = {
-      TABLE_PREFIX      = "${local.prefix}-"
-      TABLE_CANDLES     = aws_dynamodb_table.candles.name
-      TABLE_METADATA    = aws_dynamodb_table.ingestion_metadata.name
+      TABLE_PREFIX        = "${local.prefix}-"
+      TABLE_CANDLES       = aws_dynamodb_table.candles.name
+      TABLE_METADATA      = aws_dynamodb_table.ingestion_metadata.name
       DATA_ARCHIVE_BUCKET = aws_s3_bucket.data_archive.id
-      ENVIRONMENT       = var.environment
+      ENVIRONMENT         = var.environment
     }
   }
 
@@ -192,8 +213,6 @@ resource "aws_lambda_function" "news_backfill" {
       TABLE_PREFIX      = "${local.prefix}-"
       TABLE_NEWS_EVENTS = aws_dynamodb_table.news_events.name
       TABLE_METADATA    = aws_dynamodb_table.ingestion_metadata.name
-      ALPACA_KEY_ID     = var.alpaca_key_id
-      ALPACA_SECRET_KEY = var.alpaca_secret_key
       ENVIRONMENT       = var.environment
     }
   }
@@ -305,9 +324,9 @@ resource "aws_lambda_function" "enrichment" {
 
   environment {
     variables = {
-      TABLE_NEWS_EVENTS    = aws_dynamodb_table.news_events.name
-      ENRICHED_NEWS_QUEUE  = aws_sqs_queue.enriched_news.url
-      ENVIRONMENT          = var.environment
+      TABLE_NEWS_EVENTS   = aws_dynamodb_table.news_events.name
+      ENRICHED_NEWS_QUEUE = aws_sqs_queue.enriched_news.url
+      ENVIRONMENT         = var.environment
     }
   }
 
