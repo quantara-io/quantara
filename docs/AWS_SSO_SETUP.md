@@ -95,8 +95,8 @@ terraform apply -var-file=secrets.tfvars -auto-approve
 The `secrets.tfvars` file contains Alpaca API keys (gitignored). Get it from the existing machine or recreate:
 
 ```hcl
-alpaca_key_id     = "REDACTED"
-alpaca_secret_key = "REDACTED"
+alpaca_key_id     = "<get from SSM or existing machine>"
+alpaca_secret_key = "<get from SSM or existing machine>"
 ```
 
 ## Account IDs
