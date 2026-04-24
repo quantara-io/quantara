@@ -20,6 +20,7 @@
     "@quantara/shared": "*",
     "@scalar/hono-api-reference": "^0.10.10",
     "hono": "^4.7.0",
+    "ipaddr.js": "^2.3.0",
     "jose": "^6.0.0",
     "zod": "^4.3.6"
   },

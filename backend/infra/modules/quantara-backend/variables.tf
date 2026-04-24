@@ -49,12 +49,6 @@ variable "ingestion_interval_minutes" {
   default     = 5
 }
 
-variable "docs_allowed_ips" {
-  description = "Comma-separated list of IPs allowed to access /api/docs. Use '*' to allow all."
-  type        = string
-  default     = "*"
-}
-
 variable "fargate_cpu" {
   description = "Fargate ingestion task CPU units (256 = 0.25 vCPU)."
   type        = number

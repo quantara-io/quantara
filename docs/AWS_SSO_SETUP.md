@@ -126,6 +126,23 @@ aws ssm put-parameter --profile quantara-dev --region us-west-2 \
 
 The Fargate task pulls them via the ECS `secrets` block; the news-backfill Lambda fetches them at runtime. After rotating, force a Fargate redeploy (`aws ecs update-service --force-new-deployment ...`) so the running task picks up the new value.
 
+### Docs/demo IP allow-list
+
+The `/api/docs*` and demo pages are gated by `/quantara/<env>/docs-allowed-ips` (comma-separated list of IPs and/or CIDR ranges, both IPv4 and IPv6). The Lambda reads it from SSM with a 5-minute cache — no redeploy needed.
+
+Add your current IP on the road:
+
+```bash
+MY_IP=$(curl -s https://checkip.amazonaws.com)
+CURRENT=$(aws ssm get-parameter --profile quantara-dev --region us-west-2 \
+  --name /quantara/dev/docs-allowed-ips --query 'Parameter.Value' --output text)
+aws ssm put-parameter --profile quantara-dev --region us-west-2 \
+  --name /quantara/dev/docs-allowed-ips --type String \
+  --value "${CURRENT},${MY_IP}/32" --overwrite
+```
+
+If SSM is unreachable the middleware fails closed (serves a stale cache if one exists, otherwise 403).
+
 ## Account IDs
 
 | Account | ID | Purpose |

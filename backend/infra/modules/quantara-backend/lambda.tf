@@ -148,7 +148,6 @@ resource "aws_lambda_function" "api" {
       TABLE_CAMPAIGNS      = aws_dynamodb_table.campaigns.name
       CORS_ORIGIN          = var.cors_origin
       CLOUDFRONT_URL       = "https://${aws_cloudfront_distribution.api.domain_name}"
-      DOCS_ALLOWED_IPS     = var.docs_allowed_ips
       ENVIRONMENT          = var.environment
       LOG_LEVEL            = var.log_level
     }

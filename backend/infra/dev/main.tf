@@ -43,9 +43,8 @@ module "backend" {
   app_source_dir   = "${path.module}/../.."
   auth_base_url    = "https://quantara-sandbox.aldero.io"
   app_id           = var.aldero_app_id
-  cors_origin      = "https://d3tavvh2o76dc5.cloudfront.net"
-  log_level        = "debug"
-  docs_allowed_ips = "68.4.159.0/24,104.28.49.0/24,2a09:bac3::/32"
+  cors_origin = "https://d3tavvh2o76dc5.cloudfront.net"
+  log_level   = "debug"
 }
 
 output "api_url" {
