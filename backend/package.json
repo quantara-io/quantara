@@ -7,7 +7,7 @@
     "build": "node esbuild.config.js",
     "package": "node esbuild.config.js && cd dist && zip -r lambda.zip index.js",
     "typecheck": "tsc --noEmit",
-    "dev": "AWS_REGION=us-west-2 AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- tsx --watch src/local.ts",
+    "dev": "AWS_REGION=us-west-2 AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- CORS_ORIGIN=* SKIP_API_KEY=true SKIP_IP_WHITELIST=true tsx --watch src/local.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

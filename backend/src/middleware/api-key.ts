@@ -38,7 +38,8 @@ async function loadApiKeys(): Promise<Map<string, string>> {
     cacheExpiry = now + CACHE_TTL_MS;
     return keys;
   } catch {
-    // If SSM fails, allow requests (don't block on infra issues)
+    // Fail closed: serve a stale cache if we have one, otherwise an empty
+    // map (which denies every request below with INVALID_API_KEY).
     return cachedKeys ?? new Map();
   }
 }

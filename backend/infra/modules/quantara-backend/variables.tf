@@ -23,9 +23,8 @@ variable "app_id" {
 }
 
 variable "cors_origin" {
-  description = "Allowed CORS origin."
+  description = "Allowed CORS origin. No default — every environment must set this explicitly so a forgotten setting fails plan rather than deploying wide-open."
   type        = string
-  default     = "*"
 }
 
 variable "log_level" {

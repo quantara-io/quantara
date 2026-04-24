@@ -22,8 +22,14 @@ import { demo } from "./routes/demo.js";
 const app = new OpenAPIHono();
 
 app.use("*", logger());
+
+const CORS_ORIGIN = process.env.CORS_ORIGIN;
+if (!CORS_ORIGIN) {
+  throw new Error("CORS_ORIGIN must be set (e.g. a specific https:// origin, or '*' for local dev)");
+}
+
 app.use("*", cors({
-  origin: process.env.CORS_ORIGIN ?? "*",
+  origin: CORS_ORIGIN,
   allowHeaders: ["Authorization", "Content-Type", "X-Api-Key"],
   allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   maxAge: 86400,
