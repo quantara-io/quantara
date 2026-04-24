@@ -7,55 +7,66 @@
 
 ## 1. Configure SSO Profiles
 
-Run this to create all three profiles:
+Run this to create all profiles (uses inline SSO fields for max compatibility):
 
 ```bash
 cat >> ~/.aws/config << 'EOF'
 
+[default]
+sso_start_url = https://d-9267dc8051.awsapps.com/start
+sso_region = us-west-2
+sso_account_id = 442725244722
+sso_role_name = AdministratorAccess
+region = us-west-2
+output = json
+
 [profile quantara-management]
-sso_session = quantara
+sso_start_url = https://d-9267dc8051.awsapps.com/start
+sso_region = us-west-2
 sso_account_id = 489922707011
 sso_role_name = AdministratorAccess
 region = us-west-2
 output = json
 
 [profile quantara-dev]
-sso_session = quantara
+sso_start_url = https://d-9267dc8051.awsapps.com/start
+sso_region = us-west-2
 sso_account_id = 442725244722
 sso_role_name = AdministratorAccess
 region = us-west-2
 output = json
 
 [profile quantara-prod]
-sso_session = quantara
+sso_start_url = https://d-9267dc8051.awsapps.com/start
+sso_region = us-west-2
 sso_account_id = 351666231984
 sso_role_name = AdministratorAccess
 region = us-west-2
 output = json
-
-[sso-session quantara]
-sso_start_url = https://d-9067da5ecc.awsapps.com/start
-sso_region = us-west-2
-sso_registration_scopes = sso:account:access
 EOF
 ```
 
 ## 2. Login
 
 ```bash
-aws sso login --profile quantara-management
+aws sso login
 ```
 
-This opens a browser window. Sign in with your Identity Center credentials. Once authenticated, all three profiles (management, dev, prod) share the same SSO session.
+This opens a browser window. Sign in with your Identity Center credentials. The default profile is **dev**.
+
+To login with a specific profile:
+```bash
+aws sso login --profile quantara-management
+```
 
 ## 3. Verify
 
 ```bash
+# Default (dev)
+aws sts get-caller-identity
+
 # Management account
 aws sts get-caller-identity --profile quantara-management
-
-# Dev account
-aws sts get-caller-identity --profile quantara-dev
 
 # Prod account
 aws sts get-caller-identity --profile quantara-prod
@@ -68,17 +79,19 @@ Each should return the correct account ID.
 No need to login again — just use the `--profile` flag:
 
 ```bash
-aws dynamodb list-tables --profile quantara-dev --region us-west-2
-aws s3 ls --profile quantara-prod --region us-west-2
+aws dynamodb list-tables --profile quantara-dev
+aws s3 ls --profile quantara-prod
 aws organizations list-accounts --profile quantara-management
 ```
+
+Without `--profile`, commands use the **dev** account (default).
 
 ## 5. Re-login When Token Expires
 
 SSO tokens expire after ~8 hours. When you see "Token has expired":
 
 ```bash
-aws sso login --profile quantara-management
+aws sso login
 ```
 
 ## 6. Terraform
@@ -110,7 +123,7 @@ alpaca_secret_key = "<get from SSM or existing machine>"
 ## SSO Start URL
 
 ```
-https://d-9067da5ecc.awsapps.com/start
+https://d-9267dc8051.awsapps.com/start
 ```
 
 You can also open this in a browser to access the AWS Console for any account.
