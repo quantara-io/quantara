@@ -12,6 +12,7 @@ env:
   NODE_VERSION: '24'
   AWS_REGION: us-west-2
   ECR_REPO: quantara-dev-ingestion
+  NEXT_TELEMETRY_DISABLED: '1'
 
 jobs:
   typecheck-and-build:
@@ -40,6 +41,17 @@ jobs:
 
       - name: Build ingestion
         run: npm run build --workspace=quantara-ingestion
+
+      # Cache Next.js build output keyed on lockfile + web sources. Falls
+      # back to lockfile-only restore so a source change reuses node_modules
+      # and the .next/cache from the previous run instead of compiling cold.
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: web/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('web/**/*.[jt]s', 'web/**/*.[jt]sx') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
 
       - name: Build web
         run: npm run build --workspace=web
