@@ -86,7 +86,7 @@
 <!-- ===================== Overview ===================== -->
 <section id="overview" class="anchor mb-12">
   <h2 class="text-2xl font-bold text-gray-900 mb-3">Overview</h2>
-  <p class="text-gray-700 leading-relaxed">Quantara fronts an external auth provider (<strong>Aldero</strong>) under <code class="inline">/api/auth/*</code>. Your client never talks to Aldero directly — Quantara wraps every Aldero call, applies its own validation, and emits a uniform JSON envelope. JWTs returned by Quantara are issued by Aldero and verified against Aldero's JWKS.</p>
+  <p class="text-gray-700 leading-relaxed">Quantara fronts an external auth service under <code class="inline">/api/auth/*</code>. Your client never talks to the auth service directly — Quantara wraps every upstream call, applies its own validation, and emits a uniform JSON envelope. JWTs returned by Quantara are issued by the auth service and verified against its JWKS.</p>
   <p class="mt-3 text-gray-700 leading-relaxed">Tokens carry the user's identity. The client stores them, attaches the access token as <code class="inline">Authorization: Bearer …</code> to subsequent calls, and refreshes when expired.</p>
   <div class="callout callout-info mt-4 text-sm">
     <strong>Two headers on every call:</strong>
@@ -106,8 +106,8 @@ sequenceDiagram
     autonumber
     participant C as Client (browser / app)
     participant Q as Quantara API<br/>(/api/auth/*)
-    participant A as Aldero<br/>(/v1/auth/*)
-    participant J as Aldero JWKS
+    participant A as Auth<br/>(/v1/auth/*)
+    participant J as Auth JWKS
     C->>Q: POST /api/auth/login<br/>x-api-key + body
     Q->>A: POST /v1/auth/login<br/>(M2M Basic auth)
     A-->>Q: { accessToken, refreshToken, user }
@@ -119,7 +119,7 @@ sequenceDiagram
     Q->>Q: verify signature, iss, aud, exp
     Q-->>C: 200 OK
   </div>
-  <p class="mt-3 text-xs text-gray-500">Quantara never sees the user's password after the initial proxy hop — it's forwarded to Aldero verbatim. No password material is logged or stored on Quantara.</p>
+  <p class="mt-3 text-xs text-gray-500">Quantara never sees the user's password after the initial proxy hop — it's forwarded to the auth service verbatim. No password material is logged or stored on Quantara.</p>
 </section>
 
 <!-- ===================== Concepts ===================== -->
@@ -149,7 +149,7 @@ sequenceDiagram
   "auth_method":    "password" | "magic_link" | "oauth_google" | "passkey" | …,
   "session_id":     "ses_…",
   "role":           "user" | "admin" | …,
-  "iss":            "auth",            // Aldero issuer
+  "iss":            "auth",            // auth service issuer
   "aud":            "app_01KPEJYK…",   // Quantara APP_ID
   "exp":            1714000000,
   "iat":            1713996400
@@ -201,7 +201,7 @@ sequenceDiagram
     participant U as User
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     U->>C: enter email, password, name
     C->>Q: POST /api/auth/signup
     Q->>A: POST /v1/auth/signup
@@ -248,7 +248,7 @@ showStep("passkey-prompt");   // offer passkey enrolment</code></pre>
 sequenceDiagram
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     C->>Q: POST /api/auth/login
     Q->>A: POST /v1/auth/login
     alt MFA not enrolled
@@ -294,13 +294,13 @@ goToDashboard();</code></pre>
     <tr><th class="w-44">Send email code</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/challenge</code> &nbsp;·&nbsp; body <code class="inline">{ mfaToken }</code></td></tr>
     <tr><th>Verify any code</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/verify</code> &nbsp;·&nbsp; body <code class="inline">{ mfaToken, code, method, trustDevice? }</code></td></tr>
   </table>
-  <p class="text-sm text-gray-700"><code class="inline">method</code> is one of <code class="inline">"totp"</code>, <code class="inline">"email"</code>, or <code class="inline">"recovery_code"</code>. <code class="inline">trustDevice: true</code> tells Aldero to skip MFA on this device for ~30 days.</p>
+  <p class="text-sm text-gray-700"><code class="inline">method</code> is one of <code class="inline">"totp"</code>, <code class="inline">"email"</code>, or <code class="inline">"recovery_code"</code>. <code class="inline">trustDevice: true</code> tells the auth service to skip MFA on this device for ~30 days.</p>
 
   <div class="mermaid">
 sequenceDiagram
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     Note over C: holds mfaToken from login response
     alt method = email
         C->>Q: POST /api/auth/mfa/challenge { mfaToken }
@@ -422,7 +422,7 @@ sequenceDiagram
     participant U as User
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     participant M as Mailbox
     C->>Q: POST /api/auth/magic-link/request { email }
     Q->>A: POST /v1/auth/magic-link/request
@@ -504,7 +504,7 @@ sequenceDiagram
     participant U as User
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     Note over C: page loaded with ?token=…&reset=true
     U->>C: enter new password + confirm
     C->>Q: POST /api/auth/password/reset
@@ -553,7 +553,7 @@ sequenceDiagram
     participant U as User
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     participant App as Authenticator app
     C->>Q: POST /mfa/totp/setup (Bearer)
     Q->>A: POST /v1/auth/mfa/totp/setup
@@ -615,7 +615,7 @@ if (cdata.success) {
 sequenceDiagram
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     participant M as Mailbox
     C->>Q: POST /mfa/email/setup
     Q->>A: send 6-digit code to user email
@@ -629,7 +629,7 @@ sequenceDiagram
   </div>
 
   <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>// (1) Tell Aldero to send the email
+<pre><code>// (1) Tell the auth service to send the email
 await fetch("/api/auth/mfa/email/setup", {
   method: "POST", headers: headers(),
 });
@@ -666,7 +666,7 @@ const res = await fetch("/api/auth/mfa/email/confirm", {
     ]
   }
 }</code></pre>
-  <p class="text-sm text-gray-700 mt-2">Type strings vary slightly — Aldero returns <code class="inline">otp</code> / <code class="inline">oob</code>, the demo also handles <code class="inline">totp</code> / <code class="inline">email</code>. Treat both as synonyms when rendering UI.</p>
+  <p class="text-sm text-gray-700 mt-2">Type strings vary slightly — the auth service returns <code class="inline">otp</code> / <code class="inline">oob</code>, the demo also handles <code class="inline">totp</code> / <code class="inline">email</code>. Treat both as synonyms when rendering UI.</p>
 
   <h3 class="font-semibold text-gray-900 mt-5 mb-2">Recovery code login</h3>
 <pre><code>await fetch("/api/auth/mfa/verify", {
@@ -674,7 +674,7 @@ const res = await fetch("/api/auth/mfa/email/confirm", {
   body: JSON.stringify({
     mfaToken,                    // from /login response
     code: recoveryCode,          // one of the codes saved at enrolment
-    method: "recovery_code",     // backend translates to Aldero's "recovery"
+    method: "recovery_code",     // backend translates to the auth service's "recovery"
   }),
 });</code></pre>
   <p class="text-sm text-gray-700 mt-2">Each recovery code is single-use. The remaining count is in <code class="inline">enrolled[].remaining_codes</code>. When low, prompt the user to regenerate.</p>
@@ -691,7 +691,7 @@ const res = await fetch("/api/auth/mfa/email/confirm", {
   </table>
 
   <div class="callout callout-warn text-sm">
-    <strong>Wrapper format.</strong> Aldero expects the WebAuthn credential under a <code class="inline">response</code> key, with a sibling <code class="inline">name</code> string for the human-readable passkey label:
+    <strong>Wrapper format.</strong> The auth service expects the WebAuthn credential under a <code class="inline">response</code> key, with a sibling <code class="inline">name</code> string for the human-readable passkey label:
     <pre class="mt-2"><code>{
   "response": {
     "id": "…", "rawId": "…", "type": "public-key",
@@ -710,7 +710,7 @@ sequenceDiagram
     participant U as User
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     participant W as Authenticator<br/>(Touch ID, 1Password, security key, …)
     C->>Q: POST /passkey/register/options (Bearer)
     Q->>A: get registration challenge
@@ -795,7 +795,7 @@ sequenceDiagram
     participant U as User
     participant C as Client
     participant Q as Quantara
-    participant A as Aldero
+    participant A as Auth
     participant W as Authenticator
     C->>Q: POST /passkey/login/options { email? }
     Q->>A: get authentication challenge
@@ -901,7 +901,7 @@ if (data.success) {
 <!-- ===================== Logout ===================== -->
 <section id="logout" class="anchor mb-12">
   <h2 class="text-2xl font-bold text-gray-900 mb-3">Logout</h2>
-  <p class="text-gray-700 mb-4">Best-effort revocation. Call the endpoint, then drop your local tokens. The endpoint always returns 200 so a transient Aldero outage doesn't trap the user signed in.</p>
+  <p class="text-gray-700 mb-4">Best-effort revocation. Call the endpoint, then drop your local tokens. The endpoint always returns 200 so a transient auth service outage doesn't trap the user signed in.</p>
 
   <table class="endpoint mb-4">
     <tr><th class="w-32">Endpoint</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/logout</code> · auth required · empty body</td></tr>
@@ -971,7 +971,7 @@ stateDiagram-v2
     <tr><td>403</td><td><code class="inline">FORBIDDEN</code></td><td>IP not whitelisted (docs only) or role denied</td></tr>
     <tr><td>409</td><td><code class="inline">CONFLICT</code>, <code class="inline">SIGNUP_FAILED</code></td><td>Resource conflict (e.g. email exists)</td></tr>
     <tr><td>423</td><td><code class="inline">ACCOUNT_LOCKED</code></td><td>Too many failed attempts — back off</td></tr>
-    <tr><td>429</td><td><code class="inline">RATE_LIMITED</code></td><td>Aldero throttled — respect <code class="inline">Retry-After</code></td></tr>
+    <tr><td>429</td><td><code class="inline">RATE_LIMITED</code></td><td>Auth service throttled — respect <code class="inline">Retry-After</code></td></tr>
   </table>
 </section>
 
@@ -980,14 +980,14 @@ stateDiagram-v2
   <h2 class="text-2xl font-bold text-gray-900 mb-3">Gotchas</h2>
   <ol class="list-decimal ml-6 space-y-3 text-gray-700 text-sm">
     <li><strong><code class="inline">mfaRequired</code> is a <em>success</em> response.</strong> Don't branch on the HTTP status — branch on <code class="inline">data.data.mfaRequired</code>. Both the no-MFA and MFA paths return <code class="inline">200 { success: true }</code>.</li>
-    <li><strong>Recovery codes are not <code class="inline">recovery</code>.</strong> Send <code class="inline">method: "recovery_code"</code> on the wire — the backend translates to Aldero's <code class="inline">recovery</code>.</li>
+    <li><strong>Recovery codes are not <code class="inline">recovery</code>.</strong> Send <code class="inline">method: "recovery_code"</code> on the wire — the backend translates to the auth service's <code class="inline">recovery</code>.</li>
     <li><strong>Passkey body is double-wrapped.</strong> Both register and login expect <code class="inline">{ response: &lt;PublicKeyCredential&gt;, name? }</code> — not the raw credential. The inner <code class="inline">response</code> field on the credential itself is also called <code class="inline">response</code>; yes, you nest twice.</li>
-    <li><strong>WebAuthn types are binary.</strong> The browser hands you ArrayBuffers; Aldero wants base64url. Convert in both directions (challenge → Uint8Array on the way in, ArrayBuffer → base64url on the way out).</li>
+    <li><strong>WebAuthn types are binary.</strong> The browser hands you ArrayBuffers; the auth service wants base64url. Convert in both directions (challenge → Uint8Array on the way in, ArrayBuffer → base64url on the way out).</li>
     <li><strong>OAuth tokens come back in the URL fragment</strong> (<code class="inline">#access_token=…</code>), not the query string. Read from <code class="inline">window.location.hash</code>, then <code class="inline">history.replaceState</code> to scrub the URL.</li>
     <li><strong>Enumeration-safe endpoints always 200.</strong> Don't show "user exists" on <code class="inline">/password/reset-request</code> or <code class="inline">/magic-link/request</code> — show "if the account exists, check your email" regardless of outcome.</li>
     <li><strong>Cookies are only used for OAuth state.</strong> No auth cookies — JWTs only. The <code class="inline">qoauth_cs</code> cookie is signed, HttpOnly, 5-min TTL, scoped to <code class="inline">/api/auth/oauth</code>.</li>
     <li><strong>Time skew breaks TOTP.</strong> If the user's authenticator phone clock drifts &gt;60s, codes will fail. Tell them to sync system time.</li>
-    <li><strong>MFA method type strings vary.</strong> Aldero says <code class="inline">otp</code> / <code class="inline">oob</code>; some surfaces use <code class="inline">totp</code> / <code class="inline">email</code>. Treat both as synonyms when listing enrolled methods.</li>
+    <li><strong>MFA method type strings vary.</strong> The auth service says <code class="inline">otp</code> / <code class="inline">oob</code>; some surfaces use <code class="inline">totp</code> / <code class="inline">email</code>. Treat both as synonyms when listing enrolled methods.</li>
     <li><strong>Refresh tokens may rotate.</strong> Always overwrite the stored refresh token with whatever comes back from <code class="inline">/token/refresh</code>; the previous one may be revoked.</li>
   </ol>
 </section>

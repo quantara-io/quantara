@@ -249,6 +249,17 @@
           <div class="flex justify-between"><span class="text-gray-500">Token expires</span><span class="text-gray-900" id="dash-exp"></span></div>
         </div>
 
+        <div class="mt-3 space-y-2">
+          <div>
+            <p class="text-xs text-gray-400 mb-1">Access Token</p>
+            <p class="text-xs font-mono text-gray-500 bg-gray-50 rounded p-2 break-all max-h-20 overflow-y-auto cursor-pointer select-all" id="dash-at" onclick="navigator.clipboard.writeText(this.textContent);toast('Copied!')"></p>
+          </div>
+          <div>
+            <p class="text-xs text-gray-400 mb-1">Refresh Token</p>
+            <p class="text-xs font-mono text-gray-500 bg-gray-50 rounded p-2 break-all cursor-pointer select-all" id="dash-rt" onclick="navigator.clipboard.writeText(this.textContent);toast('Copied!')"></p>
+          </div>
+        </div>
+
         <div class="mt-4 grid grid-cols-2 gap-3">
           <button onclick="doMfaSetupFlow()" class="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition">Setup MFA</button>
           <button onclick="doPasskeySetup()" class="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition">Add Passkey</button>
@@ -857,7 +868,7 @@ async function loadPasskeys() {
             '<p class="text-sm font-medium text-gray-800">' + name + '</p>' +
             '<p class="text-xs text-gray-400">' + device + ' &middot; ' + backed + ' &middot; Added ' + enrolled + ' &middot; Last used ' + lastUsed + '</p>' +
           '</div>' +
-          '<button onclick="deletePasskey(\\'' + (pk.credentialId || pk.id || '') + '\\')" class="text-xs text-red-400 hover:text-red-600">Remove</button>' +
+          '<button onclick="deletePasskey(\'' + (pk.credentialId || pk.id || '') + '\')" class="text-xs text-red-400 hover:text-red-600">Remove</button>' +
         '</div>';
       }).join("");
     } else {
@@ -952,6 +963,8 @@ function goToDashboard() {
       : '<span class="text-amber-500 font-medium">Not verified</span>';
     const exp = new Date(payload.exp * 1000);
     document.getElementById("dash-exp").textContent = exp.toLocaleTimeString();
+    document.getElementById("dash-at").textContent = accessToken;
+    document.getElementById("dash-rt").textContent = refreshToken || "none";
   } catch {}
   loadPasskeys();
   loadMfaStatus();
@@ -1036,7 +1049,7 @@ async function doMfaConfirmSetup() {
     document.querySelector("#mfa-setup-section .mt-3")?.classList.add("hidden"); // hide code input
     if (data.data?.recoveryCodes) {
       document.getElementById("recovery-codes").classList.remove("hidden");
-      document.getElementById("recovery-list").textContent = data.data.recoveryCodes.join("\\n");
+      document.getElementById("recovery-list").textContent = data.data.recoveryCodes.join("\n");
     }
     // Replace setup button with "MFA Enabled" badge
     const setupBtn = document.querySelector('[onclick="doMfaSetupFlow()"]');
@@ -1090,7 +1103,7 @@ async function doEmailMfaConfirm() {
     document.getElementById("email-mfa-area").classList.add("hidden");
     if (data.data?.recoveryCodes) {
       document.getElementById("recovery-codes").classList.remove("hidden");
-      document.getElementById("recovery-list").textContent = data.data.recoveryCodes.join("\\n");
+      document.getElementById("recovery-list").textContent = data.data.recoveryCodes.join("\n");
     }
     doMfaSetupFlow(); // refresh status
   } else {
