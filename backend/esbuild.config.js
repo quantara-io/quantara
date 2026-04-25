@@ -9,6 +9,9 @@ await build({
   minify: true,
   entryPoints: ["src/index.ts"],
   outfile: "dist/index.js",
+  loader: {
+    ".html": "text",
+  },
   external: [
     "@aws-sdk/client-dynamodb",
     "@aws-sdk/lib-dynamodb",
