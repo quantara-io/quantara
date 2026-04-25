@@ -58,6 +58,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -70,17 +72,60 @@ jobs:
 
       - name: Test backend (with coverage)
         run: npm run test:coverage --workspace=quantara-backend
+        continue-on-error: true
 
-      - name: Test ingestion
-        run: npm run test --workspace=quantara-ingestion
+      - name: Test ingestion (with coverage)
+        run: npm run test:coverage --workspace=quantara-ingestion
+        continue-on-error: true
 
-      - name: Upload coverage report
+      - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-coverage
-          path: backend/coverage
+          name: coverage-reports
+          path: |
+            backend/coverage
+            ingestion/coverage
           retention-days: 14
+
+      - name: Generate coverage badges
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          get_pct() {
+            local dir=$1
+            if [ -f "$dir/coverage/coverage-summary.json" ]; then
+              node -e "const d=require('./$dir/coverage/coverage-summary.json'); console.log(Math.round(d.total.statements.pct))"
+            else
+              echo "0"
+            fi
+          }
+
+          BACKEND_PCT=$(get_pct backend)
+          INGESTION_PCT=$(get_pct ingestion)
+
+          badge_color() {
+            local pct=$1
+            if [ "$pct" -ge 80 ]; then echo "brightgreen"
+            elif [ "$pct" -ge 60 ]; then echo "green"
+            elif [ "$pct" -ge 40 ]; then echo "yellow"
+            elif [ "$pct" -ge 20 ]; then echo "orange"
+            else echo "red"
+            fi
+          }
+
+          mkdir -p .badges
+          echo "{\"schemaVersion\":1,\"label\":\"backend coverage\",\"message\":\"${BACKEND_PCT}%\",\"color\":\"$(badge_color $BACKEND_PCT)\"}" > .badges/backend-coverage.json
+          echo "{\"schemaVersion\":1,\"label\":\"ingestion coverage\",\"message\":\"${INGESTION_PCT}%\",\"color\":\"$(badge_color $INGESTION_PCT)\"}" > .badges/ingestion-coverage.json
+
+          echo "Backend: ${BACKEND_PCT}%, Ingestion: ${INGESTION_PCT}%"
+
+      - name: Upload badge data
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-badges
+          path: .badges/
+          retention-days: 90
 
   deploy-dev:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'

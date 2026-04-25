@@ -10,7 +10,8 @@
     "dev": "AWS_REGION=us-west-2 AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- tsx src/local.ts",
     "dev:stream": "AWS_REGION=us-west-2 AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- tsx src/service.ts",
     "start": "node dist/service.js",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --passWithNoTests --coverage"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.750.0",
