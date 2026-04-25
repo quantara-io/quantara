@@ -86,6 +86,7 @@ Tune the list over time. Loosen as confidence grows.
 | `/dispatch <issue#>` | Spawn worker on a specific issue |
 | `/dispatch-next` | Spawn worker on the next eligible issue (one at a time) |
 | `/agent-status` | Inspect in-flight workers, PRs, worktrees, escalations |
+| `/review <pr#>` | Manually trigger reviewer on any PR (human-authored or agent-authored) |
 
 For unattended runs: `/loop 10m /dispatch-next` or `/schedule` (see those skills).
 
