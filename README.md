@@ -10,7 +10,7 @@ Crypto AI prediction engine, coaching, deal flow, and marketing platform.
 |-------|------|--------|
 | **Frontend** | Next.js (landing), React+Vite (dashboard), Flutter (mobile) | Planned |
 | **Backend API** | Node.js / TypeScript, Hono, OpenAPIHono + Zod | Deployed |
-| **Auth** | Aldero (proxied) — email/password, Google/Apple OAuth, MFA, passkeys | Deployed |
+| **Auth** | Email/password, Google/Apple OAuth, MFA (TOTP/email), passkeys | Deployed |
 | **Ingestion** | Fargate WebSocket (CCXT Pro), Alpaca News, RSS, Fear & Greed | Deployed |
 | **Database** | DynamoDB (12 tables) | Deployed |
 | **AI** | Amazon Bedrock (Claude Haiku) — news sentiment enrichment | Deployed |
