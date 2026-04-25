@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { UnauthorizedError } from "../lib/errors.js";
+import { logger } from "../lib/logger.js";
 
 const AUTH_BASE_URL = process.env.AUTH_BASE_URL ?? "https://quantara-sandbox.aldero.io";
 const APP_ID = process.env.APP_ID ?? "";
@@ -52,7 +53,7 @@ export async function authenticate(authHeader: string | undefined): Promise<Auth
     };
   } catch (err) {
     if (err instanceof UnauthorizedError) throw err;
-    console.error("[Auth] JWT verification failed:", (err as Error).message);
+    logger.warn({ err }, "JWT verification failed");
     throw new UnauthorizedError("Invalid or expired token");
   }
 }

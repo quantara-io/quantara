@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import ipaddr from "ipaddr.js";
+import { logger } from "../lib/logger.js";
 
 const ssm = new SSMClient({});
 const ENVIRONMENT = process.env.ENVIRONMENT ?? "dev";
@@ -34,7 +35,7 @@ async function loadAllowedIps(): Promise<string[]> {
     return cachedIps;
   } catch (err) {
     // Fail closed: if we have a stale cache, use it; otherwise deny.
-    console.error("ip-whitelist: SSM read failed", err);
+    logger.error({ err, hasStaleCache: cachedIps !== null }, "ip-whitelist: SSM read failed");
     if (cachedIps) return cachedIps;
     return [];
   }

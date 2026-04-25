@@ -1,9 +1,9 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
 import { handle } from "hono/aws-lambda";
 import { AppError } from "./lib/errors.js";
+import { logger } from "./lib/logger.js";
 import { AlderoError } from "./lib/aldero-client.js";
 import { requireApiKey } from "./middleware/api-key.js";
 import { ipWhitelist } from "./middleware/ip-whitelist.js";
@@ -17,7 +17,16 @@ import { demo } from "./routes/demo.js";
 
 const app = new OpenAPIHono();
 
-app.use("*", logger());
+app.use("*", async (c, next) => {
+  const start = Date.now();
+  await next();
+  logger.info({
+    method: c.req.method,
+    path: c.req.path,
+    status: c.res.status,
+    duration_ms: Date.now() - start,
+  }, "request");
+});
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN;
 if (!CORS_ORIGIN) {
@@ -124,7 +133,7 @@ app.onError((err, c) => {
       : "REQUEST_FAILED";
     return c.json({ success: false, error: { code, message: err.message } }, err.statusCode as 500);
   }
-  console.error("[Unhandled]", err);
+  logger.error({ err, path: c.req.path, method: c.req.method }, "unhandled error");
   return c.json({ success: false, error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred" } }, 500);
 });
 
