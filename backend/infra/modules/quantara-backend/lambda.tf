@@ -30,7 +30,6 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
         "dynamodb:Query",
-        "dynamodb:Scan",
         "dynamodb:BatchWriteItem",
         "dynamodb:BatchGetItem",
       ]
@@ -64,20 +63,6 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
         "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-sonnet-*",
         "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-haiku-*",
       ]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "lambda_secrets" {
-  name = "${local.prefix}-secrets"
-  role = aws_iam_role.lambda.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:quantara/*"
     }]
   })
 }
