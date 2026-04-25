@@ -77,6 +77,9 @@ export const OAuthCallbackQuery = z.object({
   code: z.string().optional(),
   state: z.string().optional(),
   error: z.string().optional(),
+  // CSRF state we round-trip through redirect_uri to bind the callback
+  // to the browser that initiated the flow.
+  cs: z.string().optional(),
 }).openapi("OAuthCallbackQuery");
 
 export const NativeTokenRequest = z.object({
