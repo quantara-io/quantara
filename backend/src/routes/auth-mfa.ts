@@ -1,4 +1,3 @@
-// @ts-nocheck — proxy routes return dynamic Aldero responses
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
 import { alderoPost, alderoGet, alderoDelete, AlderoError } from "../lib/aldero-client.js";
@@ -208,6 +207,7 @@ const challengeRoute = createRoute({
   }) } } } },
   responses: {
     200: { content: { "application/json": { schema: SuccessResponse } }, description: "Code sent" },
+    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Challenge failed" },
   },
 });
 
@@ -218,10 +218,10 @@ authMfa.openapi(challengeRoute, async (c) => {
       mfa_token: body.mfaToken,
       challenge_type: "oob",
     });
-    return c.json({ success: true as const, data: { message: "Verification code sent to your email" } } as any);
+    return c.json({ success: true as const, data: { message: "Verification code sent to your email" } }, 200);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "CHALLENGE_FAILED", message: err.message } }, err.statusCode as 400);
+      return c.json({ success: false as const, error: { code: "CHALLENGE_FAILED", message: err.message } }, 400);
     }
     throw err;
   }

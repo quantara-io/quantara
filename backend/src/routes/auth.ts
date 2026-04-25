@@ -1,9 +1,8 @@
-// @ts-nocheck — proxy routes return dynamic Aldero responses
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { alderoPost, alderoGet, AlderoError } from "../lib/aldero-client.js";
 import {
   SignupRequest, LoginRequest, AuthSuccessResponse, RefreshRequest, RefreshResponse,
-  AuthConfigResponse, UserProfile, UpdateProfileRequest, SuccessResponse,
+  AuthConfigResponse, UpdateProfileRequest, SuccessResponse,
 } from "../lib/schemas/auth.js";
 import { ErrorResponse } from "../lib/schemas/common.js";
 import { requireAuth } from "../middleware/require-auth.js";
@@ -28,9 +27,9 @@ const configRoute = createRoute({
 });
 
 auth.openapi(configRoute, async (c) => {
-  // Fetch tenant config from Aldero OIDC discovery
+  // Confirm Aldero discovery is reachable, then return our static config.
   try {
-    const discovery = await alderoGet("/.well-known/openid-configuration") as Record<string, unknown>;
+    await alderoGet("/.well-known/openid-configuration");
     return c.json({
       success: true as const,
       data: {
@@ -220,10 +219,10 @@ auth.openapi(updateMeRoute, async (c) => {
   const body = c.req.valid("json");
   try {
     await alderoPost("/v1/auth/profile", body, token);
-    return c.json({ success: true as const, data: { message: "Profile updated" } });
+    return c.json({ success: true as const, data: { message: "Profile updated" } }, 200);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "UPDATE_FAILED", message: err.message } }, err.statusCode as 400);
+      return c.json({ success: false as const, error: { code: "UPDATE_FAILED", message: err.message } }, 401);
     }
     throw err;
   }
