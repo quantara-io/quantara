@@ -85,6 +85,7 @@ Inside Claude Code:
 /dispatch <issue-number>     # manual: claim a specific issue
 /dispatch-next               # autonomous: claim the highest-priority agent-ready issue
 /agent-status                # inspect in-flight workers, PRs, worktrees, escalations
+/review <pr-number>          # manually trigger reviewer on any PR
 ```
 
 For unattended runs:
@@ -117,6 +118,7 @@ For automatic background cleanup on macOS, register the LaunchAgent described in
 | `.claude/commands/dispatch.md` | `/dispatch <issue#>` |
 | `.claude/commands/dispatch-next.md` | `/dispatch-next` |
 | `.claude/commands/agent-status.md` | `/agent-status` |
+| `.claude/commands/review.md` | `/review <pr#>` — manually trigger reviewer on any PR |
 | `.github/pull_request_template.md` | PR template (used by agents and humans) |
 | `.github/ISSUE_TEMPLATE/` | Issue templates |
 | `tools/agent-sweep.sh` | Worktree cleanup |
