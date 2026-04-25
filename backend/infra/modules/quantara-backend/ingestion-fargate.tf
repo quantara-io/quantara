@@ -295,8 +295,4 @@ resource "aws_ecs_service" "ingestion" {
     security_groups  = [aws_security_group.ingestion_ecs.id]
     assign_public_ip = true
   }
-
-  lifecycle {
-    ignore_changes = [desired_count]
-  }
 }
