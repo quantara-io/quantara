@@ -4,6 +4,15 @@
 
 Crypto AI prediction engine, coaching, deal flow, and marketing platform.
 
+## Workspaces
+
+| Package | Description | Tests |
+|---------|-------------|-------|
+| `backend` | Hono API on Lambda — auth, OpenAPI docs | [![Backend](https://img.shields.io/badge/coverage-0%25-red)](backend/) |
+| `ingestion` | Market data streaming + news pipeline | [![Ingestion](https://img.shields.io/badge/coverage-0%25-red)](ingestion/) |
+| `web` | Next.js landing page | — |
+| `packages/shared` | Shared TypeScript types + constants | — |
+
 ## Architecture
 
 | Layer | Tech | Status |
@@ -15,15 +24,6 @@ Crypto AI prediction engine, coaching, deal flow, and marketing platform.
 | **Database** | DynamoDB (12 tables) | Deployed |
 | **AI** | Amazon Bedrock (Claude Haiku) — news sentiment enrichment | Deployed |
 | **Infrastructure** | AWS (Lambda, Fargate, API Gateway, CloudFront, SQS, S3) | Deployed |
-
-## Workspaces
-
-| Package | Description | Test Coverage |
-|---------|-------------|---------------|
-| `backend` | Hono API on Lambda — auth proxy, OpenAPI docs | ![Backend Tests](https://img.shields.io/badge/tests-pending-lightgrey) |
-| `ingestion` | Market data streaming + news pipeline | ![Ingestion Tests](https://img.shields.io/badge/tests-pending-lightgrey) |
-| `web` | Next.js landing page | — |
-| `packages/shared` | Shared TypeScript types + constants | — |
 
 ## Quick Start
 
