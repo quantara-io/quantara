@@ -44,6 +44,7 @@ agent-proposed ──[human triage]──→ agent-ready ──[claim]──→ 
 | `agent-forbidden` | Off-limits to agents | Human |
 | `needs-human-review` | Reviewer escalated; human is the gate | Reviewer agent |
 | `awaiting-review` | Auto-merge skipped (no branch protection); reviewer is the merge gate | Worker |
+| `agent-reviewed` | Reviewer approved; ready to merge | Reviewer agent |
 | `priority:high` | Dispatcher picks first | Human |
 
 ## Branches
@@ -107,6 +108,7 @@ for label in \
   "agent-forbidden:000000:Off-limits to agents" \
   "needs-human-review:B60205:Reviewer escalated; human gates merge" \
   "awaiting-review:5319E7:Auto-merge skipped; reviewer is the merge gate" \
+  "agent-reviewed:0E8A16:Reviewer approved; ready to merge" \
   "priority:high:E11D21:Dispatcher picks first" \
   ; do
   IFS=: read name color desc <<< "$label"
@@ -124,11 +126,28 @@ Via UI (Settings → Branches → main) or CLI:
 - **Allow auto-merge** must be enabled on the repo (Settings → General → Pull Requests)
 
 ### 3. Trust your reviewer agent's identity
-The reviewer's GitHub identity matters for branch protection. Two options:
-- Reviewer runs as `nch3ng` (your account) — simplest, but its approvals are indistinguishable from yours.
-- Reviewer runs as a dedicated GitHub App or bot account — cleaner audit trail; requires more setup.
+The reviewer uses the **`quantara-reviewer-bot` GitHub App** (App ID `3502236`, Installation ID `127048091`) so its `--approve` calls register as a real `APPROVED`-state review rather than a `COMMENTED` review (GitHub blocks self-review on personal accounts, which would silently downgrade the state).
 
-Start with the first; migrate later if the audit trail matters.
+The reviewer mints a short-lived installation token at review time via `tools/github-app-token.sh`. Set three env vars in your shell or CI environment:
+
+| Variable | Value |
+|---|---|
+| `REVIEWER_APP_ID` | `3502236` |
+| `REVIEWER_INSTALLATION_ID` | `127048091` |
+| `REVIEWER_APP_KEY_PATH` | Path to the App private key (`.pem`) |
+
+Store the private key locally — never commit it:
+```bash
+mkdir -p "$HOME/.config/quantara"
+cp /path/to/downloaded/quantara-reviewer-bot.pem "$HOME/.config/quantara/reviewer-bot.pem"
+chmod 600 "$HOME/.config/quantara/reviewer-bot.pem"
+# Then export:
+export REVIEWER_APP_KEY_PATH="$HOME/.config/quantara/reviewer-bot.pem"
+```
+
+If these env vars are absent, the reviewer falls back to the default `GH_TOKEN` identity. The review still completes, but registers as `COMMENTED` rather than `APPROVED` and will not satisfy a branch-protection approval requirement.
+
+Branch protection must also **add `quantara-reviewer-bot` as an allowed reviewer** (Settings → Branches → main → required reviews) for the App approval to count toward the required count.
 
 ### 4. Disable Codex/agent push to `main`
 Branch protection should already cover this, but double-check that no automation has bypass permission.

@@ -42,6 +42,7 @@ For tripwire escalations, **also** invoke the `codex` skill for an independent c
 ```bash
 gh pr edit $PR --add-label needs-human-review
 gh pr edit $PR --remove-label agent-claimed
+gh pr edit $PR --remove-label awaiting-review 2>/dev/null || true
 # Disable auto-merge
 gh pr merge --disable-auto $PR 2>/dev/null || true
 gh pr review $PR --request-changes --body "<reasons + tripwires>"
@@ -72,7 +73,14 @@ Only when:
 - You'd be comfortable merging this yourself
 
 ```bash
-gh pr review $PR --approve --body "Reviewed against issue #$ISSUE. <one-line confirmation>."
+# Mint an App token so the approval registers as APPROVED (not COMMENTED).
+# Fallback to default identity if env vars are missing — review still completes.
+REVIEWER_GH_TOKEN=$(./tools/github-app-token.sh) || {
+  echo "App token mint failed; falling back to default identity (review will be COMMENTED, not APPROVED)" >&2
+  REVIEWER_GH_TOKEN="$GH_TOKEN"
+}
+GH_TOKEN="$REVIEWER_GH_TOKEN" gh pr review $PR --approve --body "Reviewed against issue #$ISSUE. <one-line confirmation>."
+GH_TOKEN="$REVIEWER_GH_TOKEN" gh pr edit $PR --remove-label awaiting-review --add-label agent-reviewed
 ```
 
 Auto-merge (set by the worker on PR open) will fire when CI greens.
