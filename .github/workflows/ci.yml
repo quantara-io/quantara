@@ -57,12 +57,15 @@ jobs:
       - run: npm ci
 
       - name: Test backend
-        run: npm run test --workspace=quantara-backend --if-present
+        run: npm run test --workspace=quantara-backend
 
   deploy-dev:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [typecheck-and-build, test]
     runs-on: ubuntu-latest
+    # `environment: dev` ties the job to the GitHub "dev" environment. To
+    # require manual approval before each deploy, add yourself as a
+    # required reviewer in Settings → Environments → dev.
     environment: dev
     permissions:
       id-token: write
@@ -127,11 +130,12 @@ jobs:
 
       # --- Fargate ingestion service ---
       - name: Login to ECR
+        id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push Docker image
         run: |
-          ECR_URL=${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}
+          ECR_URL=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}
           docker build -f ingestion/Dockerfile -t ${ECR_URL}:latest -t ${ECR_URL}:${{ github.sha }} .
           docker push ${ECR_URL}:latest
           docker push ${ECR_URL}:${{ github.sha }}

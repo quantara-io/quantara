@@ -13,10 +13,6 @@ import { authOAuth } from "./routes/auth-oauth.js";
 import { authMfa } from "./routes/auth-mfa.js";
 import { authPasskey } from "./routes/auth-passkey.js";
 import { authPassword } from "./routes/auth-password.js";
-// import { genie } from "./routes/genie.js";
-// import { coach } from "./routes/coach.js";
-// import { dealflow } from "./routes/dealflow.js";
-// import { marketing } from "./routes/marketing.js";
 import { demo } from "./routes/demo.js";
 
 const app = new OpenAPIHono();
@@ -70,12 +66,6 @@ app.route("/api/auth", authOAuth);
 app.route("/api/auth", authMfa);
 app.route("/api/auth", authPasskey);
 app.route("/api/auth", authPassword);
-
-// Business routes (uncomment when ready)
-// app.route("/api/genie", genie);
-// app.route("/api/coach", coach);
-// app.route("/api/dealflow", dealflow);
-// app.route("/api/marketing", marketing);
 
 // --- OpenAPI spec (dynamic servers per environment) ---
 const ENV = process.env.ENVIRONMENT ?? "dev";
