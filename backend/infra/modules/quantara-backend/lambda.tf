@@ -75,9 +75,60 @@ resource "aws_iam_role_policy" "lambda_ssm" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["ssm:GetParameter", "ssm:GetParametersByPath"]
+      Action   = ["ssm:GetParameter", "ssm:GetParametersByPath", "ssm:PutParameter"]
       Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/quantara/${var.environment}/*"
     }]
+  })
+}
+
+# Read-only ops perms for the admin dashboard endpoints
+resource "aws_iam_role_policy" "lambda_admin_ops" {
+  name = "${local.prefix}-admin-ops"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:ListTasks",
+          "ecs:DescribeClusters",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl",
+        ]
+        Resource = "arn:aws:sqs:${var.aws_region}:*:${local.prefix}-*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:DescribeLogStreams",
+          "logs:GetLogEvents",
+          "logs:FilterLogEvents",
+        ]
+        Resource = "arn:aws:logs:${var.aws_region}:*:log-group:/ecs/${local.prefix}-*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:GetFunction",
+          "lambda:ListFunctions",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:DescribeTable", "dynamodb:Scan"]
+        Resource = "arn:aws:dynamodb:${var.aws_region}:*:table/${local.prefix}-*"
+      },
+    ]
   })
 }
 
@@ -135,6 +186,7 @@ resource "aws_lambda_function" "api" {
       CLOUDFRONT_URL       = "https://${aws_cloudfront_distribution.api.domain_name}"
       ENVIRONMENT          = var.environment
       LOG_LEVEL            = var.log_level
+      AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
     }
   }
 

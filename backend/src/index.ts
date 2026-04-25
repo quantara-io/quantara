@@ -15,6 +15,7 @@ import { authPasskey } from "./routes/auth-passkey.js";
 import { authPassword } from "./routes/auth-password.js";
 import { demo } from "./routes/demo.js";
 import { authDocs } from "./routes/auth-docs.js";
+import { admin } from "./routes/admin.js";
 
 const app = new OpenAPIHono();
 
@@ -31,11 +32,15 @@ app.use("*", async (c, next) => {
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN;
 if (!CORS_ORIGIN) {
-  throw new Error("CORS_ORIGIN must be set (e.g. a specific https:// origin, or '*' for local dev)");
+  throw new Error("CORS_ORIGIN must be set (e.g. a specific https:// origin, comma-separated list, or '*' for local dev)");
 }
+const CORS_ORIGINS = CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
 
 app.use("*", cors({
-  origin: CORS_ORIGIN,
+  origin: (origin) => {
+    if (CORS_ORIGINS.includes("*")) return origin || "*";
+    return CORS_ORIGINS.includes(origin) ? origin : null;
+  },
   allowHeaders: ["Authorization", "Content-Type", "X-Api-Key"],
   allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   maxAge: 86400,
@@ -79,6 +84,8 @@ app.route("/api/auth", authOAuth);
 app.route("/api/auth", authMfa);
 app.route("/api/auth", authPasskey);
 app.route("/api/auth", authPassword);
+
+app.route("/api/admin", admin);
 
 // --- OpenAPI spec (dynamic servers per environment) ---
 const ENV = process.env.ENVIRONMENT ?? "dev";

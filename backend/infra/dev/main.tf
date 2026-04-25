@@ -43,8 +43,14 @@ module "backend" {
   app_source_dir   = "${path.module}/../.."
   auth_base_url    = "https://quantara-sandbox.aldero.io"
   app_id           = var.aldero_app_id
-  cors_origin = "https://d3tavvh2o76dc5.cloudfront.net"
+  cors_origin = "https://d3tavvh2o76dc5.cloudfront.net,${module.admin.cloudfront_url}"
   log_level   = "debug"
+}
+
+module "admin" {
+  source = "../modules/quantara-admin"
+
+  environment = "dev"
 }
 
 output "api_url" {
@@ -73,6 +79,18 @@ output "ecs_service_name" {
 
 output "cloudfront_url" {
   value = module.backend.cloudfront_url
+}
+
+output "admin_cloudfront_url" {
+  value = module.admin.cloudfront_url
+}
+
+output "admin_bucket_name" {
+  value = module.admin.bucket_name
+}
+
+output "admin_distribution_id" {
+  value = module.admin.cloudfront_distribution_id
 }
 
 variable "dev_account_id" {
