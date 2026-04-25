@@ -97,21 +97,35 @@ For unattended runs: `/loop 10m /dispatch-next` or `/schedule` (see those skills
 
 ## Setup checklist (one-time, run as Nate)
 
+### GitHub plan requirements
+
+> **Private repos on GitHub Free do not support branch protection rules or auto-merge.**
+>
+> - **Branch protection** (require PR + approving review + status checks) requires **GitHub Pro or Team** on a private repo.
+> - **Auto-merge** (`gh pr merge --auto`) is silently ignored by the API on Free private repos — the PR is merged immediately without waiting for CI or reviews.
+> - On Free, the worker's `gh pr merge --auto --squash` step has no effect (the PR stays open until manually merged or the reviewer merges it). See the companion auto-merge issue for the full fix.
+>
+> If you are on the Free plan and using a private repo, skip steps 2 and 4 of this checklist. The reviewer will still run and can merge manually, but there will be no CI gate.
+
 ### 1. Create labels
 ```bash
 cd /Users/nate/aldero.io/quantara
+# Uses '|' as the separator so names containing ':' (e.g. priority:high) parse correctly.
 for label in \
-  "agent-proposed:CCCCCC:Agent suggested this; human triages" \
-  "agent-ready:0E8A16:Dispatchable by an agent" \
-  "agent-claimed:FBCA04:A worker is on it" \
-  "agent-blocked:D93F0B:Worker gave up; needs human" \
-  "agent-forbidden:000000:Off-limits to agents" \
-  "needs-human-review:B60205:Reviewer escalated; human gates merge" \
-  "awaiting-review:5319E7:Auto-merge skipped; reviewer is the merge gate" \
-  "agent-reviewed:0E8A16:Reviewer approved; ready to merge" \
-  "priority:high:E11D21:Dispatcher picks first" \
+  "agent-proposed|CCCCCC|Agent suggested this; human triages" \
+  "agent-ready|0E8A16|Dispatchable by an agent" \
+  "agent-claimed|FBCA04|A worker is on it" \
+  "agent-blocked|D93F0B|Worker gave up; needs human" \
+  "agent-forbidden|000000|Off-limits to agents" \
+  "needs-human-review|B60205|Reviewer escalated; human gates merge" \
+  "awaiting-review|5319E7|Auto-merge skipped; reviewer is the merge gate" \
+  "agent-reviewed|0E8A16|Reviewer approved; ready to merge" \
+  "priority:high|E11D21|Dispatcher picks first" \
+  "tech|BFD4F2|Tech task / refactor" \
+  "bug|D73A4A|Something is broken" \
+  "feature|A2EEEF|New feature or enhancement" \
   ; do
-  IFS=: read name color desc <<< "$label"
+  IFS='|' read name color desc <<< "$label"
   gh label create "$name" --color "$color" --description "$desc" 2>/dev/null \
     || gh label edit "$name" --color "$color" --description "$desc"
 done
