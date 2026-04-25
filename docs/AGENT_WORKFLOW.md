@@ -43,6 +43,7 @@ agent-proposed ──[human triage]──→ agent-ready ──[claim]──→ 
 | `agent-blocked` | Worker gave up; needs human help | Worker |
 | `agent-forbidden` | Off-limits to agents | Human |
 | `needs-human-review` | Reviewer escalated; human is the gate | Reviewer agent |
+| `awaiting-review` | Auto-merge skipped (no branch protection); reviewer is the merge gate | Worker |
 | `priority:high` | Dispatcher picks first | Human |
 
 ## Branches
@@ -105,6 +106,7 @@ for label in \
   "agent-blocked:D93F0B:Worker gave up; needs human" \
   "agent-forbidden:000000:Off-limits to agents" \
   "needs-human-review:B60205:Reviewer escalated; human gates merge" \
+  "awaiting-review:5319E7:Auto-merge skipped; reviewer is the merge gate" \
   "priority:high:E11D21:Dispatcher picks first" \
   ; do
   IFS=: read name color desc <<< "$label"
