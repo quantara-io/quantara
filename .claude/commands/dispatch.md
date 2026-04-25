@@ -26,6 +26,7 @@ You are the orchestrator. Do not implement the issue yourself. Your job is to:
 
 4. **After the worker returns**, parse its structured output (`TASK_ID / ISSUE / BRANCH / PR / STATUS / NOTES`) and:
    - If `STATUS: merged-pending` → spawn `quantara-reviewer` with the PR number.
+   - If `STATUS: awaiting-review` → spawn `quantara-reviewer` with the PR number (auto-merge was skipped because branch protection is unavailable; reviewer approval is the merge gate).
    - If `STATUS: needs-human-review` → tell the user, link the PR, do NOT spawn the reviewer (it would just escalate again).
    - If `STATUS: agent-blocked` → tell the user, link the issue.
 

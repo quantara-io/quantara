@@ -136,10 +136,17 @@ EOF
 )"
 ```
 
-### 9. Enable auto-merge (only if no tripwire and no escalation)
+### 9. Probe auto-merge capability, then merge or label
 ```bash
-gh pr merge --auto --squash
+AUTO_MERGE_OK=$(gh api repos/quantara-io/quantara --jq '.allow_auto_merge')
+if [ "$AUTO_MERGE_OK" = "true" ]; then
+  gh pr merge --auto --squash
+else
+  gh pr edit --add-label awaiting-review
+fi
 ```
+
+If `allow_auto_merge` is `false` (GitHub Free plan / private repo without branch protection), skip auto-merge and add the `awaiting-review` label instead. Set `STATUS: awaiting-review` in your report.
 
 ### 10. Stop
 Report back: PR URL, branch, task ID. **Do not** start a new task. **Do not** delete the worktree — that happens on PR close (cleanup script in `/agent-status`).
@@ -175,6 +182,6 @@ TASK_ID: <id>
 ISSUE: #<n>
 BRANCH: <branch>
 PR: <url or "none">
-STATUS: merged-pending | needs-human-review | agent-blocked
+STATUS: merged-pending | awaiting-review | needs-human-review | agent-blocked
 NOTES: <one line>
 ```
