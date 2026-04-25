@@ -14,6 +14,7 @@ import { authMfa } from "./routes/auth-mfa.js";
 import { authPasskey } from "./routes/auth-passkey.js";
 import { authPassword } from "./routes/auth-password.js";
 import { demo } from "./routes/demo.js";
+import { authDocs } from "./routes/auth-docs.js";
 
 const app = new OpenAPIHono();
 
@@ -60,6 +61,9 @@ app.use("/api/openapi.json", ipWhitelist);
 
 // Demo site (IP whitelisted, no API key)
 app.route("/api/docs/demo", demo);
+
+// Auth integration guide (IP whitelisted, no API key)
+app.route("/api/docs/auth", authDocs);
 
 // API key required for all /api/* routes (except docs)
 app.use("/api/*", async (c, next) => {
