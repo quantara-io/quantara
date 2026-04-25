@@ -1,7 +1,12 @@
 resource "aws_dynamodb_table" "users" {
   name         = "${local.prefix}-users"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "userId"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key = "userId"
 
   attribute {
     name = "userId"
@@ -25,8 +30,13 @@ resource "aws_dynamodb_table" "users" {
 resource "aws_dynamodb_table" "signals" {
   name         = "${local.prefix}-signals"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "pair"
-  range_key    = "createdAt"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "pair"
+  range_key = "createdAt"
 
   attribute {
     name = "pair"
@@ -48,8 +58,13 @@ resource "aws_dynamodb_table" "signals" {
 resource "aws_dynamodb_table" "signal_history" {
   name         = "${local.prefix}-signal-history"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "pair"
-  range_key    = "signalId"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "pair"
+  range_key = "signalId"
 
   attribute {
     name = "pair"
@@ -67,8 +82,13 @@ resource "aws_dynamodb_table" "signal_history" {
 resource "aws_dynamodb_table" "coach_sessions" {
   name         = "${local.prefix}-coach-sessions"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "userId"
-  range_key    = "sessionId"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "userId"
+  range_key = "sessionId"
 
   attribute {
     name = "userId"
@@ -86,8 +106,13 @@ resource "aws_dynamodb_table" "coach_sessions" {
 resource "aws_dynamodb_table" "coach_messages" {
   name         = "${local.prefix}-coach-messages"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "sessionId"
-  range_key    = "messageId"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "sessionId"
+  range_key = "messageId"
 
   attribute {
     name = "sessionId"
@@ -105,7 +130,12 @@ resource "aws_dynamodb_table" "coach_messages" {
 resource "aws_dynamodb_table" "deals" {
   name         = "${local.prefix}-deals"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "dealId"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key = "dealId"
 
   attribute {
     name = "dealId"
@@ -135,8 +165,13 @@ resource "aws_dynamodb_table" "deals" {
 resource "aws_dynamodb_table" "deal_interests" {
   name         = "${local.prefix}-deal-interests"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "dealId"
-  range_key    = "userId"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "dealId"
+  range_key = "userId"
 
   attribute {
     name = "dealId"
@@ -154,8 +189,13 @@ resource "aws_dynamodb_table" "deal_interests" {
 resource "aws_dynamodb_table" "campaigns" {
   name         = "${local.prefix}-campaigns"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "userId"
-  range_key    = "campaignId"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "userId"
+  range_key = "campaignId"
 
   attribute {
     name = "userId"
@@ -173,8 +213,13 @@ resource "aws_dynamodb_table" "campaigns" {
 resource "aws_dynamodb_table" "candles" {
   name         = "${local.prefix}-candles"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "pair"
-  range_key    = "sk"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "pair"
+  range_key = "sk"
 
   attribute {
     name = "pair"
@@ -209,8 +254,13 @@ resource "aws_dynamodb_table" "candles" {
 resource "aws_dynamodb_table" "news_events" {
   name         = "${local.prefix}-news-events"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "newsId"
-  range_key    = "publishedAt"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "newsId"
+  range_key = "publishedAt"
 
   attribute {
     name = "newsId"
@@ -245,7 +295,12 @@ resource "aws_dynamodb_table" "news_events" {
 resource "aws_dynamodb_table" "ingestion_metadata" {
   name         = "${local.prefix}-ingestion-metadata"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "metaKey"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key = "metaKey"
 
   attribute {
     name = "metaKey"
@@ -258,8 +313,13 @@ resource "aws_dynamodb_table" "ingestion_metadata" {
 resource "aws_dynamodb_table" "prices" {
   name         = "${local.prefix}-prices"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "pair"
-  range_key    = "timestamp"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "pair"
+  range_key = "timestamp"
 
   attribute {
     name = "pair"
