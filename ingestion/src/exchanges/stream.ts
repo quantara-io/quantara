@@ -50,6 +50,11 @@ export class MarketStreamManager {
       });
       this.exchanges.set(exchangeId, exchange);
 
+      const supportsOHLCV = !!exchange.has?.watchOHLCV;
+      if (!supportsOHLCV) {
+        console.warn(`[Stream] ${exchangeId} does not support watchOHLCV; skipping OHLCV stream`);
+      }
+
       for (const pair of PAIRS) {
         const key = `${exchangeId}:${pair}`;
         this.streams.set(key, {
@@ -60,7 +65,9 @@ export class MarketStreamManager {
         });
 
         this.startTickerStream(exchangeId, exchange, pair);
-        this.startOHLCVStream(exchangeId, exchange, pair);
+        if (supportsOHLCV) {
+          this.startOHLCVStream(exchangeId, exchange, pair);
+        }
       }
     }
 
