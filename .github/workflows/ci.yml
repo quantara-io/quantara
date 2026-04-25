@@ -59,7 +59,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -119,13 +119,31 @@ jobs:
 
           echo "Backend: ${BACKEND_PCT}%, Ingestion: ${INGESTION_PCT}%"
 
-      - name: Upload badge data
+      # Publish to an orphan `badges` branch that shields.io can read via
+      # raw.githubusercontent.com. README points at shields.io/endpoint?url=...
+      # so the badge updates without ever editing README.md.
+      - name: Publish badges to badges branch
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-badges
-          path: .badges/
-          retention-days: 90
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin badges >/dev/null 2>&1; then
+            git fetch origin badges
+            git worktree add /tmp/badges-wt badges
+          else
+            git worktree add --orphan -b badges /tmp/badges-wt
+          fi
+
+          cp .badges/*.json /tmp/badges-wt/
+          cd /tmp/badges-wt
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No badge changes to publish"
+          else
+            git commit -m "Update coverage badges [skip ci]"
+            git push origin badges
+          fi
 
   deploy-dev:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'

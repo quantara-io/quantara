@@ -8,8 +8,8 @@ Crypto AI prediction engine, coaching, deal flow, and marketing platform.
 
 | Package | Description | Tests |
 |---------|-------------|-------|
-| `backend` | Hono API on Lambda — auth, OpenAPI docs | [![Backend](https://img.shields.io/badge/coverage-18%25-orange)](backend/) |
-| `ingestion` | Market data streaming + news pipeline | [![Ingestion](https://img.shields.io/badge/coverage-0%25-red)](ingestion/) |
+| `backend` | Hono API on Lambda — auth, OpenAPI docs | [![Backend](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/quantara-io/quantara/badges/backend-coverage.json)](backend/) |
+| `ingestion` | Market data streaming + news pipeline | [![Ingestion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/quantara-io/quantara/badges/ingestion-coverage.json)](ingestion/) |
 | `web` | Next.js landing page | — |
 | `packages/shared` | Shared TypeScript types + constants | — |
 
