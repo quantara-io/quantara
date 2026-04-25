@@ -59,7 +59,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +88,11 @@ jobs:
             ingestion/coverage
           retention-days: 14
 
-      - name: Generate coverage badges
+      # Compute statement-pct + color and expose as step outputs. The badge
+      # JSON itself is written by Schneegans/dynamic-badges-action — we just
+      # supply the parts.
+      - name: Compute coverage percentages
+        id: coverage
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           get_pct() {
@@ -99,10 +103,6 @@ jobs:
               echo "0"
             fi
           }
-
-          BACKEND_PCT=$(get_pct backend)
-          INGESTION_PCT=$(get_pct ingestion)
-
           badge_color() {
             local pct=$1
             if [ "$pct" -ge 80 ]; then echo "brightgreen"
@@ -112,38 +112,37 @@ jobs:
             else echo "red"
             fi
           }
-
-          mkdir -p .badges
-          echo "{\"schemaVersion\":1,\"label\":\"backend coverage\",\"message\":\"${BACKEND_PCT}%\",\"color\":\"$(badge_color $BACKEND_PCT)\"}" > .badges/backend-coverage.json
-          echo "{\"schemaVersion\":1,\"label\":\"ingestion coverage\",\"message\":\"${INGESTION_PCT}%\",\"color\":\"$(badge_color $INGESTION_PCT)\"}" > .badges/ingestion-coverage.json
-
+          BACKEND_PCT=$(get_pct backend)
+          INGESTION_PCT=$(get_pct ingestion)
+          {
+            echo "backend_pct=${BACKEND_PCT}"
+            echo "backend_color=$(badge_color $BACKEND_PCT)"
+            echo "ingestion_pct=${INGESTION_PCT}"
+            echo "ingestion_color=$(badge_color $INGESTION_PCT)"
+          } >> "$GITHUB_OUTPUT"
           echo "Backend: ${BACKEND_PCT}%, Ingestion: ${INGESTION_PCT}%"
 
-      # Publish to an orphan `badges` branch that shields.io can read via
-      # raw.githubusercontent.com. README points at shields.io/endpoint?url=...
-      # so the badge updates without ever editing README.md.
-      - name: Publish badges to badges branch
+      - name: Publish backend coverage badge
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_SECRET }}
+          gistID: ${{ vars.BADGES_GIST_ID }}
+          filename: backend-coverage.json
+          label: backend coverage
+          message: ${{ steps.coverage.outputs.backend_pct }}%
+          color: ${{ steps.coverage.outputs.backend_color }}
 
-          if git ls-remote --exit-code --heads origin badges >/dev/null 2>&1; then
-            git fetch origin badges
-            git worktree add /tmp/badges-wt badges
-          else
-            git worktree add --orphan -b badges /tmp/badges-wt
-          fi
-
-          cp .badges/*.json /tmp/badges-wt/
-          cd /tmp/badges-wt
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No badge changes to publish"
-          else
-            git commit -m "Update coverage badges [skip ci]"
-            git push origin badges
-          fi
+      - name: Publish ingestion coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_SECRET }}
+          gistID: ${{ vars.BADGES_GIST_ID }}
+          filename: ingestion-coverage.json
+          label: ingestion coverage
+          message: ${{ steps.coverage.outputs.ingestion_pct }}%
+          color: ${{ steps.coverage.outputs.ingestion_color }}
 
   deploy-dev:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
