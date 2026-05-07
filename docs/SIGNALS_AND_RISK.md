@@ -481,6 +481,62 @@ volatilityFlag = OR of per-tf volatility gates
 
 If `1d` says `buy` and `1h` says `sell`, the blended scalar might still be bullish but with low magnitude — naturally resolves to `hold` via the threshold `T`. The reasoning string should call this out explicitly: *"Daily trend is up but the 1h is rolling over. Wait for confirmation."*
 
+**Decision: keep the 3-type schema (`buy / sell / hold`). Do not add a `conflict` type in v1.** The reasoning string is the right surface for inter-TF disagreement. Adding a 4th type would touch the `Signal.type` enum, signal history, accuracy scoring, and the UI chip set — too much change for nuance the LLM can express in prose. Revisit if user research shows the distinction matters.
+
+### 5.5 Time alignment — when do we re-blend?
+
+**Policy: re-blend on every per-TF close. Suppress the user-visible signal change if it's trivial.**
+
+Each TF closes at its own boundary (15m every 15 min, 1h every hour, 4h every 4 hours, 1d at 00:00 UTC). Whenever any per-TF vote updates, the blender re-runs against the current set of cached votes from all four TFs.
+
+Suppression rule for UI emit (does not affect internal storage — every blend run is persisted to DDB):
+
+```
+if  blended.type === previous_blended.type
+AND |blended.confidence − previous_blended.confidence| < 0.05
+AND blended.volatilityFlag === previous_blended.volatilityFlag
+AND blended.gateReason === previous_blended.gateReason
+then: silent update — no notification, no UI badge change
+else: emit user-visible change
+```
+
+This gives freshness internally (every minute matters for backtest replay and audit) while keeping the user-visible signal stable.
+
+**Compute cost:** 5 pairs × ~96 closes/day across the 4 TFs (15m=96, 1h=24, 4h=6, 1d=1; sum = 127 per pair/day) ≈ 635 blend runs/day. Lambda + DDB write ≈ negligible (~$5/month).
+
+### 5.6 Per-TF `null` (no opinion) handling
+
+When a per-TF vote returns `null` (warm-up, missing required indicator), drop that TF from the blend and **re-normalize** the remaining weights proportionally.
+
+Example: `1d` is `null` (still warming up the 200-bar EMA). Remaining TFs:
+
+```
+{15m: 0.15, 1h: 0.20, 4h: 0.30}
+total = 0.65
+renormalized = {15m: 0.231, 1h: 0.308, 4h: 0.461}
+```
+
+The blend proceeds with reduced confidence (one fewer source of agreement). If **all four** TFs are `null`, the blend itself returns `null` and the UI shows "warming up — no signal yet." Distinct from `hold` (which means "I have an opinion: stay out").
+
+Rationale: a multi-day silence on cold-start is a worse UX than a slightly-noisier early-stage signal. Honesty comes through naturally — fewer voting TFs → lower blended magnitude → lower confidence → harder to cross threshold `T`.
+
+### 5.7 Per-pair weights — single vector for v1
+
+Default weights `(15m: 0.15, 1h: 0.20, 4h: 0.30, 1d: 0.35)` apply uniformly across all 5 pairs in v1.
+
+Per-pair tuning (e.g. DOGE may benefit from a 15m-heavier vector since it lacks BTC's regime persistence) **lands as a Phase 8 deliverable** once outcome attribution data per `(pair, TF)` exists. Tuning without data is just guessing twice.
+
+### 5.8 Edge cases — explicit table
+
+| Case | Recommended behavior |
+|---|---|
+| All 4 TFs vote `null` | Blend returns `null`. UI: "warming up — no signal yet." |
+| All 4 TFs vote `hold` (no gates) | Blend returns `hold` at confidence 0.5. |
+| 3 TFs `null`, 1 TF votes | Re-normalized weight = 1.0 on the voting TF. Blend confidence multiplied by 0.7 to reflect single-source uncertainty. |
+| Any TF has `volatilityFlag: true` | Blend forces `type = "hold"`, `volatilityFlag: true`, `gateReason: "vol"`. Confidence = 0.5. |
+| Any TF has `gateReason = "dispersion"` or `"stale"` | Blend forces `type = "hold"`, propagates the gateReason. Confidence = 0.5. |
+| Mixed gates (e.g. 4h `vol`-gated, 1h `stale`-gated) | Priority: `vol` > `dispersion` > `stale`. Blend's `gateReason` is the highest-priority one fired on any TF. |
+
 ---
 
 ## 6. Sentiment integration
