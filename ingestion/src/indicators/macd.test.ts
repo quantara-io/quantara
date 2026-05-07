@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { macd, macdUpdate } from "./macd.js";
+import { macd, macdUpdate, MacdIncrState } from "./macd.js";
 
 function makeCloses(n = 200, seed = 99): number[] {
   let val = 100;
@@ -61,6 +61,88 @@ describe("macd", () => {
   });
 });
 
+describe("macdUpdate — cold-start path", () => {
+  /**
+   * Simulate the Phase 4 scenario: IndicatorState is loaded from DDB with
+   * signalEma = null (cold-start, not enough bars seen yet). EMA12 and EMA26
+   * are known (they seed after 12 and 26 bars respectively) but the signal
+   * EMA has not yet been seeded.
+   *
+   * We start the helper at the EMA state just before the first MACD bar
+   * (bar 24, 0-indexed) so that bar 25 is the first macdLine value pushed
+   * into the buffer. This mirrors the exact window used by the full macd()
+   * recompute, allowing bit-exact comparison once the seed fires at bar 33.
+   */
+
+  /**
+   * Build the incremental EMA state as it would appear after bar 25 —
+   * the first bar where macdLine is defined. This is the earliest realistic
+   * cold-start checkpoint: EMA12 and EMA26 have both been seeded, one
+   * macdLine value exists, but the signal EMA has not been seeded yet.
+   *
+   * The buffer is pre-loaded with the bar-25 macdLine so the seed window
+   * in macdUpdate (bars 25-33, 9 values) is identical to the one used by
+   * the full-recompute macd() function.
+   */
+  function buildColdStateAfterBar25(closes: number[]): MacdIncrState {
+    const alpha12 = 2 / 13;
+    // EMA12 seeded at bar 11 via SMA(12), ticked through bar 25.
+    let emaFast = closes.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
+    for (let i = 12; i <= 25; i++) {
+      emaFast = alpha12 * closes[i] + (1 - alpha12) * emaFast;
+    }
+    // EMA26 seeded at bar 25 via SMA(26).
+    const emaSlow = closes.slice(0, 26).reduce((a, b) => a + b, 0) / 26;
+    // The first macdLine value (at bar 25) goes into the buffer.
+    const macdLine25 = emaFast - emaSlow;
+    return {
+      emaFast,
+      emaSlow,
+      signalEma: null,
+      macdValuesSinceSeed: [macdLine25],
+    };
+  }
+
+  it("signalEma stays null for first 8 calls, seeds on 9th call", () => {
+    const closes = makeCloses(50);
+    let state = buildColdStateAfterBar25(closes);
+
+    // Feed bars 26-32: 7 more bars → buffer grows from 1 to 8. Still null.
+    for (let i = 26; i <= 32; i++) {
+      const upd = macdUpdate(state, closes[i]);
+      state = upd;
+      expect(upd.signalEma).toBeNull();
+      expect(upd.hist).toBeNull();
+    }
+    expect(state.macdValuesSinceSeed).toHaveLength(8);
+
+    // Bar 33 is the 9th MACD value — seeding fires here.
+    const upd9 = macdUpdate(state, closes[33]);
+    expect(upd9.signalEma).not.toBeNull();
+    expect(upd9.hist).not.toBeNull();
+    expect(upd9.macdValuesSinceSeed).toHaveLength(0);
+  });
+
+  it("seeded signalEma and subsequent hist values match full recompute", () => {
+    const closes = makeCloses(50);
+    const { signal, hist } = macd(closes);
+
+    let state = buildColdStateAfterBar25(closes);
+
+    // Feed bars 26-49 incrementally.
+    let lastUpd!: ReturnType<typeof macdUpdate>;
+    for (let i = 26; i <= 49; i++) {
+      lastUpd = macdUpdate(state, closes[i]);
+      state = lastUpd;
+    }
+
+    // By bar 49, signalEma must be seeded and match the full recompute.
+    expect(lastUpd.signalEma).not.toBeNull();
+    expect(lastUpd.signalEma).toBeCloseTo(signal[49]!, 4);
+    expect(lastUpd.hist).toBeCloseTo(hist[49]!, 4);
+  });
+});
+
 describe("macd — single-bar-update parity", () => {
   const closes = makeCloses(200);
 
@@ -102,16 +184,16 @@ describe("macd — single-bar-update parity", () => {
     // (they're already at bar 33 from the loop above)
 
     // Advance incrementally bar 34..100.
+    let state: MacdIncrState = { emaFast, emaSlow, signalEma, macdValuesSinceSeed: [] };
     for (let i = 34; i <= 100; i++) {
-      const upd = macdUpdate(emaFast, emaSlow, signalEma, closes[i]);
-      emaFast = upd.emaFast;
-      emaSlow = upd.emaSlow;
-      signalEma = upd.signalEma!;
+      const upd = macdUpdate(state, closes[i]);
+      state = upd;
     }
+    const { emaFast: emaFastFinal, emaSlow: emaSlowFinal, signalEma: signalEmaFinal } = state;
 
-    const incrMacdLine = emaFast - emaSlow;
-    const incrSignal = signalEma;
-    const incrHist = incrMacdLine - incrSignal;
+    const incrMacdLine = emaFastFinal - emaSlowFinal;
+    const incrSignal = signalEmaFinal;
+    const incrHist = incrMacdLine - incrSignal!;
 
     expect(incrMacdLine).toBeCloseTo(line[100]!, 4);
     expect(incrSignal).toBeCloseTo(signal[100]!, 4);
