@@ -66,38 +66,75 @@ export function macd(
 }
 
 /**
+ * State passed to and returned from macdUpdate.
+ * When loading cold-start persisted state, set signalEma to null and
+ * macdValuesSinceSeed to []. The helper will accumulate macdLine values
+ * until it has signalN of them, then seed signalEma automatically.
+ */
+export interface MacdIncrState {
+  emaFast: number;
+  emaSlow: number;
+  /** null until signalN macd values have been accumulated */
+  signalEma: number | null;
+  /**
+   * Buffer used only during cold-start (signalEma === null).
+   * Accumulates macdLine values until there are enough to seed the signal EMA.
+   * Once signalEma is seeded this array is always empty.
+   */
+  macdValuesSinceSeed: number[];
+}
+
+/**
  * Incremental MACD update.
- * Returns updated { emaFast, emaSlow, macdLine, signalEma, hist }.
+ *
+ * Cold-start behaviour (signalEma === null):
+ *   Appends the new macdLine to macdValuesSinceSeed. Once the buffer reaches
+ *   signalN values, seeds signalEma = SMA(buffer) and clears the buffer.
+ *   Until seeded, signalEma and hist are null in the returned state.
+ *
+ * Steady-state behaviour (signalEma !== null):
+ *   Standard EMA update; macdValuesSinceSeed is kept as [].
  */
 export function macdUpdate(
-  prevEmaFast: number,
-  prevEmaSlow: number,
-  prevSignalEma: number | null,
+  prev: MacdIncrState,
   newClose: number,
   fastN = 12,
   slowN = 26,
   signalN = 9,
-): {
-  emaFast: number;
-  emaSlow: number;
-  macdLine: number;
-  signalEma: number | null;
-  hist: number | null;
-} {
+): MacdIncrState & { macdLine: number; hist: number | null } {
   const alphaFast = 2 / (fastN + 1);
   const alphaSlow = 2 / (slowN + 1);
   const alphaSignal = 2 / (signalN + 1);
 
-  const emaFastNew = alphaFast * newClose + (1 - alphaFast) * prevEmaFast;
-  const emaSlowNew = alphaSlow * newClose + (1 - alphaSlow) * prevEmaSlow;
+  const emaFastNew = alphaFast * newClose + (1 - alphaFast) * prev.emaFast;
+  const emaSlowNew = alphaSlow * newClose + (1 - alphaSlow) * prev.emaSlow;
   const macdLine = emaFastNew - emaSlowNew;
 
-  let signalEma: number | null = null;
+  let signalEma: number | null;
+  let macdValuesSinceSeed: number[];
   let histVal: number | null = null;
 
-  if (prevSignalEma !== null) {
-    signalEma = alphaSignal * macdLine + (1 - alphaSignal) * prevSignalEma;
+  if (prev.signalEma !== null) {
+    // Steady-state: normal EMA tick.
+    signalEma = alphaSignal * macdLine + (1 - alphaSignal) * prev.signalEma;
     histVal = macdLine - signalEma;
+    macdValuesSinceSeed = [];
+  } else {
+    // Cold-start: accumulate until we have enough values to seed.
+    const buffer = [...prev.macdValuesSinceSeed, macdLine];
+    if (buffer.length >= signalN) {
+      // Seed signal EMA as SMA of the first signalN macd values.
+      signalEma = buffer.slice(0, signalN).reduce((a, b) => a + b, 0) / signalN;
+      // Apply EMA ticks for any values beyond the seed window.
+      for (let i = signalN; i < buffer.length; i++) {
+        signalEma = alphaSignal * buffer[i] + (1 - alphaSignal) * signalEma;
+      }
+      histVal = macdLine - signalEma;
+      macdValuesSinceSeed = [];
+    } else {
+      signalEma = null;
+      macdValuesSinceSeed = buffer;
+    }
   }
 
   return {
@@ -106,5 +143,6 @@ export function macdUpdate(
     macdLine,
     signalEma,
     hist: histVal,
+    macdValuesSinceSeed,
   };
 }
