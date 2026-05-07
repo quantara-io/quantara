@@ -6,11 +6,18 @@
  *   - scoreRules: appliesTo filter, requiresPrior warm-up, cooldownBars, group-max
  *   - scoreTimeframe: three terminal states (buy/sell/hold/null/gated-hold)
  *   - Edge cases: all-gates-fire, all-below-threshold, warm-up null
- *   - No mutation of input state or rules
+ *   - No mutation of input state or rules (deep-mutation via structuredClone)
+ *   - Observation #1: partial-warm-up emits a vote from eligible rules
+ *   - Observation #2: explicit gateResult parameter replaces rule-direction inference
+ *   - Observation #3: group-max tie-break is lexicographic (deterministic)
+ *   - Observation #4: hold-confidence clamped to ≤ 1.0
+ *   - Observation #5: cooldown semantics (bars-elapsed convention, off-by-one tests)
+ *   - Observation #6: deep-mutation detection via structuredClone + toEqual
  */
 
 import { describe, it, expect } from "vitest";
 import { scoreRules, scoreTimeframe } from "./score.js";
+import type { GateResult } from "./score.js";
 import type { Rule, TimeframeVote } from "@quantara/shared";
 import type { IndicatorState } from "@quantara/shared";
 
@@ -231,13 +238,10 @@ describe("§4.8 golden worked example — BTC/USDT 1h", () => {
     expect((vote as TimeframeVote).type).toBe("buy");
   });
 
-  it("scoreTimeframe confidence ≈ sigmoid(1.5) ≈ 0.6225 (actual formula)", () => {
+  it("scoreTimeframe confidence ≈ sigmoid(1.5) ≈ 0.6792 (actual formula with x/2 scale)", () => {
     // bullish = 1.0 + 1.0 + 0.3 = 2.3, bearish = 0.8
-    // diff = 1.5, sigmoid(1.5) = 1 / (1 + exp(-0.75)) ≈ 0.6225
-    // The doc says "≈ 0.68" — that assumes sigmoid(x) = 1/(1+exp(-x)), not exp(-x/2).
-    // Our spec says sigmoid(x) = 1/(1+exp(-x/2)), so sigmoid(1.5) ≈ 0.6792 with x=1.5.
-    // Let's verify: exp(-1.5/2) = exp(-0.75) ≈ 0.4724
-    // sigmoid(1.5) = 1 / (1 + 0.4724) ≈ 1/1.4724 ≈ 0.6792
+    // diff = 1.5, sigmoid(1.5) = 1 / (1 + exp(-1.5/2)) = 1/(1+exp(-0.75)) ≈ 0.6792
+    // The §4.8 doc shows "≈ 0.68" — correct with our sigmoid(x) = 1/(1+exp(-x/2)) formula.
     const vote = scoreTimeframe(state48, rules48, {}) as TimeframeVote;
     const expectedConfidence = 1 / (1 + Math.exp(-1.5 / 2)); // ≈ 0.6792
     expect(vote.confidence).toBeCloseTo(expectedConfidence, 4);
@@ -264,6 +268,190 @@ describe("§4.8 golden worked example — BTC/USDT 1h", () => {
     const vote = scoreTimeframe(state48, rules48, {}) as TimeframeVote;
     expect(vote.volatilityFlag).toBe(false);
     expect(vote.gateReason).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Observation #1: null-path / partial warm-up
+// ---------------------------------------------------------------------------
+
+describe("Observation #1 — null-path: partial warm-up emits vote from eligible rules", () => {
+  it("returns null only when ALL rules are blocked by requiresPrior", () => {
+    // Both rules require more bars than we have — no eligible rule
+    const state = makeState({ barsSinceStart: 10 });
+    const rules: Rule[] = [
+      {
+        name: "needs-100",
+        direction: "bullish",
+        strength: 2.0,
+        when: (_s) => true,
+        appliesTo: ["1h"],
+        requiresPrior: 100,
+      },
+      {
+        name: "needs-50",
+        direction: "bullish",
+        strength: 2.0,
+        when: (_s) => true,
+        appliesTo: ["1h"],
+        requiresPrior: 50,
+      },
+    ];
+    expect(scoreTimeframe(state, rules, {})).toBeNull();
+  });
+
+  it("partial warm-up: ema200=null, rules that don't dereference ema200 still emit a vote", () => {
+    // ema200 is null (still warming up) but rsi14 is populated.
+    // A rule that checks ema200 should not fire; a rule that checks rsi14 should.
+    const state = makeState({ ema200: null, rsi14: 24, barsSinceStart: 50 });
+
+    const rsiRule: Rule = {
+      name: "rsi-no-ema200",
+      direction: "bullish",
+      strength: 2.0,
+      // does NOT dereference ema200 — unaffected by ema200=null
+      when: (s) => s.rsi14 !== null && s.rsi14 < 30,
+      appliesTo: ["1h"],
+      requiresPrior: 20,
+    };
+
+    const ema200Rule: Rule = {
+      name: "ema200-stack",
+      direction: "bullish",
+      strength: 1.5,
+      // explicitly guards on ema200 — will not fire when ema200=null
+      when: (s) => s.ema200 !== null && s.ema200 > 80000,
+      appliesTo: ["1h"],
+      requiresPrior: 200, // also blocked by requiresPrior
+    };
+
+    const vote = scoreTimeframe(state, [rsiRule, ema200Rule], {});
+    // Should NOT be null — rsiRule is eligible (barsSinceStart >= 20)
+    expect(vote).not.toBeNull();
+    // rsiRule fires and emits a buy signal (bullishScore = 2.0 >= MIN_CONFLUENCE)
+    expect((vote as TimeframeVote).type).toBe("buy");
+    expect((vote as TimeframeVote).rulesFired).toContain("rsi-no-ema200");
+    expect((vote as TimeframeVote).rulesFired).not.toContain("ema200-stack");
+  });
+
+  it("partial warm-up: ema200=null does NOT block a rule whose predicate passes the null check correctly", () => {
+    // Both ema200Rule and rsiRule have satisfied requiresPrior.
+    // ema200Rule explicitly guards with !== null so it returns false for null ema200.
+    const state = makeState({ ema200: null, rsi14: 24, barsSinceStart: 300 });
+
+    const rsiRule: Rule = {
+      name: "rsi-check",
+      direction: "bullish",
+      strength: 2.0,
+      when: (s) => s.rsi14 !== null && s.rsi14 < 30,
+      appliesTo: ["1h"],
+      requiresPrior: 0,
+    };
+
+    const ema200Rule: Rule = {
+      name: "ema200-check",
+      direction: "bearish",
+      strength: 1.5,
+      when: (s) => s.ema200 !== null && s.ema200 > 80000,
+      appliesTo: ["1h"],
+      requiresPrior: 0,
+    };
+
+    const fired = scoreRules(state, [rsiRule, ema200Rule], {});
+    // rsiRule fires; ema200Rule returns false (ema200=null)
+    expect(fired.map((r) => r.name)).toContain("rsi-check");
+    expect(fired.map((r) => r.name)).not.toContain("ema200-check");
+  });
+
+  it("returns null when the rule set is empty", () => {
+    const state = makeState();
+    expect(scoreTimeframe(state, [], {})).toBeNull();
+  });
+
+  it("returns null when no rule appliesTo the current timeframe", () => {
+    const state = makeState({ timeframe: "15m" });
+    const rules: Rule[] = [
+      {
+        name: "4h-only",
+        direction: "bullish",
+        strength: 2.0,
+        when: (_s) => true,
+        appliesTo: ["4h"],
+        requiresPrior: 0,
+      },
+    ];
+    expect(scoreTimeframe(state, rules, {})).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Observation #2: explicit gateResult parameter
+// ---------------------------------------------------------------------------
+
+describe("Observation #2 — gateResult parameter replaces rule-direction inference", () => {
+  const state = makeState();
+
+  const bullRule: Rule = {
+    name: "strong-bull",
+    direction: "bullish",
+    strength: 5.0,
+    when: (_s) => true,
+    appliesTo: ["1h"],
+    requiresPrior: 0,
+  };
+
+  it("gateResult.fired=true forces type=hold with volatilityFlag=true", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.type).toBe("hold");
+    expect(vote.volatilityFlag).toBe(true);
+    expect(vote.confidence).toBe(0.5);
+  });
+
+  it("gateResult.fired=true passes through the gate reason (vol)", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.gateReason).toBe("vol");
+  });
+
+  it("gateResult.fired=true passes through the gate reason (dispersion)", () => {
+    const gateResult: GateResult = { fired: true, reason: "dispersion" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.gateReason).toBe("dispersion");
+  });
+
+  it("gateResult.fired=true passes through the gate reason (stale)", () => {
+    const gateResult: GateResult = { fired: true, reason: "stale" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.gateReason).toBe("stale");
+  });
+
+  it("gateResult.fired=false does not gate — normal scoring applies", () => {
+    const gateResult: GateResult = { fired: false, reason: null };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.type).toBe("buy");
+    expect(vote.volatilityFlag).toBe(false);
+  });
+
+  it("gateResult=null (omitted) does not gate — normal scoring applies", () => {
+    const vote = scoreTimeframe(state, [bullRule], {}) as TimeframeVote;
+    expect(vote.type).toBe("buy");
+  });
+
+  it("gateResult overrides even a strong directional signal", () => {
+    // 10x bullish strength — gate should still win
+    const superBull: Rule = { ...bullRule, strength: 10.0 };
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [superBull], {}, { gateResult }) as TimeframeVote;
+    expect(vote.type).toBe("hold");
+    expect(vote.volatilityFlag).toBe(true);
+  });
+
+  it("gateResult with fired=true carries the rulesFired list from fired rules", () => {
+    const gateResult: GateResult = { fired: true, reason: "stale" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+    // rulesFired should list the bullish rule that fired even though we gated
+    expect(vote.rulesFired).toContain("strong-bull");
   });
 });
 
@@ -351,10 +539,18 @@ describe("scoreRules — requiresPrior warm-up gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// scoreRules: cooldownBars
+// scoreRules: cooldownBars (Observation #5)
 // ---------------------------------------------------------------------------
 
-describe("scoreRules — cooldownBars", () => {
+describe("scoreRules — cooldownBars (Observation #5: bars-elapsed convention)", () => {
+  /**
+   * Cooldown semantics (from scoreRules JSDoc):
+   *   lastFireBars[name] = 0  →  rule fired at the current bar (0 bars elapsed)
+   *   cooldownBars: 3         →  suppressed at t (0), t+1 (1), t+2 (2)
+   *                              re-eligible at t+3 (3 bars elapsed)
+   *   i.e. re-fire requires lastFireBars >= cooldownBars
+   */
+
   const coolRule: Rule = {
     name: "cool-rule",
     direction: "bullish",
@@ -366,17 +562,28 @@ describe("scoreRules — cooldownBars", () => {
   };
   const state = makeState();
 
-  it("rule is suppressed when lastFireBars[name] < cooldownBars", () => {
+  it("rule is suppressed when lastFireBars[name] < cooldownBars (t+1: bars=1)", () => {
+    const fired = scoreRules(state, [coolRule], { "cool-rule": 1 });
+    expect(fired).toHaveLength(0);
+  });
+
+  it("rule is suppressed when lastFireBars[name] < cooldownBars (t: bars=0)", () => {
+    // fired at current bar (0 bars elapsed) — should be suppressed
+    const fired = scoreRules(state, [coolRule], { "cool-rule": 0 });
+    expect(fired).toHaveLength(0);
+  });
+
+  it("rule is suppressed when lastFireBars[name] = 2 (t+2, still in cooldown)", () => {
     const fired = scoreRules(state, [coolRule], { "cool-rule": 2 });
     expect(fired).toHaveLength(0);
   });
 
-  it("rule fires when lastFireBars[name] === cooldownBars", () => {
+  it("rule fires when lastFireBars[name] === cooldownBars (t+3: bars=3, exactly out of cooldown)", () => {
     const fired = scoreRules(state, [coolRule], { "cool-rule": 3 });
     expect(fired).toHaveLength(1);
   });
 
-  it("rule fires when lastFireBars[name] > cooldownBars", () => {
+  it("rule fires when lastFireBars[name] > cooldownBars (bars=10)", () => {
     const fired = scoreRules(state, [coolRule], { "cool-rule": 10 });
     expect(fired).toHaveLength(1);
   });
@@ -386,18 +593,24 @@ describe("scoreRules — cooldownBars", () => {
     expect(fired).toHaveLength(1);
   });
 
-  it("rule with cooldownBars=0 always fires when eligible", () => {
-    const alwaysOk: Rule = { ...coolRule, cooldownBars: 0 };
-    const fired = scoreRules(state, [alwaysOk], { "cool-rule": 0 });
+  it("rule with cooldownBars=0 fires even when lastFireBars[name]=0 (no suppression)", () => {
+    const noCooldown: Rule = { ...coolRule, cooldownBars: 0 };
+    const fired = scoreRules(state, [noCooldown], { "cool-rule": 0 });
     expect(fired).toHaveLength(1);
+  });
+
+  it("rule with cooldownBars=1 is suppressed at bars=0 and fires at bars=1", () => {
+    const shortCool: Rule = { ...coolRule, name: "short-cool", cooldownBars: 1 };
+    expect(scoreRules(state, [shortCool], { "short-cool": 0 })).toHaveLength(0);
+    expect(scoreRules(state, [shortCool], { "short-cool": 1 })).toHaveLength(1);
   });
 });
 
 // ---------------------------------------------------------------------------
-// scoreRules: group-max selection
+// scoreRules: group-max selection (Observation #3: deterministic tie-break)
 // ---------------------------------------------------------------------------
 
-describe("scoreRules — group-max selection", () => {
+describe("scoreRules — group-max selection (Observation #3: lexicographic tie-break)", () => {
   const state = makeState({ rsi14: 15 }); // triggers both rsi-oversold tiers
 
   const weak: Rule = {
@@ -451,6 +664,61 @@ describe("scoreRules — group-max selection", () => {
     const fired = scoreRules(state, [groupA, groupB], {});
     expect(fired).toHaveLength(2);
     expect(fired.map((r) => r.name).sort()).toEqual(["a-rule", "b-rule"]);
+  });
+
+  it("tie-break on equal strength: lexicographically smaller name wins", () => {
+    // "a-rule" < "z-rule" lexicographically → "a-rule" should be selected
+    const aRule: Rule = {
+      name: "a-rule",
+      direction: "bullish",
+      strength: 1.0,
+      when: (_s) => true,
+      appliesTo: ["1h"],
+      group: "tie-group",
+      requiresPrior: 0,
+    };
+    const zRule: Rule = {
+      name: "z-rule",
+      direction: "bullish",
+      strength: 1.0, // same strength
+      when: (_s) => true,
+      appliesTo: ["1h"],
+      group: "tie-group",
+      requiresPrior: 0,
+    };
+
+    // Order 1: aRule first
+    const fired1 = scoreRules(state, [aRule, zRule], {});
+    expect(fired1).toHaveLength(1);
+    expect(fired1[0].name).toBe("a-rule");
+
+    // Order 2: zRule first — result must be the same (deterministic)
+    const fired2 = scoreRules(state, [zRule, aRule], {});
+    expect(fired2).toHaveLength(1);
+    expect(fired2[0].name).toBe("a-rule");
+  });
+
+  it("tie-break: higher strength always wins over name ordering", () => {
+    const aStrong: Rule = {
+      name: "a-rule",
+      direction: "bullish",
+      strength: 2.0, // stronger despite coming first
+      when: (_s) => true,
+      appliesTo: ["1h"],
+      group: "tie-group",
+      requiresPrior: 0,
+    };
+    const zWeak: Rule = {
+      name: "z-rule",
+      direction: "bullish",
+      strength: 1.0,
+      when: (_s) => true,
+      appliesTo: ["1h"],
+      group: "tie-group",
+      requiresPrior: 0,
+    };
+    const fired = scoreRules(state, [zWeak, aStrong], {});
+    expect(fired[0].name).toBe("a-rule"); // stronger wins
   });
 });
 
@@ -517,65 +785,53 @@ describe("scoreTimeframe — sell signal", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Edge case: all-gates-fire
+// Edge case: gated hold via explicit gateResult
 // ---------------------------------------------------------------------------
 
-describe("scoreTimeframe — all-gates-fire (edge case)", () => {
+describe("scoreTimeframe — gated hold via gateResult", () => {
   const state = makeState();
 
-  const volGate: Rule = {
-    name: "vol-gate",
-    direction: "gate",
-    strength: 1.0,
+  const bullRule: Rule = {
+    name: "strong-bull",
+    direction: "bullish",
+    strength: 5.0,
     when: (_s) => true,
     appliesTo: ["1h"],
     requiresPrior: 0,
   };
 
-  const dispersionGate: Rule = {
-    name: "dispersion-gate",
-    direction: "gate",
-    strength: 1.0,
-    when: (_s) => true,
-    appliesTo: ["1h"],
-    requiresPrior: 0,
-  };
-
-  it("returns hold with volatilityFlag=true when a gate fires", () => {
-    const vote = scoreTimeframe(state, [volGate], {}) as TimeframeVote;
+  it("returns hold with volatilityFlag=true when gateResult.fired=true", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
     expect(vote.type).toBe("hold");
     expect(vote.volatilityFlag).toBe(true);
     expect(vote.confidence).toBe(0.5);
   });
 
-  it("gateReason is 'vol' for vol-gate rule name", () => {
-    const vote = scoreTimeframe(state, [volGate], {}) as TimeframeVote;
+  it("gateReason is 'vol' when gateResult.reason='vol'", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
     expect(vote.gateReason).toBe("vol");
   });
 
-  it("gateReason is 'dispersion' for dispersion-gate rule name", () => {
-    const vote = scoreTimeframe(state, [dispersionGate], {}) as TimeframeVote;
+  it("gateReason is 'dispersion' when gateResult.reason='dispersion'", () => {
+    const gateResult: GateResult = { fired: true, reason: "dispersion" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
     expect(vote.gateReason).toBe("dispersion");
   });
 
-  it("gates take precedence over directional rules", () => {
-    const strongBull: Rule = {
-      name: "strong-bull",
-      direction: "bullish",
-      strength: 5.0,
-      when: (_s) => true,
-      appliesTo: ["1h"],
-      requiresPrior: 0,
-    };
-    const vote = scoreTimeframe(state, [volGate, strongBull], {}) as TimeframeVote;
+  it("gate takes precedence over directional rules", () => {
+    const gateResult: GateResult = { fired: true, reason: "stale" };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
     expect(vote.type).toBe("hold");
     expect(vote.volatilityFlag).toBe(true);
   });
 
-  it("gate returns hold even with both gates firing", () => {
-    const vote = scoreTimeframe(state, [volGate, dispersionGate], {}) as TimeframeVote;
-    expect(vote.type).toBe("hold");
-    expect(vote.volatilityFlag).toBe(true);
+  it("gateResult.fired=false does not gate", () => {
+    const gateResult: GateResult = { fired: false, reason: null };
+    const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.type).toBe("buy");
+    expect(vote.volatilityFlag).toBe(false);
   });
 });
 
@@ -643,7 +899,7 @@ describe("scoreTimeframe — all rules fire below MIN_CONFLUENCE threshold", () 
     expect(vote.confidence).toBeCloseTo(0.5, 10);
   });
 
-  it("returns hold when no rules fire", () => {
+  it("returns hold when no rules fire (but eligible rules exist)", () => {
     const rules: Rule[] = [
       {
         name: "impossible-rule",
@@ -662,11 +918,109 @@ describe("scoreTimeframe — all rules fire below MIN_CONFLUENCE threshold", () 
 });
 
 // ---------------------------------------------------------------------------
+// Observation #4: hold-confidence overflow clamp
+// ---------------------------------------------------------------------------
+
+describe("Observation #4 — hold-confidence clamped to ≤ 1.0", () => {
+  it("hold confidence does not exceed 1.0 with extreme score differential", () => {
+    // With minConfluence=0.1, a 6.0 bullish / 0.5 bearish state gives diff=5.5.
+    // Without clamping: 0.5 + 0.1 * 5.5 = 1.05, which violates [0,1].
+    // With clamping: min(1, 1.05) = 1.0.
+    //
+    // To reach the hold branch we need: bullish > bearish but bullish < minConfluence
+    // OR bearish > bullish but bearish < minConfluence OR tied. With minConfluence=0.1
+    // and bullish=6.0 we'd actually emit a "buy". We need tied or below threshold.
+    //
+    // Use a scenario where both bull and bear fire and are equal strength but raw
+    // scores are high enough that the diff would overflow after introducing minConfluence override.
+    // Actually: if scores are tied, diff=0 → confidence=0.5. We need to exercise the overflow.
+    //
+    // Best path: make bull < minConfluence with a large absolute difference impossible.
+    // Instead: set minConfluence very high (e.g. 100) so both scores fall below threshold.
+    // Then bull=6.0, bear=0.5 → diff=5.5 → 0.5 + 0.1*5.5 = 1.05 → clamp to 1.0.
+    const state = makeState();
+    const rules: Rule[] = [
+      {
+        name: "six-bull",
+        direction: "bullish",
+        strength: 6.0,
+        when: (_s) => true,
+        appliesTo: ["1h"],
+        requiresPrior: 0,
+      },
+      {
+        name: "half-bear",
+        direction: "bearish",
+        strength: 0.5,
+        when: (_s) => true,
+        appliesTo: ["1h"],
+        requiresPrior: 0,
+      },
+    ];
+    // With minConfluence=100, bullish 6.0 < 100 so we reach the hold branch.
+    const vote = scoreTimeframe(state, rules, {}, { minConfluence: 100 }) as TimeframeVote;
+    expect(vote.type).toBe("hold");
+    // Without clamp: 0.5 + 0.1 * (6.0 - 0.5) = 0.5 + 0.55 = 1.05 → OVERFLOW
+    // With clamp:    min(1, 1.05) = 1.0
+    expect(vote.confidence).toBeLessThanOrEqual(1.0);
+    expect(vote.confidence).toBeCloseTo(1.0, 10);
+  });
+
+  it("hold confidence is exactly 1.0 when unclamped value would be 1.0", () => {
+    // diff = 5.0 → 0.5 + 0.1*5.0 = 1.0 (no clamp needed, boundary case)
+    const state = makeState();
+    const rules: Rule[] = [
+      {
+        name: "five-bull",
+        direction: "bullish",
+        strength: 5.0,
+        when: (_s) => true,
+        appliesTo: ["1h"],
+        requiresPrior: 0,
+      },
+    ];
+    const vote = scoreTimeframe(state, rules, {}, { minConfluence: 100 }) as TimeframeVote;
+    expect(vote.confidence).toBeCloseTo(1.0, 10);
+    expect(vote.confidence).toBeLessThanOrEqual(1.0);
+  });
+
+  it("hold confidence with low minConfluence override (minConfluence=0.1) with 6 bull / 0.5 bear is ≤ 1.0", () => {
+    // As the issue states: pass minConfluence:0.1 with 6.0 bullish / 0.5 bearish.
+    // Since bull 6.0 >= minConfluence 0.1 AND bull > bear, this actually emits a "buy".
+    // The overflow risk is in the hold branch. We verify confidence is ≤ 1.0 in general.
+    const state = makeState();
+    const rules: Rule[] = [
+      {
+        name: "six-bull",
+        direction: "bullish",
+        strength: 6.0,
+        when: (_s) => true,
+        appliesTo: ["1h"],
+        requiresPrior: 0,
+      },
+      {
+        name: "half-bear",
+        direction: "bearish",
+        strength: 0.5,
+        when: (_s) => true,
+        appliesTo: ["1h"],
+        requiresPrior: 0,
+      },
+    ];
+    // With minConfluence: 0.1 → buy branch (bull > bear, bull >= 0.1)
+    // Confidence = sigmoid(6.0 - 0.5) = sigmoid(5.5) ≈ 0.9394 ≤ 1.0 (sigmoid is naturally bounded)
+    const vote = scoreTimeframe(state, rules, {}, { minConfluence: 0.1 }) as TimeframeVote;
+    expect(vote.confidence).toBeLessThanOrEqual(1.0);
+    expect(vote.confidence).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge case: warm-up / null state
 // ---------------------------------------------------------------------------
 
 describe("scoreTimeframe — warm-up state returns null", () => {
-  it("returns null when barsSinceStart is 0", () => {
+  it("returns null when all rules are blocked by requiresPrior (barsSinceStart=0)", () => {
     const state = makeState({ barsSinceStart: 0 });
     const rules: Rule[] = [
       {
@@ -675,43 +1029,86 @@ describe("scoreTimeframe — warm-up state returns null", () => {
         strength: 2.0,
         when: (_s) => true,
         appliesTo: ["1h"],
-        requiresPrior: 0,
+        requiresPrior: 1, // blocks at barsSinceStart=0
       },
     ];
     const result = scoreTimeframe(state, rules, {});
     expect(result).toBeNull();
   });
 
-  it("does NOT return null when barsSinceStart > 0 even if no rules fire", () => {
+  it("does NOT return null when barsSinceStart > 0 and an eligible rule exists", () => {
     const state = makeState({ barsSinceStart: 1 });
-    const rules: Rule[] = [];
+    const rules: Rule[] = [
+      {
+        name: "zero-prior",
+        direction: "bullish",
+        strength: 2.0,
+        when: (_s) => false, // predicate fails but rule is eligible
+        appliesTo: ["1h"],
+        requiresPrior: 0,
+      },
+    ];
     const result = scoreTimeframe(state, rules, {});
     expect(result).not.toBeNull();
     expect((result as TimeframeVote).type).toBe("hold");
   });
 
-  it("returns null for barsSinceStart=0 regardless of rule strengths", () => {
-    const state = makeState({ barsSinceStart: 0 });
-    const rules: Rule[] = [
-      {
-        name: "powerful-bull",
-        direction: "bullish",
-        strength: 10.0,
-        when: (_s) => true,
-        appliesTo: ["1h"],
-        requiresPrior: 0,
-      },
-    ];
-    expect(scoreTimeframe(state, rules, {})).toBeNull();
+  it("returns null for an empty rule set regardless of barsSinceStart", () => {
+    const state = makeState({ barsSinceStart: 300 });
+    expect(scoreTimeframe(state, [], {})).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// No mutation invariants
+// No mutation invariants — Observation #6: deep-mutation via structuredClone
 // ---------------------------------------------------------------------------
 
-describe("no mutation of inputs", () => {
-  it("scoreRules does not mutate the rules array", () => {
+describe("no mutation of inputs — deep-mutation detection (Observation #6)", () => {
+  it("scoreRules does not deep-mutate the state (structuredClone check)", () => {
+    const state = makeState({ rsi14: 25 });
+    const snapshot = structuredClone(state);
+    scoreRules(state, [bullishRule], {});
+    expect(state).toEqual(snapshot);
+  });
+
+  it("scoreRules does not deep-mutate the history arrays", () => {
+    const state = makeState();
+    const snapshot = structuredClone(state);
+    scoreRules(state, [bullishRule], { "test-bull": 100 });
+    expect(state.history.close).toEqual(snapshot.history.close);
+    expect(state.history.rsi14).toEqual(snapshot.history.rsi14);
+    expect(state.history.macdHist).toEqual(snapshot.history.macdHist);
+  });
+
+  it("scoreTimeframe does not deep-mutate the state (structuredClone check)", () => {
+    const state = makeState({ rsi14: 25 });
+    const snapshot = structuredClone(state);
+    scoreTimeframe(state, [bullishRule], {});
+    expect(state).toEqual(snapshot);
+  });
+
+  it("scoreTimeframe does not deep-mutate state.history.close", () => {
+    const state = makeState();
+    const snapshot = structuredClone(state);
+    const rules: Rule[] = [
+      {
+        name: "history-toucher",
+        direction: "bullish",
+        strength: 2.0,
+        when: (s) => {
+          // reads history.close but must not write it
+          return s.history.close[0] !== null;
+        },
+        appliesTo: ["1h"],
+        requiresPrior: 0,
+      },
+    ];
+    scoreTimeframe(state, rules, {});
+    expect(state.history.close).toEqual(snapshot.history.close);
+    expect(state).toEqual(snapshot);
+  });
+
+  it("scoreRules does not mutate the rules array (shallow + deep)", () => {
     const state = makeState();
     const rules: Rule[] = [
       {
@@ -725,42 +1122,19 @@ describe("no mutation of inputs", () => {
     ];
     const originalLength = rules.length;
     const originalName = rules[0].name;
+    const originalStrength = rules[0].strength;
     scoreRules(state, rules, {});
     expect(rules.length).toBe(originalLength);
     expect(rules[0].name).toBe(originalName);
-  });
-
-  it("scoreRules does not mutate the state", () => {
-    const state = makeState({ rsi14: 25 });
-    const originalRsi = state.rsi14;
-    const originalAsOf = state.asOf;
-    scoreRules(state, [bullishRule], {});
-    expect(state.rsi14).toBe(originalRsi);
-    expect(state.asOf).toBe(originalAsOf);
-  });
-
-  it("scoreTimeframe does not mutate the state", () => {
-    const state = makeState({ rsi14: 25 });
-    const originalRsi = state.rsi14;
-    scoreTimeframe(state, [bullishRule], {});
-    expect(state.rsi14).toBe(originalRsi);
-  });
-
-  it("scoreTimeframe does not mutate the rules array", () => {
-    const state = makeState({ rsi14: 25 });
-    const rules: Rule[] = [{ ...bullishRule }];
-    const originalStrength = rules[0].strength;
-    scoreTimeframe(state, rules, {});
     expect(rules[0].strength).toBe(originalStrength);
   });
 
   it("scoreTimeframe does not mutate the lastFireBars map", () => {
     const state = makeState();
     const lastFireBars: Record<string, number> = { "test-bull": 10 };
-    const originalKeys = Object.keys(lastFireBars).join(",");
+    const snapshot = structuredClone(lastFireBars);
     scoreTimeframe(state, [bullishRule], lastFireBars);
-    expect(Object.keys(lastFireBars).join(",")).toBe(originalKeys);
-    expect(lastFireBars["test-bull"]).toBe(10);
+    expect(lastFireBars).toEqual(snapshot);
   });
 });
 

@@ -422,7 +422,7 @@ bearish = 0.8
 bullish ≥ MIN_CONFLUENCE (1.5)? Yes.
 bullish > bearish? Yes.
 type = "buy"
-confidence = sigmoid(2.3 − 0.8) = sigmoid(1.5) ≈ 0.68
+confidence = sigmoid(2.3 − 0.8) = sigmoid(1.5) = 1/(1+exp(-1.5/2)) = 1/(1+exp(-0.75)) ≈ 0.68
 volatilityFlag = false (no gate fired)
 ```
 
