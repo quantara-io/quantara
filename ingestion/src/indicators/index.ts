@@ -51,6 +51,9 @@ export function buildIndicatorState(
     dispersion: number | null;
   },
 ): IndicatorState {
+  if (candles.length === 0) {
+    throw new Error("buildIndicatorState: candles array is empty");
+  }
   const len = candles.length;
 
   // Extract scalar series.
