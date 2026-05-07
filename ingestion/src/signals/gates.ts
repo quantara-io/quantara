@@ -1,13 +1,11 @@
-import type { IndicatorState } from "@quantara/shared";
+import type { IndicatorState, GateResult } from "@quantara/shared";
 import type { TradingPair } from "@quantara/shared";
 import { PAIRS, VOL_GATE_THRESHOLDS } from "@quantara/shared";
 
-export type GateReason = "vol" | "dispersion" | "stale";
-
-export interface GateResult {
-  fired: boolean;
-  reason: GateReason | null;
-}
+// GateResult and GateReason are declared in @quantara/shared (packages/shared/src/types/rules.ts).
+// Re-exported here so callers that import directly from gates.ts get the same types.
+export type { GateResult } from "@quantara/shared";
+export type { GateReason } from "@quantara/shared";
 
 const NOT_FIRED: GateResult = { fired: false, reason: null };
 

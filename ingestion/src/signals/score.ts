@@ -12,8 +12,13 @@
  */
 
 import type { IndicatorState } from "@quantara/shared";
-import type { Rule, FiredRule, TimeframeVote } from "@quantara/shared";
+import type { Rule, FiredRule, TimeframeVote, GateResult } from "@quantara/shared";
 import { MIN_CONFLUENCE } from "@quantara/shared";
+
+// GateResult is declared in @quantara/shared (packages/shared/src/types/rules.ts) —
+// single source of truth shared with gates.ts. Re-exported here so importers that
+// pull directly from score.ts continue to work without changing their imports.
+export type { GateResult } from "@quantara/shared";
 
 /**
  * Sigmoid with half-scale: sigmoid(x) = 1 / (1 + exp(-x/2))
@@ -21,22 +26,6 @@ import { MIN_CONFLUENCE } from "@quantara/shared";
  */
 function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x / 2));
-}
-
-// ---------------------------------------------------------------------------
-// GateResult — matches the shape produced by gates.ts (Phase 2, Issue D / #45).
-// Defined here so scoreTimeframe can accept an explicit gate decision without
-// importing from a module that may not be present at every call-site.
-// ---------------------------------------------------------------------------
-
-/**
- * Gate result produced by evaluateGates() from gates.ts (Issue D / #45).
- * scoreTimeframe accepts this as an optional parameter; when gateResult.fired
- * is true the function forces type="hold" with the supplied reason.
- */
-export interface GateResult {
-  fired: boolean;
-  reason: "vol" | "dispersion" | "stale" | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +122,10 @@ export function scoreRules(
  * @param options.minConfluence - Override MIN_CONFLUENCE (default 1.5).
  * @param options.gateResult   - Explicit gate decision from evaluateGates()
  *   (gates.ts, Issue D / #45). When `gateResult.fired === true` the vote is
- *   forced to `type: "hold"` with `gateReason = gateResult.reason`. When null
- *   or omitted, no gate is applied. Rule-direction `"gate"` inference is
- *   intentionally removed — callers should pass gateResult instead.
+ *   forced to `type: "hold"` with `gateReason = gateResult.reason` and
+ *   `rulesFired = []` (the gate is caller-supplied, not rule-encoded). When
+ *   null or omitted, no gate is applied. Gates are always explicit via this
+ *   parameter — Rule.direction does not include "gate".
  */
 export function scoreTimeframe(
   state: IndicatorState,
@@ -159,16 +149,17 @@ export function scoreTimeframe(
   // If no rule is eligible at all (all blocked by warm-up or timeframe), no opinion.
   if (!hasEligibleRule) return null;
 
-  // 1. Compute fired rules.
-  const fired = scoreRules(state, rules, lastFireBars);
-
-  // 2. Apply explicit gate result (from evaluateGates in gates.ts).
-  //    This replaces the previous rule-direction "gate" inference.
+  // 1. Apply explicit gate result (from evaluateGates in gates.ts).
+  //    Gates are explicit via the gateResult parameter — not encoded as rule
+  //    direction:"gate". When a gate fires, all directional scoring is suppressed
+  //    and rulesFired is empty (no rule "caused" the gate; the caller did via
+  //    evaluateGates). bullishScore and bearishScore are both zero to be
+  //    consistent with the "gate suppresses everything" semantic.
   if (gateResult !== null && gateResult.fired) {
     return {
       type: "hold",
       confidence: 0.5,
-      rulesFired: fired.map((r) => r.name),
+      rulesFired: [],
       bullishScore: 0,
       bearishScore: 0,
       volatilityFlag: true,
@@ -177,8 +168,10 @@ export function scoreTimeframe(
     };
   }
 
-  // 3. Sum directional scores (gate-direction rules are intentionally excluded
-  //    from directional scoring; callers should use gateResult instead).
+  // 2. Compute fired rules (only reached when gate did not fire).
+  const fired = scoreRules(state, rules, lastFireBars);
+
+  // 3. Sum directional scores.
   let bullishScore = 0;
   let bearishScore = 0;
   for (const r of fired) {

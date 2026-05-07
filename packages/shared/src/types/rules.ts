@@ -1,6 +1,35 @@
 import type { IndicatorState } from "./indicators.js";
 import type { Timeframe } from "./ingestion.js";
 
+// ---------------------------------------------------------------------------
+// Gate types — single source of truth (also imported by ingestion/signals/)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reason a gate fired. Mirrors the three gate functions in
+ * ingestion/src/signals/gates.ts (evaluateGates).
+ *   "vol"        — realized volatility exceeds the per-pair threshold
+ *   "dispersion" — cross-exchange spread > 1% for 3 consecutive bars
+ *   "stale"      — ≥2 of 3 exchanges are stale
+ */
+export type GateReason = "vol" | "dispersion" | "stale";
+
+/**
+ * Result produced by evaluateGates() (gates.ts). scoreTimeframe accepts this
+ * as an optional parameter; when fired=true the vote is forced to type="hold".
+ *
+ * Declared here (not in gates.ts) so @quantara/shared is the single source of
+ * truth — both score.ts and gates.ts import from this package.
+ */
+export interface GateResult {
+  fired: boolean;
+  reason: GateReason | null;
+}
+
+// ---------------------------------------------------------------------------
+// Rule types
+// ---------------------------------------------------------------------------
+
 /**
  * A single scoring rule. Rules are pure predicates over IndicatorState.
  *
@@ -9,13 +38,13 @@ import type { Timeframe } from "./ingestion.js";
 export interface Rule {
   /** Unique identifier used in rulesFired output. */
   name: string;
-  /** Direction this rule contributes to when it fires. */
-  direction: "bullish" | "bearish" | "gate";
   /**
-   * Score contribution on fire. Gates use this field only for ranking within
-   * their group — gate votes always produce type="hold", never add to a
-   * directional score.
+   * Direction this rule contributes to when it fires.
+   * Gates are explicit via the gateResult parameter of scoreTimeframe
+   * (evaluateGates from gates.ts) — not encoded as a rule direction.
    */
+  direction: "bullish" | "bearish";
+  /** Score contribution on fire. */
   strength: number;
   /** Pure predicate. Must not mutate state. */
   when: (state: IndicatorState) => boolean;
@@ -46,7 +75,7 @@ export interface Rule {
  */
 export interface FiredRule {
   name: string;
-  direction: "bullish" | "bearish" | "gate";
+  direction: "bullish" | "bearish";
   strength: number;
   /** Resolved group — equals rule.group ?? rule.name. */
   group: string;
