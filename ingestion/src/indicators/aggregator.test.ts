@@ -169,6 +169,21 @@ describe("buildIndicatorState — golden fixture", () => {
   });
 });
 
+describe("buildIndicatorState — empty-input guard", () => {
+  it("throws a clear error when candles array is empty", () => {
+    const ctx = {
+      pair: "BTC-USDT",
+      exchange: "binance",
+      timeframe: "1h" as const,
+      fearGreed: null,
+      dispersion: null,
+    };
+    expect(() => buildIndicatorState([], ctx)).toThrow(
+      "buildIndicatorState: candles array is empty",
+    );
+  });
+});
+
 describe("buildIndicatorState — short series (warm-up period)", () => {
   it("returns null for indicators with insufficient bars (10 candles)", () => {
     const candles = makeCandles(10);

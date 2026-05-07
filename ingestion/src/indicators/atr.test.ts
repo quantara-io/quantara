@@ -80,6 +80,13 @@ describe("atr", () => {
   });
 });
 
+describe("atr — empty-input guard", () => {
+  it("returns [] (aligned-empty) when input arrays are empty", () => {
+    const result = atr([], [], [], 14);
+    expect(result).toEqual([]);
+  });
+});
+
 describe("atr — single-bar-update parity", () => {
   const { high, low, close } = makeOHLC(200);
 

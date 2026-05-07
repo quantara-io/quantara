@@ -10,6 +10,9 @@ import { wilderSmooth } from "./helpers.js";
  * Warm-up: bars 0..12 are null (needs 14 TR values to seed Wilder's RMA).
  */
 export function atr(high: number[], low: number[], close: number[], n = 14): (number | null)[] {
+  if (high.length === 0) {
+    return [];
+  }
   const len = close.length;
   const tr: number[] = new Array(len).fill(0);
 
