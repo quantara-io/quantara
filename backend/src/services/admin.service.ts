@@ -55,7 +55,10 @@ async function getFearGreed(): Promise<{ value: number; classification: string }
     }));
     if (!result.Item) return null;
     return { value: result.Item.value as number, classification: result.Item.classification as string };
-  } catch { return null; }
+  } catch (err) {
+    console.error("[admin.service] getFearGreed failed:", err);
+    return null;
+  }
 }
 
 async function getEcsStatus(): Promise<{ status: string; running: number; desired: number; taskId?: string }> {
@@ -151,7 +154,9 @@ async function getLatestPrices() {
         Limit: 3,
       }));
       for (const item of result.Items ?? []) results.push(item);
-    } catch { /* skip */ }
+    } catch (err) {
+      console.error(`[admin.service] getLatestPrices failed for ${pair}:`, err);
+    }
   }
   return results;
 }
@@ -168,7 +173,10 @@ async function getRecentCandles(pair: string, exchange: string, timeframe: strin
       Limit: limit,
     }));
     return ((result.Items ?? []) as Record<string, unknown>[]).reverse();
-  } catch { return []; }
+  } catch (err) {
+    console.error(`[admin.service] getRecentCandles failed for ${pair}/${exchange}/${timeframe}:`, err);
+    return [];
+  }
 }
 
 export async function getMarket(pair: string, exchange: string) {
@@ -190,7 +198,10 @@ export async function getNews(limit = 50) {
       String(b.publishedAt ?? "").localeCompare(String(a.publishedAt ?? "")),
     );
     return { news: items.slice(0, limit), fearGreed };
-  } catch { return { news: [], fearGreed: null }; }
+  } catch (err) {
+    console.error("[admin.service] getNews failed:", err);
+    return { news: [], fearGreed: null };
+  }
 }
 
 const WHITELIST_PARAM = `/quantara/${ENVIRONMENT}/docs-allowed-ips`;
