@@ -61,11 +61,11 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
         timeframe,
         openTime: ts!,
         closeTime: ts! + timeframeToMs(timeframe),
-        open: open ?? 0,
-        high: high ?? 0,
-        low: low ?? 0,
-        close: close ?? 0,
-        volume: volume ?? 0,
+        open: Number(open ?? 0),
+        high: Number(high ?? 0),
+        low: Number(low ?? 0),
+        close: Number(close ?? 0),
+        volume: Number(volume ?? 0),
         isClosed: ts! + timeframeToMs(timeframe) < now,
       }));
 

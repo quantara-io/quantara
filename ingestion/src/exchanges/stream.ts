@@ -153,11 +153,11 @@ export class MarketStreamManager {
               timeframe,
               openTime: ts,
               closeTime: ts + 60_000,
-              open: open ?? 0,
-              high: high ?? 0,
-              low: low ?? 0,
-              close: close ?? 0,
-              volume: volume ?? 0,
+              open: Number(open ?? 0),
+              high: Number(high ?? 0),
+              low: Number(low ?? 0),
+              close: Number(close ?? 0),
+              volume: Number(volume ?? 0),
               isClosed: ts + 60_000 < Date.now(),
             };
 
