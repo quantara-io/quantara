@@ -115,14 +115,25 @@ export function blendTimeframeVotes(
     // Build renormalized weights (all non-null TFs contribute their raw weights).
     const weightsUsed = buildWeightsUsed(perTimeframeVotes, weights);
 
+    // Shallow-copy the top-level map so caller mutation cannot corrupt the returned signal.
+    const perTimeframe: Record<Timeframe, TimeframeVote | null> = {
+      "1m": perTimeframeVotes["1m"],
+      "5m": perTimeframeVotes["5m"],
+      "15m": perTimeframeVotes["15m"],
+      "1h": perTimeframeVotes["1h"],
+      "4h": perTimeframeVotes["4h"],
+      "1d": perTimeframeVotes["1d"],
+    };
+
     return {
       pair,
       type: "hold",
       confidence: 0.5,
-      volatilityFlag: true,
+      // volatilityFlag is true only for vol gates; dispersion/stale use their own UI copy.
+      volatilityFlag: highestGateReason === "vol",
       gateReason: highestGateReason,
       rulesFired: Array.from(rulesFiredSet),
-      perTimeframe: perTimeframeVotes,
+      perTimeframe,
       weightsUsed,
       asOf,
       emittingTimeframe,
@@ -187,6 +198,16 @@ export function blendTimeframeVotes(
     confidence = Math.min(1, 0.5 + 0.1 * Math.abs(blended));
   }
 
+  // Shallow-copy the top-level map so caller mutation cannot corrupt the returned signal.
+  const perTimeframe: Record<Timeframe, TimeframeVote | null> = {
+    "1m": perTimeframeVotes["1m"],
+    "5m": perTimeframeVotes["5m"],
+    "15m": perTimeframeVotes["15m"],
+    "1h": perTimeframeVotes["1h"],
+    "4h": perTimeframeVotes["4h"],
+    "1d": perTimeframeVotes["1d"],
+  };
+
   return {
     pair,
     type,
@@ -194,7 +215,7 @@ export function blendTimeframeVotes(
     volatilityFlag: false,
     gateReason: null,
     rulesFired: Array.from(rulesFiredSet),
-    perTimeframe: perTimeframeVotes,
+    perTimeframe,
     weightsUsed: renormalized,
     asOf,
     emittingTimeframe,
