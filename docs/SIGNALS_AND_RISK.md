@@ -879,16 +879,152 @@ Phase 8 reads this table to compute: ratification accuracy delta vs algo-only, c
 
 ---
 
-## 8. Whale signal integration (forward-looking)
+## 8. Whale signal integration
 
-See `docs/WHALE_MONITORING.md` for the deeper plan. Hooks in this design:
+This section is the **consumer-side** spec — how `whale_events` produced by the system in `docs/WHALE_MONITORING.md` feed the signal engine. The producer side (Alchemy WebSocket, watchlist, classification, schema, per-asset detection thresholds) lives there.
 
-- A whale event (>$1M USD-equiv on-chain transfer to/from a tracked exchange wallet) generates a `WhaleEvent` record.
-- Aggregated over a rolling 1h window per pair, becomes another input to the LLM ratification prompt.
-- Large net inflows to exchanges → bearish bias (people moving to sell). Large outflows → bullish (accumulation).
-- Like sentiment, whale data does **not** enter the algo. It's qualitative and easily gameable; the LLM is the right place to weigh it.
+### 8.1 Source-of-truth ownership
 
-A future iteration may add a hard rule (e.g. "exchange net inflow > 10× 30-day average → force hold") if backtests show predictive value.
+| Concern | Owner |
+|---|---|
+| Architecture (Alchemy, Fargate `WhaleMonitor`, classifier, DDB schema) | `WHALE_MONITORING.md` |
+| Watchlist sourcing and curation | `WHALE_MONITORING.md` |
+| Per-asset detection thresholds (ETH 100, WBTC 5, USDT $500K, other $250K) | `WHALE_MONITORING.md` |
+| Raw signal-type taxonomy (deposit/withdrawal/stablecoin-inflow/dormant/etc.) | `WHALE_MONITORING.md` |
+| Aggregation shape consumed by the signal engine (this `WhaleSummary`) | **§8** |
+| LLM ratification prompt shape for whale context | **§8** |
+| When/whether whale flow becomes an algo hard rule | **§8** |
+| Cross-chain coverage policy and graceful degradation | **§8** |
+
+The two docs reference each other but do not contradict. Per-asset thresholds were duplicated/conflicting in earlier drafts (§8 said `>$1M`, WHALE_MONITORING.md had per-asset values). **Per-asset thresholds in WHALE_MONITORING.md are authoritative.**
+
+### 8.2 Cross-chain coverage — v1 = ETH / Polygon only
+
+`WHALE_MONITORING.md` targets ETH + Polygon via Alchemy. Coverage map for our 5 tracked pairs:
+
+| Pair | Native chain | v1 whale coverage |
+|---|---|---|
+| BTC/USDT | Bitcoin | **Partial** — WBTC on ETH only (~5% of BTC supply moves through wrapped) |
+| ETH/USDT | Ethereum | **Full** |
+| SOL/USDT | Solana | **None** — Solana not monitored in v1 |
+| XRP/USDT | XRPL | **None** |
+| DOGE/USDT | Dogecoin | **None** |
+
+For SOL / XRP / DOGE, the LLM ratification prompt receives an explicit "whale data unavailable for this pair" marker (rather than `null` that the LLM might silently misinterpret). Reasoning strings for those pairs cannot speculate about whale flow.
+
+**Phase 9 candidate:** add Solana RPC monitoring (QuickNode/Alchemy Solana free tier) to cover SOL/USDT. Trigger: ETH whale signals show measurable predictive value in Phase 8 attribution.
+
+### 8.3 Aggregation — `WhaleSummary` per pair
+
+The signal engine reads aggregated `WhaleSummary` objects, not raw `whale_events`. Aggregator runs whenever a new whale event lands for a tracked pair, refreshing the relevant pair's summary in DDB.
+
+```ts
+type WhaleSummary = {
+  pair: string;
+  coverage: "full" | "partial" | "none"; // per §8.2 coverage map
+  windows: {
+    "1h":  WhaleWindow;
+    "4h":  WhaleWindow;
+    "24h": WhaleWindow;
+  };
+  recentEvents: Array<{
+    txHash: string;
+    valueUsd: number;
+    signalType: "exchange_deposit" | "exchange_withdrawal" | "stablecoin_inflow" | "large_transfer" | "dormant_activation";
+    direction: "bullish" | "bearish" | "neutral";
+    fromLabel: string | null;       // e.g. "binance", "jump_trading", "dormant_2y"
+    toLabel: string | null;
+    timestamp: string;
+  }>;  // top 5 by valueUsd within last 24h, deduped by txHash
+  computedAt: string;
+};
+
+type WhaleWindow = {
+  netFlowUsd: number;          // bullish-positive: outflows − inflows
+  exchangeInflowUsd: number;
+  exchangeOutflowUsd: number;
+  eventCount: number;
+  bullishEventCount: number;
+  bearishEventCount: number;
+  dormantActivations: number;
+  correlatedMoves: number;     // ≥3 whales same direction in 30min
+};
+```
+
+Stored in DDB `whale_summaries` table, key `pair`, TTL 24h (recompute on every whale event). Same row pattern as `sentiment` aggregates from §6.
+
+### 8.4 LLM ratification consumption — what the prompt sees
+
+The §7 ratification prompt receives:
+
+```ts
+whaleSummary: {
+  ...WhaleSummary,
+  staleness: "fresh" | "stale" | "unavailable"
+}
+```
+
+- `fresh`: `computedAt` < 5 min ago
+- `stale`: `computedAt` between 5 min and 1h ago
+- `unavailable`: no `WhaleSummary` exists for this pair, or `coverage === "none"`
+
+The LLM is instructed to:
+- Ignore whale flow when `coverage === "none"` (no speculation)
+- Note staleness in `reasoning` if `staleness !== "fresh"` ("whale flow data is stale by 18 minutes")
+- Quote a specific event from `recentEvents` when one is materially relevant ("100 ETH moved from a dormant 2-year wallet to Coinbase 12 minutes ago")
+
+### 8.5 Algo path: whale flow stays out (v1)
+
+Same backtestability rationale as sentiment (§6): whale data does not enter the algo's deterministic rule confluence in v1. It enters only the LLM ratification step.
+
+This preserves:
+- Backtestability — algo signals reproducible from candles alone
+- Attribution clarity — whale-derived value can be measured separately by toggling LLM ratification on/off in offline replays
+- Compliance defensibility — "the algorithm fired on RSI + MACD; the LLM downgraded based on whale flow context"
+
+### 8.6 Hard-rule promotion — Phase 8+ criteria
+
+A whale-derived hard rule earns its slot in the algo only when, over **≥30 resolved signals per `(pair, TF)`** (per §10's outcome tracking):
+
+- Adding the rule increases directional accuracy by ≥3 percentage points, AND
+- Incremental contribution > 0 (the signal isn't already captured by an existing rule's correlation with whale flow)
+
+Concrete candidate hard rules to evaluate post-Phase-8:
+
+| Candidate | Condition | Effect |
+|---|---|---|
+| `whale-net-inflow-extreme` | `exchangeInflowUsd / 24h_average > 5` | Force `hold` (overrides bullish algo signal) |
+| `whale-net-outflow-confirming` | `exchangeOutflowUsd > $5M in 4h` AND algo signal is bullish | +0.4 strength bullish (confluence boost) |
+| `whale-dormant-activation` | dormant wallet activation in last 1h | Force `hold` (uncertainty pre-news) |
+
+None of these ship in v1. Track the data; let attribution decide.
+
+### 8.7 Graceful degradation — whale monitor unavailability
+
+When the whale monitor is unavailable (Alchemy outage, Fargate restart, Etherscan rate-limited):
+
+- `WhaleSummary.computedAt` ages past the 5-min freshness threshold → `staleness` flips to `stale`, then `unavailable`
+- LLM ratification continues with stale-tagged data, falling back to "no whale context" if the data is too old to be informative
+- **Algo path is unaffected.** Algo signals continue to flow regardless of whale monitor state.
+
+This matches the LLM/sentiment pattern: advisory inputs gracefully degrade; the algo is the source of truth.
+
+### 8.8 Privacy / compliance
+
+- Don't store user wallet addresses (we have no on-chain user identity to begin with)
+- Don't surface specific wallet addresses in user-facing reasoning strings — use labels (e.g. *"a known Coinbase wallet"*) rather than `0xabc...`
+- Don't republish the watchlist externally (it's a derivative work of public attribution sources; safer to keep internal)
+- Internal storage of wallet addresses with labels is fine — only the user-facing reasoning string is sanitized
+
+### 8.9 What §8 explicitly defers
+
+| Topic | Phase |
+|---|---|
+| SOL / XRP / DOGE whale monitoring | Phase 9 (Solana first if ETH proves predictive) |
+| Native BTC node monitoring (vs WBTC proxy) | Phase 9+ |
+| Hard-rule promotion of any whale signal | Phase 8 attribution (≥30 resolved signals) |
+| Multi-chain DEX swap detection (vs CEX-flow only) | Phase 10+ |
+| Real-time correlated-whale-move detection | Phase 9 (correlated-moves field exists in summary; detector lives in producer) |
 
 ---
 
