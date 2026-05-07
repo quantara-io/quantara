@@ -5,6 +5,7 @@ export type * from "./types/deals.js";
 export type * from "./types/coach.js";
 export type * from "./types/api.js";
 export type * from "./types/ingestion.js";
+export type * from "./types/indicators.js";
 
 export { TIER_IDS } from "./types/tiers.js";
 export { SIGNAL_TYPES } from "./types/signals.js";
