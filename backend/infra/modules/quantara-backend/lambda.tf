@@ -128,6 +128,20 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
         Action   = ["dynamodb:DescribeTable", "dynamodb:Scan"]
         Resource = "arn:aws:dynamodb:${var.aws_region}:*:table/${local.prefix}-*"
       },
+      {
+        # Read-only access for the admin Market and News pages, which Query
+        # and GetItem from ingestion-owned tables. Without this, calls fail
+        # with AccessDeniedException and the admin endpoints silently return
+        # empty results.
+        Effect = "Allow"
+        Action = ["dynamodb:Query", "dynamodb:GetItem"]
+        Resource = [
+          aws_dynamodb_table.prices.arn,
+          aws_dynamodb_table.candles.arn,
+          aws_dynamodb_table.news_events.arn,
+          aws_dynamodb_table.ingestion_metadata.arn,
+        ]
+      },
     ]
   })
 }
