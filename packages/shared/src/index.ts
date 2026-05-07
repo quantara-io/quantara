@@ -16,4 +16,4 @@ export { DEAL_TYPES, DEAL_SORT_OPTIONS } from "./types/deals.js";
 export { TIMEFRAMES } from "./types/ingestion.js";
 
 export { TIER_DEFINITIONS } from "./constants/tiers.js";
-export { SIGNAL_COLORS, ADVISORY_DISCLAIMER, VOLATILITY_BANNER } from "./constants/signals.js";
+export { SIGNAL_COLORS, ADVISORY_DISCLAIMER, VOLATILITY_BANNER, MIN_CONFLUENCE, RULES } from "./constants/signals.js";
