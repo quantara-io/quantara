@@ -16,3 +16,6 @@ export { TIMEFRAMES } from "./types/ingestion.js";
 
 export { TIER_DEFINITIONS } from "./constants/tiers.js";
 export { SIGNAL_COLORS, ADVISORY_DISCLAIMER, VOLATILITY_BANNER } from "./constants/signals.js";
+export { TRADING_PAIRS } from "./constants/pairs.js";
+export type { TradingPair } from "./constants/pairs.js";
+export { VOL_GATE_THRESHOLDS } from "./constants/vol-gates.js";
