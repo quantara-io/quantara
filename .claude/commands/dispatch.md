@@ -46,6 +46,15 @@ You are the orchestrator. Do not implement the issue yourself. Your job is to:
    ```
    Use `Bash(..., run_in_background: true)`. When the task completes, read the output file and surface its `# Codex Review` block **verbatim** — do not paraphrase, summarize, or fix anything. The trailing `""` is required (no focus-text — the script rejects custom focus arguments under `/codex:review`).
 
+   **Post the codex output as a PR comment regardless of verdict** — even when codex finds no concerns. This creates a permanent record on the PR for human reviewers and future audits.
+
+   ```bash
+   CODEX_BODY=$(awk '/^# Codex Review/,0' /private/tmp/.../<task-output-file>)
+   gh pr comment $PR --body "$(printf '**Codex second-opinion review** (automated)\n\n%s' "$CODEX_BODY")"
+   ```
+
+   The `**Codex second-opinion review** (automated)` prefix marks the comment as machine-generated so a future filter or human can distinguish it from human review feedback.
+
    If codex flags real issues that the in-house reviewer missed, file a follow-up issue rather than blocking the current PR.
 
 6. **Report a one-line summary** to the user with the PR URL and what happens next (e.g. "PR #30 approved by reviewer; codex review running in background, will surface when done").
