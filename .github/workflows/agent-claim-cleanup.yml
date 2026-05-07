@@ -1,0 +1,33 @@
+name: Clean up agent-claimed label on PR close
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  issues: write
+  pull-requests: read
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'agent/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract linked issue numbers
+        id: issues
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Match "Closes #N", "Fixes #N", "Resolves #N" (case-insensitive, multiple allowed)
+          NUMS=$(echo "$BODY" | grep -oiE '(closes|fixes|resolves)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')
+          echo "numbers=$NUMS" >> "$GITHUB_OUTPUT"
+
+      - name: Remove agent-claimed from each linked issue
+        if: steps.issues.outputs.numbers != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          for N in ${{ steps.issues.outputs.numbers }}; do
+            gh issue edit "$N" --repo "$REPO" --remove-label "agent-claimed" || true
+          done
