@@ -24,6 +24,8 @@ output "table_names" {
     candles            = aws_dynamodb_table.candles.name
     news_events        = aws_dynamodb_table.news_events.name
     ingestion_metadata = aws_dynamodb_table.ingestion_metadata.name
+    indicator_state    = aws_dynamodb_table.indicator_state.name
+    signals_v2         = aws_dynamodb_table.signals_v2.name
   }
 }
 

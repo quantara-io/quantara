@@ -338,3 +338,80 @@ resource "aws_dynamodb_table" "prices" {
 
   point_in_time_recovery { enabled = true }
 }
+
+# Phase 4a: indicator-state cache
+# PK: pair#exchange#timeframe  SK: asOf (ISO8601)
+# TTL: 7 days — only the latest snapshot matters; old ones expire automatically
+resource "aws_dynamodb_table" "indicator_state" {
+  name         = "${local.prefix}-indicator-state"
+  billing_mode = "PAY_PER_REQUEST"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "pk"
+  range_key = "asOf"
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "asOf"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+}
+
+# Phase 4a: signals storage
+# PK: pair  SK: emittedAt#signalId (timestamp-prefixed UUID, newest-first with ScanIndexForward=false)
+# GSI by-pair-active: PK=pair SK=emittedAt (ALL projection, same access pattern)
+# TTL: 90 days
+resource "aws_dynamodb_table" "signals_v2" {
+  name         = "${local.prefix}-signals-v2"
+  billing_mode = "PAY_PER_REQUEST"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "pair"
+  range_key = "emittedAtSignalId"
+
+  attribute {
+    name = "pair"
+    type = "S"
+  }
+
+  attribute {
+    name = "emittedAtSignalId"
+    type = "S"
+  }
+
+  attribute {
+    name = "emittedAt"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "by-pair-active"
+    hash_key        = "pair"
+    range_key       = "emittedAt"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+}

@@ -178,6 +178,10 @@ resource "aws_iam_role_policy" "ingestion_ecs_dynamodb" {
         aws_dynamodb_table.news_events.arn,
         "${aws_dynamodb_table.news_events.arn}/index/*",
         aws_dynamodb_table.ingestion_metadata.arn,
+        aws_dynamodb_table.indicator_state.arn,
+        "${aws_dynamodb_table.indicator_state.arn}/index/*",
+        aws_dynamodb_table.signals_v2.arn,
+        "${aws_dynamodb_table.signals_v2.arn}/index/*",
       ]
     }]
   })
@@ -265,6 +269,8 @@ resource "aws_ecs_task_definition" "ingestion" {
       { name = "TABLE_METADATA", value = aws_dynamodb_table.ingestion_metadata.name },
       { name = "ENRICHMENT_QUEUE_URL", value = aws_sqs_queue.enrichment.url },
       { name = "MARKET_EVENTS_QUEUE_URL", value = aws_sqs_queue.market_events.url },
+      { name = "TABLE_INDICATOR_STATE", value = aws_dynamodb_table.indicator_state.name },
+      { name = "TABLE_SIGNALS_V2", value = aws_dynamodb_table.signals_v2.name },
     ]
 
     secrets = [

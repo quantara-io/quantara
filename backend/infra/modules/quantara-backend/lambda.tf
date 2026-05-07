@@ -42,6 +42,8 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
         aws_dynamodb_table.deals.arn, "${aws_dynamodb_table.deals.arn}/index/*",
         aws_dynamodb_table.deal_interests.arn,
         aws_dynamodb_table.campaigns.arn,
+        aws_dynamodb_table.signals_v2.arn, "${aws_dynamodb_table.signals_v2.arn}/index/*",
+        aws_dynamodb_table.indicator_state.arn,
       ]
     }]
   })
@@ -195,8 +197,10 @@ resource "aws_lambda_function" "api" {
       TABLE_COACH_MESSAGES = aws_dynamodb_table.coach_messages.name
       TABLE_DEALS          = aws_dynamodb_table.deals.name
       TABLE_DEAL_INTERESTS = aws_dynamodb_table.deal_interests.name
-      TABLE_CAMPAIGNS      = aws_dynamodb_table.campaigns.name
-      CORS_ORIGIN          = var.cors_origin
+      TABLE_CAMPAIGNS        = aws_dynamodb_table.campaigns.name
+      TABLE_INDICATOR_STATE  = aws_dynamodb_table.indicator_state.name
+      TABLE_SIGNALS_V2       = aws_dynamodb_table.signals_v2.name
+      CORS_ORIGIN            = var.cors_origin
       CLOUDFRONT_URL       = "https://${aws_cloudfront_distribution.api.domain_name}"
       ENVIRONMENT          = var.environment
       LOG_LEVEL            = var.log_level
