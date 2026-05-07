@@ -78,6 +78,17 @@ export function macd(
  *   time at bar 25 (the first bar where EMA12 and EMA26 are both defined),
  *   the buffer may be left as [] because macdUpdate will self-correct by
  *   reconstructing the implicit macdLine from (emaFast − emaSlow).
+ *
+ * signalSeedingActive lifecycle:
+ *   - false  before the first MACD line value is produced (bar < 25).
+ *   - true   from the first MACD bar (bar 25) until signalEma is seeded (bar 33).
+ *   - irrelevant (stays true from last warm-up update) once signalEma !== null.
+ *
+ *   macdUpdate throws if signalSeedingActive is true, signalEma is still null,
+ *   AND macdValuesSinceSeed is empty — that combination means the buffer was
+ *   discarded after bar 25, making recovery impossible. Callers must either
+ *   persist and restore macdValuesSinceSeed or perform a full macd() recompute
+ *   from candle history before resuming incremental updates.
  */
 export interface MacdIncrState {
   emaFast: number;
@@ -94,6 +105,17 @@ export interface MacdIncrState {
    * self-correct by recovering the implicit macdLine from emaFast − emaSlow.
    */
   macdValuesSinceSeed: number[];
+  /**
+   * True once the first MACD line value exists (bar 25) and signal warm-up
+   * is in progress. Stays true until signalEma is seeded (bar 33), after
+   * which it is no longer consulted.
+   *
+   * This flag lets macdUpdate detect the unrecoverable case where a
+   * checkpoint taken after bar 25 was reloaded with macdValuesSinceSeed: [].
+   * The bar-25 self-correction path (empty buffer + seeding not yet active)
+   * is the only safe empty-buffer cold-start.
+   */
+  signalSeedingActive: boolean;
 }
 
 /**
@@ -104,14 +126,19 @@ export interface MacdIncrState {
  *   signalN values, seeds signalEma = SMA(buffer) and clears the buffer.
  *   Until seeded, signalEma and hist are null in the returned state.
  *
- *   Self-correction: if macdValuesSinceSeed is empty and signalEma is null
- *   (state was initialised or reloaded without the buffer), macdUpdate
- *   reconstructs the implicit macdLine for the checkpoint bar from
- *   (prev.emaFast − prev.emaSlow) and seeds the buffer with it before
- *   pushing the current bar's macdLine. This keeps signal seeding on-track
- *   when callers bootstrap a fresh state at bar 25 with an empty buffer.
- *   For checkpoints taken at bars 26-33, the full buffer must be persisted
- *   and restored — see MacdIncrState.macdValuesSinceSeed.
+ *   Self-correction at bar 25 only: if signalSeedingActive is false AND
+ *   macdValuesSinceSeed is empty, macdUpdate treats this as the very first
+ *   MACD bar (bar 25). It reconstructs the implicit macdLine from
+ *   (prev.emaFast − prev.emaSlow) and starts the buffer. This allows callers
+ *   to bootstrap a fresh initial state at bar 25 without pre-populating the
+ *   buffer. signalSeedingActive is set to true in the returned state.
+ *
+ *   Defensive throw for post-bar-25 bad reloads: if signalSeedingActive is
+ *   true, signalEma is still null, and macdValuesSinceSeed is empty, the
+ *   buffer was discarded after warm-up began and recovery is impossible.
+ *   macdUpdate throws rather than silently producing wrong signal values.
+ *   To fix: persist and restore macdValuesSinceSeed, or perform a full
+ *   macd() recompute from candle history before resuming incremental updates.
  *
  * Steady-state behaviour (signalEma !== null):
  *   Standard EMA update; macdValuesSinceSeed is kept as [].
@@ -133,6 +160,7 @@ export function macdUpdate(
 
   let signalEma: number | null;
   let macdValuesSinceSeed: number[];
+  let signalSeedingActive: boolean;
   let histVal: number | null = null;
 
   if (prev.signalEma !== null) {
@@ -140,21 +168,30 @@ export function macdUpdate(
     signalEma = alphaSignal * macdLine + (1 - alphaSignal) * prev.signalEma;
     histVal = macdLine - signalEma;
     macdValuesSinceSeed = [];
+    signalSeedingActive = prev.signalSeedingActive;
   } else {
     // Cold-start: accumulate until we have enough values to seed.
-    //
-    // Self-correction for mid-warm-up checkpoints: if the buffer is empty but
-    // both EMAs are already seeded (ema26 has fired), the state represents a
-    // bar for which a macdLine value is implicit in (emaFast − emaSlow). A
-    // checkpoint saved at that bar and reloaded with macdValuesSinceSeed: []
-    // would otherwise skip that bar's contribution and delay signal seeding.
-    // Restoring the implicit value here makes the helper correct regardless of
-    // whether the caller persisted the buffer or cleared it on reload.
+    if (prev.signalSeedingActive && prev.macdValuesSinceSeed.length === 0) {
+      // Unrecoverable: warm-up was in progress but the buffer was discarded.
+      // Producing values here would silently seed the signal EMA late and
+      // diverge from a full macd() recompute. Throw instead.
+      throw new Error(
+        "macdUpdate: state was checkpointed during signal warm-up (signalSeedingActive=true) " +
+          "but macdValuesSinceSeed is empty. " +
+          "Either persist the buffer across checkpoints (recommended) or perform a full " +
+          "macd() recompute from candle history before resuming incremental updates.",
+      );
+    }
+
+    // Self-correction for the initial bar-25 bootstrap: if signalSeedingActive
+    // is false and the buffer is empty, this is the very first MACD call. The
+    // implicit macdLine for the checkpoint bar is recoverable from emaFast − emaSlow.
     const priorBuffer =
-      prev.macdValuesSinceSeed.length === 0
+      prev.macdValuesSinceSeed.length === 0 && !prev.signalSeedingActive
         ? [prev.emaFast - prev.emaSlow]
         : [...prev.macdValuesSinceSeed];
     const buffer = [...priorBuffer, macdLine];
+
     if (buffer.length >= signalN) {
       // Seed signal EMA as SMA of the first signalN macd values.
       signalEma = buffer.slice(0, signalN).reduce((a, b) => a + b, 0) / signalN;
@@ -164,9 +201,11 @@ export function macdUpdate(
       }
       histVal = macdLine - signalEma;
       macdValuesSinceSeed = [];
+      signalSeedingActive = true;
     } else {
       signalEma = null;
       macdValuesSinceSeed = buffer;
+      signalSeedingActive = true;
     }
   }
 
@@ -177,5 +216,6 @@ export function macdUpdate(
     signalEma,
     hist: histVal,
     macdValuesSinceSeed,
+    signalSeedingActive,
   };
 }

@@ -100,6 +100,7 @@ describe("macdUpdate — cold-start path", () => {
       emaSlow,
       signalEma: null,
       macdValuesSinceSeed: [macdLine25],
+      signalSeedingActive: true,
     };
   }
 
@@ -141,6 +142,34 @@ describe("macdUpdate — cold-start path", () => {
     expect(lastUpd.signalEma).toBeCloseTo(signal[49]!, 4);
     expect(lastUpd.hist).toBeCloseTo(hist[49]!, 4);
   });
+
+  it.each([26, 27, 28, 29, 30, 31, 32].map((bar) => ({ bar })))(
+    "bar $bar: throws when reloaded with signalSeedingActive=true and empty buffer",
+    ({ bar }) => {
+      const closes = makeCloses(50);
+
+      // Build real EMA state at `bar` by running incrementally through bar-1,
+      // then simulating a bad reload: signalSeedingActive=true, buffer cleared.
+      let state = buildColdStateAfterBar25(closes);
+      // Advance state from bar 26 up to (bar - 1) so EMA values are correct.
+      for (let i = 26; i < bar; i++) {
+        state = macdUpdate(state, closes[i]);
+      }
+
+      // Simulate the bad reload: warm-up was in progress but buffer was discarded.
+      const badState: MacdIncrState = {
+        emaFast: state.emaFast,
+        emaSlow: state.emaSlow,
+        signalEma: null,
+        macdValuesSinceSeed: [], // buffer dropped — unrecoverable
+        signalSeedingActive: true, // warm-up was active at checkpoint
+      };
+
+      expect(() => macdUpdate(badState, closes[bar])).toThrow(
+        /macdUpdate: state was checkpointed during signal warm-up.*macdValuesSinceSeed is empty/,
+      );
+    },
+  );
 });
 
 describe("macdUpdate — mid-warm-up checkpoint parity", () => {
@@ -171,6 +200,7 @@ describe("macdUpdate — mid-warm-up checkpoint parity", () => {
       emaSlow,
       signalEma: null,
       macdValuesSinceSeed: [macdLine25],
+      signalSeedingActive: true,
     };
   }
 
@@ -197,11 +227,13 @@ describe("macdUpdate — mid-warm-up checkpoint parity", () => {
       const { signal, hist } = macd(closes);
 
       // Checkpoint at bar 25 (earliest possible): buffer has [m25].
-      // Simulate reload with macdValuesSinceSeed: [] (old buggy contract).
+      // Simulate reload with macdValuesSinceSeed: [] and signalSeedingActive: false
+      // (the only valid empty-buffer cold-start — bar-25 bootstrap path).
       const stateAt25 = buildColdStateAfterBar25(closes);
       const checkpoint: MacdIncrState = {
         ...stateAt25,
         macdValuesSinceSeed: [], // cleared, as per old JSDoc guidance
+        signalSeedingActive: false, // bar-25 self-correction requires this to be false
       };
 
       // Feed bars 26-32: should remain null (Option A recovers [m25] so
@@ -328,7 +360,7 @@ describe("macd — single-bar-update parity", () => {
     // (they're already at bar 33 from the loop above)
 
     // Advance incrementally bar 34..100.
-    let state: MacdIncrState = { emaFast, emaSlow, signalEma, macdValuesSinceSeed: [] };
+    let state: MacdIncrState = { emaFast, emaSlow, signalEma, macdValuesSinceSeed: [], signalSeedingActive: true };
     for (let i = 34; i <= 100; i++) {
       const upd = macdUpdate(state, closes[i]);
       state = upd;
