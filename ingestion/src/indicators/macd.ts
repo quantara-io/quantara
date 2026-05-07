@@ -67,9 +67,17 @@ export function macd(
 
 /**
  * State passed to and returned from macdUpdate.
- * When loading cold-start persisted state, set signalEma to null and
- * macdValuesSinceSeed to []. The helper will accumulate macdLine values
- * until it has signalN of them, then seed signalEma automatically.
+ *
+ * Checkpoint / persistence contract (Phase 4):
+ *   Persist ALL fields to DDB at each candle close and reload them as-is.
+ *   In particular, macdValuesSinceSeed MUST be persisted and restored — do
+ *   not reset it to [] on reload. Discarding the buffer during warm-up
+ *   (signalEma === null) causes delayed and incorrect signal seeding.
+ *
+ *   Exception — initial state only: when bootstrapping for the very first
+ *   time at bar 25 (the first bar where EMA12 and EMA26 are both defined),
+ *   the buffer may be left as [] because macdUpdate will self-correct by
+ *   reconstructing the implicit macdLine from (emaFast − emaSlow).
  */
 export interface MacdIncrState {
   emaFast: number;
@@ -80,6 +88,10 @@ export interface MacdIncrState {
    * Buffer used only during cold-start (signalEma === null).
    * Accumulates macdLine values until there are enough to seed the signal EMA.
    * Once signalEma is seeded this array is always empty.
+   *
+   * Must be persisted and restored intact across checkpoints. Only omit (set
+   * to []) when creating the initial state at bar 25 — macdUpdate will
+   * self-correct by recovering the implicit macdLine from emaFast − emaSlow.
    */
   macdValuesSinceSeed: number[];
 }
@@ -91,6 +103,15 @@ export interface MacdIncrState {
  *   Appends the new macdLine to macdValuesSinceSeed. Once the buffer reaches
  *   signalN values, seeds signalEma = SMA(buffer) and clears the buffer.
  *   Until seeded, signalEma and hist are null in the returned state.
+ *
+ *   Self-correction: if macdValuesSinceSeed is empty and signalEma is null
+ *   (state was initialised or reloaded without the buffer), macdUpdate
+ *   reconstructs the implicit macdLine for the checkpoint bar from
+ *   (prev.emaFast − prev.emaSlow) and seeds the buffer with it before
+ *   pushing the current bar's macdLine. This keeps signal seeding on-track
+ *   when callers bootstrap a fresh state at bar 25 with an empty buffer.
+ *   For checkpoints taken at bars 26-33, the full buffer must be persisted
+ *   and restored — see MacdIncrState.macdValuesSinceSeed.
  *
  * Steady-state behaviour (signalEma !== null):
  *   Standard EMA update; macdValuesSinceSeed is kept as [].
@@ -121,7 +142,19 @@ export function macdUpdate(
     macdValuesSinceSeed = [];
   } else {
     // Cold-start: accumulate until we have enough values to seed.
-    const buffer = [...prev.macdValuesSinceSeed, macdLine];
+    //
+    // Self-correction for mid-warm-up checkpoints: if the buffer is empty but
+    // both EMAs are already seeded (ema26 has fired), the state represents a
+    // bar for which a macdLine value is implicit in (emaFast − emaSlow). A
+    // checkpoint saved at that bar and reloaded with macdValuesSinceSeed: []
+    // would otherwise skip that bar's contribution and delay signal seeding.
+    // Restoring the implicit value here makes the helper correct regardless of
+    // whether the caller persisted the buffer or cleared it on reload.
+    const priorBuffer =
+      prev.macdValuesSinceSeed.length === 0
+        ? [prev.emaFast - prev.emaSlow]
+        : [...prev.macdValuesSinceSeed];
+    const buffer = [...priorBuffer, macdLine];
     if (buffer.length >= signalN) {
       // Seed signal EMA as SMA of the first signalN macd values.
       signalEma = buffer.slice(0, signalN).reduce((a, b) => a + b, 0) / signalN;

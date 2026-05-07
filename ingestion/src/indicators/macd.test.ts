@@ -143,6 +143,150 @@ describe("macdUpdate — cold-start path", () => {
   });
 });
 
+describe("macdUpdate — mid-warm-up checkpoint parity", () => {
+  /**
+   * Exercises the fix for issue #33: when an IndicatorState is checkpointed
+   * at any bar in the signal warm-up window (bars 25-33) and later reloaded,
+   * signalEma and macdHist must match the full macd() recompute.
+   *
+   * Two sub-scenarios:
+   *   A. Bar-25 checkpoint with macdValuesSinceSeed cleared to []:
+   *      Option A self-correction recovers the implicit macdLine from
+   *      (emaFast - emaSlow) and seeds the buffer correctly.
+   *
+   *   B. Checkpoints at bars 25-33 with macdValuesSinceSeed preserved:
+   *      The buffer is restored as-is; signal seeds at bar 33 in all cases.
+   */
+
+  function buildColdStateAfterBar25(closes: number[]): MacdIncrState {
+    const alpha12 = 2 / 13;
+    let emaFast = closes.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
+    for (let i = 12; i <= 25; i++) {
+      emaFast = alpha12 * closes[i] + (1 - alpha12) * emaFast;
+    }
+    const emaSlow = closes.slice(0, 26).reduce((a, b) => a + b, 0) / 26;
+    const macdLine25 = emaFast - emaSlow;
+    return {
+      emaFast,
+      emaSlow,
+      signalEma: null,
+      macdValuesSinceSeed: [macdLine25],
+    };
+  }
+
+  /**
+   * Run macdUpdate incrementally from bar 25 through checkpointBar,
+   * returning the state immediately after checkpointBar is processed.
+   */
+  function runIncrementalToBar(
+    closes: number[],
+    checkpointBar: number,
+  ): MacdIncrState {
+    let state = buildColdStateAfterBar25(closes);
+    for (let i = 26; i <= checkpointBar; i++) {
+      state = macdUpdate(state, closes[i]);
+    }
+    return state;
+  }
+
+  it(
+    "bar-25 checkpoint with cleared buffer: Option A self-correction seeds" +
+      " signal at bar 33 matching full recompute",
+    () => {
+      const closes = makeCloses(60);
+      const { signal, hist } = macd(closes);
+
+      // Checkpoint at bar 25 (earliest possible): buffer has [m25].
+      // Simulate reload with macdValuesSinceSeed: [] (old buggy contract).
+      const stateAt25 = buildColdStateAfterBar25(closes);
+      const checkpoint: MacdIncrState = {
+        ...stateAt25,
+        macdValuesSinceSeed: [], // cleared, as per old JSDoc guidance
+      };
+
+      // Feed bars 26-32: should remain null (Option A recovers [m25] so
+      // the buffer grows to 8 values — still one short of seeding).
+      let state = checkpoint;
+      for (let i = 26; i <= 32; i++) {
+        const upd = macdUpdate(state, closes[i]);
+        state = upd;
+        expect(upd.signalEma).toBeNull();
+      }
+
+      // Bar 33: 9th value — seeding fires at the same bar as full recompute.
+      const upd33 = macdUpdate(state, closes[33]);
+      expect(upd33.signalEma).not.toBeNull();
+      expect(upd33.hist).not.toBeNull();
+
+      // Continue to bar 49 and verify convergence with full recompute.
+      state = upd33;
+      let lastUpd = upd33;
+      for (let i = 34; i <= 49; i++) {
+        lastUpd = macdUpdate(state, closes[i]);
+        state = lastUpd;
+      }
+      expect(lastUpd.signalEma).toBeCloseTo(signal[49]!, 4);
+      expect(lastUpd.hist).toBeCloseTo(hist[49]!, 4);
+    },
+  );
+
+  it.each(
+    [25, 26, 27, 28, 29, 30, 31, 32, 33].map((bar) => ({ bar })),
+  )(
+    "checkpoint at bar $bar with preserved buffer: signal seeds at bar 33," +
+      " signalEma and hist match full recompute",
+    ({ bar }) => {
+      const closes = makeCloses(60);
+      const { signal, hist } = macd(closes);
+
+      // Checkpoint at `bar` with full buffer preserved (correct contract).
+      const checkpoint = runIncrementalToBar(closes, bar);
+
+      // For bars 25-32 the signal has not yet been seeded at the checkpoint.
+      // For bar 33 runIncrementalToBar already processed the seeding bar.
+      if (bar < 33) {
+        expect(checkpoint.signalEma).toBeNull();
+
+        // Feed bars (bar+1) through 32 — signal must remain null until bar 33.
+        let state = checkpoint;
+        for (let i = bar + 1; i <= 32; i++) {
+          const upd = macdUpdate(state, closes[i]);
+          state = upd;
+          expect(upd.signalEma).toBeNull();
+        }
+
+        // Bar 33: seeding fires at the same bar as full recompute.
+        const upd33 = macdUpdate(state, closes[33]);
+        expect(upd33.signalEma).not.toBeNull();
+        expect(upd33.hist).not.toBeNull();
+
+        // Continue to bar 49 and assert parity with full recompute.
+        state = upd33;
+        let lastUpd = upd33;
+        for (let i = 34; i <= 49; i++) {
+          lastUpd = macdUpdate(state, closes[i]);
+          state = lastUpd;
+        }
+        expect(lastUpd.signalEma).toBeCloseTo(signal[49]!, 4);
+        expect(lastUpd.hist).toBeCloseTo(hist[49]!, 4);
+      } else {
+        // Bar 33 checkpoint: seeding already occurred inside runIncrementalToBar.
+        expect(checkpoint.signalEma).not.toBeNull();
+
+        // Continue from bar 34 to bar 49 and verify parity.
+        let state: MacdIncrState = checkpoint;
+        let lastUpd!: ReturnType<typeof macdUpdate>;
+        for (let i = 34; i <= 49; i++) {
+          lastUpd = macdUpdate(state, closes[i]);
+          state = lastUpd;
+        }
+        expect(lastUpd.signalEma).toBeCloseTo(signal[49]!, 4);
+        expect(lastUpd.hist).toBeCloseTo(hist[49]!, 4);
+      }
+    },
+  );
+});
+
 describe("macd — single-bar-update parity", () => {
   const closes = makeCloses(200);
 
