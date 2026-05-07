@@ -86,12 +86,13 @@ export function buildIndicatorState(
     return out;
   }
 
-  function trailNum(series: number[]): number[] {
-    const out: number[] = [];
+  function trailNum(series: number[]): (number | null)[] {
+    const out: (number | null)[] = [];
     for (let i = last; i >= 0 && out.length < HISTORY_SIZE; i--) {
       out.push(series[i]);
     }
-    while (out.length < HISTORY_SIZE) out.push(0);
+    // Pad with null (not 0) so callers can distinguish missing bars from real flat bars.
+    while (out.length < HISTORY_SIZE) out.push(null);
     return out;
   }
 

@@ -35,6 +35,6 @@ export interface IndicatorStateHistory {
   macdHist: (number | null)[];
   ema20: (number | null)[];
   ema50: (number | null)[];
-  close: number[];
-  volume: number[];
+  close: (number | null)[];
+  volume: (number | null)[];
 }
