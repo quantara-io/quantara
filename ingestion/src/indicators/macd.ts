@@ -1,3 +1,37 @@
+/**
+ * PROVISIONAL DESIGN — do not iterate on macdUpdate until Phase 4 lands.
+ *
+ * See issue #41 for the full context. Summary of known design tensions:
+ *
+ * 1. signalSeedingActive lifecycle contradicts bar-25 self-correction.
+ *    The JSDoc on MacdIncrState says the flag is `true` from bar 25 onwards.
+ *    The bar-25 self-correction path inside macdUpdate requires the flag to be
+ *    `false` to bypass the defensive throw. Tests bootstrap with
+ *    `signalSeedingActive: false` at bar 25, which works but contradicts the
+ *    documented lifecycle.
+ *
+ * 2. Bar 26-32 cleared-buffer reload throws rather than recovering.
+ *    The throw is correct in spirit — only one MACD value is recoverable from
+ *    `prev.emaFast − prev.emaSlow`, so genuine recovery without a persisted
+ *    buffer is impossible. However, the throw condition is gated on
+ *    `signalSeedingActive`, which ties it to the contradiction in (1).
+ *
+ * 3. No explicit bar index in state.
+ *    "Where am I in warm-up" is detected via flag heuristics rather than an
+ *    explicit bar counter. Phase 4 may want explicit tracking, at which point
+ *    much of this complexity can be deleted in favour of a simple position check.
+ *
+ * What Phase 4 must do (see issue #41 for the full checklist):
+ *   - Decide whether IndicatorState persists macdValuesSinceSeed (recommended:
+ *     yes — it removes the entire ambiguity class).
+ *   - If yes: delete the bar-25 self-correction path, signalSeedingActive, and
+ *     the defensive throw. Cold-start becomes: load persisted state, call
+ *     macdUpdate — no special cases.
+ *   - If no: pick one resolution for the contradictory contract (either remove
+ *     the self-correction path or remove the flag entirely).
+ *   - Apply the same redesign to RSI and ATR, which have analogous warm-up
+ *     patterns and face the same trap.
+ */
 import { ema } from "./helpers.js";
 
 export interface MacdSeries {
