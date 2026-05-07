@@ -371,6 +371,32 @@ resource "aws_dynamodb_table" "indicator_state" {
   point_in_time_recovery { enabled = true }
 }
 
+# Phase 5a: embedding-cache — stores article embedding vectors for cosine-similarity dedup.
+# Kept separate from news-events because each vector is 1536 floats (text-embedding-3-small)
+# and not all consumers need it. TTL = 24 h (set by the enrichment Lambda).
+resource "aws_dynamodb_table" "embedding_cache" {
+  name         = "${local.prefix}-embedding-cache"
+  billing_mode = "PAY_PER_REQUEST"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key = "articleId"
+
+  attribute {
+    name = "articleId"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+}
+
 # Phase 4a: signals storage
 # PK: pair  SK: emittedAt#signalId (timestamp-prefixed UUID, newest-first with ScanIndexForward=false)
 # GSI by-pair-active: PK=pair SK=emittedAt (ALL projection, same access pattern)
