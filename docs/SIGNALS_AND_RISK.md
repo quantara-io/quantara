@@ -1117,43 +1117,142 @@ emit  →  active  →  expired  →  resolved
 - **expired:** past `expiresAt`. No longer surfaced as "current."
 - **resolved:** at `expiresAt`, the outcome is computed by comparing `priceAtSignal` to the price at `expiresAt`.
 
-### 10.2 Expiry windows (per timeframe)
+Plus an **invalidated** state (per §6.7): a fresh high-magnitude article can mark an active signal as `invalidatedAt: <ISO8601>`. Invalidated signals are **not resolved** — see §10.4.
+
+### 10.2 Expiry windows — crypto-tuned (8× source TF)
 
 | Source timeframe | Expiry window |
 |---|---|
-| 15m | 4 hours |
-| 1h | 12 hours |
-| 4h | 2 days |
-| 1d | 5 days |
+| 15m | 2 hours |
+| 1h | 8 hours |
+| 4h | 1 day |
+| 1d | 3 days |
 
-For multi-horizon blended signals, use the `1d` window (longest source horizon).
+For multi-horizon blended signals, use the `1d` window (longest source horizon, here 3 days).
 
-### 10.3 Outcome rule
+Crypto moves faster than equities; shorter windows give faster Phase 8 attribution data accumulation and faster signal invalidation when the regime shifts. Trade-off: slightly more `pending` signals on slow days. Acceptable.
+
+### 10.3 Outcome rule — `hold` is now scored against move magnitude
 
 ```
 priceMove = (priceAtResolution − priceAtSignal) / priceAtSignal
-threshold = 0.5 · ATR_pct  // half an ATR move = "meaningful"
+threshold = 0.5 · ATR_pct                      # half-ATR = "meaningful"
 
-if signal.type == "hold":
-    outcome = "neutral"  // we don't score holds against direction
+if signal.gateReason !== null:                  # gate-driven hold: unscored
+    outcome = "neutral"
+
+elif signal.type == "hold":                     # strategic hold: scored
+    if abs(priceMove) < threshold:              outcome = "correct"     # market stayed quiet
+    elif abs(priceMove) > 2 · threshold:        outcome = "incorrect"   # missed a move
+    else:                                       outcome = "neutral"
+
 elif signal.type == "buy":
-    if priceMove > +threshold:  outcome = "correct"
-    elif priceMove < -threshold: outcome = "incorrect"
-    else:                        outcome = "neutral"
+    if priceMove > +threshold:                  outcome = "correct"
+    elif priceMove < −threshold:                outcome = "incorrect"
+    else:                                       outcome = "neutral"
+
 elif signal.type == "sell":
-    if priceMove < -threshold:  outcome = "correct"
-    elif priceMove > +threshold: outcome = "incorrect"
-    else:                        outcome = "neutral"
+    if priceMove < −threshold:                  outcome = "correct"
+    elif priceMove > +threshold:                outcome = "incorrect"
+    else:                                       outcome = "neutral"
 ```
 
-ATR-relative thresholding is the right choice: a "meaningful move" in DOGE is wildly different from BTC. Using a flat % cutoff would over-credit signals on more volatile pairs.
+**Why `hold` is now scored:** without it, ~50%+ of resolved signals contribute nothing to calibration. Strategic holds that correctly anticipated a quiet market are real predictions and should be tracked. Gate-driven holds (vol/dispersion/stale) remain unscored — they're observations of conditions, not directional predictions.
 
-### 10.4 What we do with outcomes
+ATR-relative thresholding stays — a "meaningful move" in DOGE is wildly different from BTC. Flat-% cutoff would over-credit volatile pairs.
 
-- Compute rolling 30/90-day accuracy per pair, per timeframe, per rule that fired.
-- Surface "73% directional accuracy on BTC over 90 days" badges (compliance-cleared phrasing — never claim "profitable").
-- Feed back into Kelly sizing once `n ≥ 30`.
-- Identify failing rules (rule-X fires often but its signals score `incorrect`) and prune them.
+### 10.4 Invalidated signals — survivorship
+
+Invalidated signals (§6.7) **skip resolution entirely.** Excluded from accuracy stats and Brier/ECE calculations. Tracked separately as a count surfaced alongside the accuracy badges:
+
+```
+"73% directional accuracy on BTC over 30 days"
+"12 signals invalidated by breaking news in the same window"
+```
+
+Including invalidated signals in accuracy would distort the metric — they were declared invalid before their natural resolution.
+
+### 10.5 Per-rule attribution — granularity `(rule, pair, TF)`
+
+Each signal carries `rulesFired: string[]`. Outcome data feeds into a per-bucket attribution table:
+
+```
+attribution[rule][pair][TF] = {
+  correct:   <count>
+  incorrect: <count>
+  neutral:   <count>
+  pending:   <count>
+  brier:     <metric>           // computed when ≥30 resolved
+  lastUpdated: ISO8601
+}
+```
+
+14 rules × 5 pairs × 4 TFs = **280 buckets**. Granular enough to catch pair-specific rule misfires (e.g. *"`bollinger-touch-lower` works on BTC but not DOGE"*) without thinning samples beyond usefulness.
+
+**Not split by `type` (buy/sell/hold)** — a rule's contribution is direction-agnostic; splitting would 3× the buckets and overfit.
+
+### 10.6 Calibration measurement — Brier + ECE, K=10
+
+Per §1, calibration is an explicit goal. Two metrics:
+
+```
+Brier(predictions) = mean((confidence_i − outcome_i)²)
+   where outcome_i = 1 if "correct", 0 if "incorrect", neutral excluded
+
+ECE(predictions, K=10):
+   bins = [0,0.1), [0.1,0.2), ..., [0.9,1.0]
+   for each bin: |mean(confidence in bin) − accuracy in bin|
+   ECE = count-weighted mean across bins
+```
+
+Computed per `(pair, TF)` over a rolling 90-day window. Surfaced on a calibration dashboard:
+- Brier < 0.25 = "decent" for advisory products
+- Brier < 0.20 = good
+- ECE < 0.05 = well-calibrated
+
+Phase 8 fits per-(pair, TF) Platt scaling (`confidence_calibrated = sigmoid(a · raw_confidence + b)`) when ECE is poor and `n ≥ 50`.
+
+### 10.7 Rolling accuracy windows
+
+| Window | Use |
+|---|---|
+| 7d | Weekly recap; marketing |
+| **30d** | **Primary user-facing badge** |
+| 90d | Calibration cycle / Platt scaling refresh trigger |
+
+Compute on every resolved-signal event; cache aggregated results in DDB for cheap reads. 24h is too noisy; all-time risks misrepresenting current performance.
+
+### 10.8 PnL counterfactual — explicitly excluded
+
+We do **not** compute hypothetical PnL ("if user had taken this signal at recommended size, they would have made $X"). Reasons:
+
+- "Profitable" framing is regulated speech in many jurisdictions; "directional accuracy" is observational
+- PnL math compounds errors — slippage, fees, exact entry/exit timing all matter for real trades
+- Users will compare claimed PnL to their own real PnL and discover the gap; trust collapses
+- Hindsight bias dressed as forecasting
+
+Marketing-friendly substitute when a $-flavored stat is needed: *"across 90 days, the signal direction matched price movement 73% of the time. Average move size at resolution: 1.2× ATR."* Numerical, observational, no hindsight PnL.
+
+### 10.9 Backtest harness contract (Phase 8)
+
+§10 doesn't build the backtest harness, but does lock the data contract Phase 8 will replay:
+
+- Every signal persisted with full state at emit time (algo candidate, indicators state hash, sentiment bundle hash, ratification record reference)
+- `priceAtSignal` captured at emit time (median across non-stale exchanges, per §2)
+- Outcomes computed at expiry, persisted as **immutable records**
+- No mutation of historical signals — rule changes don't retroactively re-score
+
+These guarantees flow into the §11 storage schema.
+
+### 10.10 What §10 explicitly defers
+
+| Topic | Phase |
+|---|---|
+| Backtest harness implementation | Phase 8 |
+| Platt scaling fit + per-(pair, TF) confidence calibration | Phase 8 |
+| Auto-disable / prune of rules with sustained low accuracy | Phase 8 |
+| User-observed PnL ("I took this trade and made/lost X") | Phase 9+ UI |
+| Real-time accuracy push notifications | Out of scope |
 
 ---
 
