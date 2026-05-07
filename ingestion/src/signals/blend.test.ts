@@ -720,6 +720,123 @@ describe("custom weights override", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix 1: perTimeframe shallow-copy — caller mutation isolation
+// ---------------------------------------------------------------------------
+
+describe("perTimeframe shallow-copy — caller mutation cannot corrupt the returned signal", () => {
+  it("mutating the input vote map after blendTimeframeVotes does not change result.perTimeframe", () => {
+    const votes = makeGoldenVotes();
+    const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
+
+    // Capture the perTimeframe values before mutation.
+    const before1h = result.perTimeframe["1h"];
+
+    // Mutate the original input map by replacing the 1h entry.
+    votes["1h"] = makeVote({ type: "sell", confidence: 0.99, rulesFired: ["mutated"] });
+
+    // The returned BlendedSignal.perTimeframe must still hold the original vote.
+    expect(result.perTimeframe["1h"]).toBe(before1h);
+    expect(result.perTimeframe["1h"]).not.toBe(votes["1h"]);
+  });
+
+  it("mutating the input vote map does not change result.perTimeframe on gated-hold path", () => {
+    const votes = {
+      "1m": null,
+      "5m": null,
+      "15m": makeVote({ type: "hold", volatilityFlag: true, gateReason: "vol" as const }),
+      "1h": makeVote({ type: "buy", confidence: 0.80 }),
+      "4h": null,
+      "1d": null,
+    };
+    const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
+
+    const before15m = result.perTimeframe["15m"];
+
+    // Swap out the 15m entry in the original map.
+    votes["15m"] = makeVote({ type: "sell", confidence: 0.99 });
+
+    expect(result.perTimeframe["15m"]).toBe(before15m);
+    expect(result.perTimeframe["15m"]).not.toBe(votes["15m"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2: volatilityFlag semantics — only true for gateReason === "vol"
+// ---------------------------------------------------------------------------
+
+describe("volatilityFlag semantics — true only for vol gate, false for dispersion/stale", () => {
+  it("volatilityFlag is true when gateReason=vol", () => {
+    const votes = {
+      "1m": null,
+      "5m": null,
+      "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "vol" as const }),
+      "1h": makeVote({ type: "buy", confidence: 0.90 }),
+      "4h": null,
+      "1d": null,
+    };
+    const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
+    expect(result.gateReason).toBe("vol");
+    expect(result.volatilityFlag).toBe(true);
+  });
+
+  it("volatilityFlag is false when gateReason=dispersion", () => {
+    const votes = {
+      "1m": null,
+      "5m": null,
+      "15m": null,
+      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "dispersion" as const }),
+      "4h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1d": null,
+    };
+    const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
+    expect(result.gateReason).toBe("dispersion");
+    expect(result.volatilityFlag).toBe(false);
+  });
+
+  it("volatilityFlag is false when gateReason=stale", () => {
+    const votes = {
+      "1m": null,
+      "5m": null,
+      "15m": null,
+      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" as const }),
+      "4h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1d": null,
+    };
+    const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
+    expect(result.gateReason).toBe("stale");
+    expect(result.volatilityFlag).toBe(false);
+  });
+
+  it("mixed vol+stale gates: highest priority is vol → volatilityFlag is true", () => {
+    const votes = {
+      "1m": null,
+      "5m": null,
+      "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" as const }),
+      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "vol" as const }),
+      "4h": null,
+      "1d": null,
+    };
+    const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
+    expect(result.gateReason).toBe("vol");
+    expect(result.volatilityFlag).toBe(true);
+  });
+
+  it("mixed dispersion+stale gates: highest priority is dispersion → volatilityFlag is false", () => {
+    const votes = {
+      "1m": null,
+      "5m": null,
+      "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" as const }),
+      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "dispersion" as const }),
+      "4h": null,
+      "1d": null,
+    };
+    const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
+    expect(result.gateReason).toBe("dispersion");
+    expect(result.volatilityFlag).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // BLEND_THRESHOLD_T exported constant
 // ---------------------------------------------------------------------------
 
