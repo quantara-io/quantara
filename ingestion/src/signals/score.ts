@@ -13,13 +13,7 @@
 
 import type { IndicatorState } from "@quantara/shared";
 import type { Rule, FiredRule, TimeframeVote } from "@quantara/shared";
-
-// ---------------------------------------------------------------------------
-// Constants (§4.3)
-// ---------------------------------------------------------------------------
-
-/** Minimum directional score required to emit a buy/sell signal. */
-const MIN_CONFLUENCE = 1.5;
+import { MIN_CONFLUENCE } from "@quantara/shared";
 
 /**
  * Sigmoid with half-scale: sigmoid(x) = 1 / (1 + exp(-x/2))
