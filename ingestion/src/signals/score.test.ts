@@ -13,6 +13,8 @@
  *   - Observation #4: hold-confidence clamped to ≤ 1.0
  *   - Observation #5: cooldown semantics (bars-elapsed convention, off-by-one tests)
  *   - Observation #6: deep-mutation detection via structuredClone + toEqual
+ *   - Observation #7: gate-branch shape — rulesFired=[], both scores zero (issue #53)
+ *   - Observation #8: predicate-guard vs requiresPrior-block are separate failure modes
  */
 
 import { describe, it, expect } from "vitest";
@@ -447,11 +449,12 @@ describe("Observation #2 — gateResult parameter replaces rule-direction infere
     expect(vote.volatilityFlag).toBe(true);
   });
 
-  it("gateResult with fired=true carries the rulesFired list from fired rules", () => {
+  it("gateResult with fired=true produces rulesFired=[] (gate suppresses all rule contributions)", () => {
     const gateResult: GateResult = { fired: true, reason: "stale" };
     const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
-    // rulesFired should list the bullish rule that fired even though we gated
-    expect(vote.rulesFired).toContain("strong-bull");
+    // Gates are caller-supplied via evaluateGates, not rule-encoded.
+    // rulesFired is empty: no rule "caused" the gate; the caller did.
+    expect(vote.rulesFired).toEqual([]);
   });
 });
 
@@ -832,6 +835,147 @@ describe("scoreTimeframe — gated hold via gateResult", () => {
     const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
     expect(vote.type).toBe("buy");
     expect(vote.volatilityFlag).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Observation #7: gate-branch shape — rulesFired=[], both scores zero
+// Acceptance criteria from issue #53: when a gate fires, scoreTimeframe returns
+// TimeframeVote with type==="hold", bullishScore===0, bearishScore===0,
+// rulesFired===[] (gate is caller-supplied, not rule-encoded).
+// ---------------------------------------------------------------------------
+
+describe("Observation #7 — gate-branch shape: type=hold, scores zero, rulesFired=[]", () => {
+  const state = makeState();
+
+  const bullRule: Rule = {
+    name: "gate-shape-bull",
+    direction: "bullish",
+    strength: 3.0,
+    when: (_s) => true,
+    appliesTo: ["1h"],
+    requiresPrior: 0,
+  };
+
+  const bearRule: Rule = {
+    name: "gate-shape-bear",
+    direction: "bearish",
+    strength: 2.0,
+    when: (_s) => true,
+    appliesTo: ["1h"],
+    requiresPrior: 0,
+  };
+
+  it("type === 'hold' when gate fires", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [bullRule, bearRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.type).toBe("hold");
+  });
+
+  it("bullishScore === 0 when gate fires", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [bullRule, bearRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.bullishScore).toBe(0);
+  });
+
+  it("bearishScore === 0 when gate fires", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(state, [bullRule, bearRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.bearishScore).toBe(0);
+  });
+
+  it("rulesFired === [] when gate fires (gate is caller-supplied, not rule-encoded)", () => {
+    const gateResult: GateResult = { fired: true, reason: "dispersion" };
+    const vote = scoreTimeframe(state, [bullRule, bearRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.rulesFired).toEqual([]);
+  });
+
+  it("volatilityFlag === true when gate fires", () => {
+    const gateResult: GateResult = { fired: true, reason: "stale" };
+    const vote = scoreTimeframe(state, [bullRule, bearRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.volatilityFlag).toBe(true);
+  });
+
+  it("gateReason is passed through from gateResult", () => {
+    const reasons = ["vol", "dispersion", "stale"] as const;
+    for (const reason of reasons) {
+      const gateResult: GateResult = { fired: true, reason };
+      const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
+      expect(vote.gateReason).toBe(reason);
+    }
+  });
+
+  it("non-fired gate produces normal scoring (rulesFired non-empty, scores non-zero)", () => {
+    const gateResult: GateResult = { fired: false, reason: null };
+    const vote = scoreTimeframe(state, [bullRule, bearRule], {}, { gateResult }) as TimeframeVote;
+    expect(vote.type).toBe("buy"); // bull 3.0 > bear 2.0, bull >= MIN_CONFLUENCE
+    expect(vote.bullishScore).toBe(3.0);
+    expect(vote.bearishScore).toBe(2.0);
+    expect(vote.rulesFired).toContain("gate-shape-bull");
+    expect(vote.rulesFired).toContain("gate-shape-bear");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Observation #8: predicate-guard vs requiresPrior-block are distinct failure modes
+// A rule can fail to fire for two independent reasons:
+//   (a) predicate returns false — the market condition is not met
+//   (b) barsSinceStart < requiresPrior — not enough bars have passed (warm-up)
+// Both suppress the rule, but only (b) can suppress scoreTimeframe returning null.
+// ---------------------------------------------------------------------------
+
+describe("Observation #8 — predicate-guard vs requiresPrior-block are distinct failure modes", () => {
+  it("predicate returns false → rule does not fire, but scoreTimeframe still returns a vote", () => {
+    // requiresPrior is satisfied (barsSinceStart=300 >= 0), but predicate always fails.
+    // scoreTimeframe sees an eligible rule (requiresPrior OK), so it returns a hold, not null.
+    const state = makeState({ barsSinceStart: 300 });
+    const rule: Rule = {
+      name: "predicate-fails",
+      direction: "bullish",
+      strength: 2.0,
+      when: (_s) => false, // predicate always returns false
+      appliesTo: ["1h"],
+      requiresPrior: 0,
+    };
+    const result = scoreTimeframe(state, [rule], {});
+    // Not null: the rule IS eligible (requiresPrior satisfied), predicate just didn't fire
+    expect(result).not.toBeNull();
+    expect((result as TimeframeVote).type).toBe("hold");
+    expect((result as TimeframeVote).rulesFired).toEqual([]);
+    expect((result as TimeframeVote).bullishScore).toBe(0);
+  });
+
+  it("barsSinceStart < requiresPrior → rule does not fire, and scoreTimeframe returns null if no other eligible rule", () => {
+    // barsSinceStart=10 < requiresPrior=50: warm-up not complete.
+    // scoreTimeframe sees no eligible rule at all → null (no opinion).
+    const state = makeState({ barsSinceStart: 10, rsi14: 15 }); // rsi14=15 would trigger most bullish rules
+    const rule: Rule = {
+      name: "needs-warmup",
+      direction: "bullish",
+      strength: 2.0,
+      when: (_s) => true, // predicate would pass, but requiresPrior blocks it
+      appliesTo: ["1h"],
+      requiresPrior: 50,
+    };
+    const result = scoreTimeframe(state, [rule], {});
+    // Null: the rule is NOT eligible (requiresPrior not satisfied)
+    expect(result).toBeNull();
+  });
+
+  it("both guards can co-exist: requiresPrior satisfied but predicate fails → hold (not null)", () => {
+    const state = makeState({ barsSinceStart: 100 });
+    const rule: Rule = {
+      name: "eligible-but-fails",
+      direction: "bullish",
+      strength: 2.0,
+      when: (_s) => false, // predicate fails even though warm-up is done
+      appliesTo: ["1h"],
+      requiresPrior: 50, // satisfied: 100 >= 50
+    };
+    // eligible (requiresPrior met) but predicate fails → hold, NOT null
+    const result = scoreTimeframe(state, [rule], {});
+    expect(result).not.toBeNull();
+    expect((result as TimeframeVote).type).toBe("hold");
   });
 });
 
