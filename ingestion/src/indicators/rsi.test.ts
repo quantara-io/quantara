@@ -63,6 +63,32 @@ describe("rsi", () => {
     const r = rsi(short);
     r.forEach((v) => expect(v).toBeNull());
   });
+
+  it("flat window (50 identical closes) returns 50 — not 100", () => {
+    // All closes are identical → avgGain = 0 and avgLoss = 0 → neutral RSI = 50.
+    const flat = Array.from({ length: 50 }, () => 42);
+    const r = rsi(flat);
+    const nonNull = r.filter((v) => v !== null);
+    expect(nonNull.length).toBeGreaterThan(0);
+    nonNull.forEach((v) => {
+      expect(v).toBe(50);
+    });
+  });
+});
+
+describe("rsiUpdate — flat-window guard", () => {
+  it("returns 50 when both prevAvgGain and prevAvgLoss are 0 and close is flat", () => {
+    // Simulate a full warm-up on flat closes: prevAvgGain = 0, prevAvgLoss = 0.
+    const result = rsiUpdate(0, 0, 42, 42);
+    expect(result.rsi).toBe(50);
+    expect(result.avgGain).toBe(0);
+    expect(result.avgLoss).toBe(0);
+  });
+
+  it("returns 100 when there are gains but no losses", () => {
+    const result = rsiUpdate(1, 0, 102, 100);
+    expect(result.rsi).toBe(100);
+  });
 });
 
 describe("rsi — single-bar-update parity", () => {

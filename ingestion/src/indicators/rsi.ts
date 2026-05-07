@@ -38,7 +38,9 @@ export function rsi(close: number[], n = 14): (number | null)[] {
     const avgLoss = smoothedLosses[i];
     if (avgGain === null || avgLoss === null) continue;
     if (avgLoss === 0) {
-      result[i + 1] = 100;
+      // Flat window: no losses. Return 100 only when there are actual gains;
+      // if avgGain is also 0 (identical closes), return 50 (neutral).
+      result[i + 1] = avgGain > 0 ? 100 : 50;
     } else {
       const rs = avgGain / avgLoss;
       result[i + 1] = 100 - 100 / (1 + rs);
@@ -65,6 +67,13 @@ export function rsiUpdate(
   const loss = delta < 0 ? -delta : 0;
   const avgGain = (prevAvgGain * (n - 1) + gain) / n;
   const avgLoss = (prevAvgLoss * (n - 1) + loss) / n;
-  const rsiVal = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  // Flat window guard: if no losses, return 100 only when there are gains;
+  // if both are 0 (identical closes), return 50 (neutral).
+  const rsiVal =
+    avgLoss === 0
+      ? avgGain > 0
+        ? 100
+        : 50
+      : 100 - 100 / (1 + avgGain / avgLoss);
   return { rsi: rsiVal, avgGain, avgLoss };
 }

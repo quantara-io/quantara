@@ -189,4 +189,28 @@ describe("buildIndicatorState — short series (warm-up period)", () => {
     // OBV is always populated.
     expect(typeof state.obv).toBe("number");
   });
+
+  it("history.close and history.volume pad with null when candle count < HISTORY_SIZE", () => {
+    // Only 1 candle: history positions [1..4] should be null, [0] is the real close/volume.
+    const candles = makeCandles(1);
+    const ctx = {
+      pair: "ETH-USDT",
+      exchange: "coinbase",
+      timeframe: "1h" as const,
+      fearGreed: null,
+      dispersion: null,
+    };
+    const state = buildIndicatorState(candles, ctx);
+
+    expect(state.history.close).toHaveLength(5);
+    expect(state.history.volume).toHaveLength(5);
+    // Index 0: real value from the single candle (not null, not 0-pad).
+    expect(state.history.close[0]).toBe(candles[0].close);
+    expect(state.history.volume[0]).toBe(candles[0].volume);
+    // Indices 1–4: padding should be null, not 0.
+    for (let i = 1; i < 5; i++) {
+      expect(state.history.close[i]).toBeNull();
+      expect(state.history.volume[i]).toBeNull();
+    }
+  });
 });
