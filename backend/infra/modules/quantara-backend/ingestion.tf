@@ -260,9 +260,12 @@ resource "aws_iam_role_policy" "enrichment_dynamodb" {
       Action = [
         "dynamodb:GetItem",
         "dynamodb:UpdateItem",
+        "dynamodb:PutItem",
+        "dynamodb:Scan",
       ]
       Resource = [
         aws_dynamodb_table.news_events.arn,
+        aws_dynamodb_table.embedding_cache.arn,
       ]
     }]
   })
@@ -324,9 +327,10 @@ resource "aws_lambda_function" "enrichment" {
 
   environment {
     variables = {
-      TABLE_NEWS_EVENTS   = aws_dynamodb_table.news_events.name
-      ENRICHED_NEWS_QUEUE = aws_sqs_queue.enriched_news.url
-      ENVIRONMENT         = var.environment
+      TABLE_NEWS_EVENTS    = aws_dynamodb_table.news_events.name
+      TABLE_EMBEDDING_CACHE = aws_dynamodb_table.embedding_cache.name
+      ENRICHED_NEWS_QUEUE  = aws_sqs_queue.enriched_news.url
+      ENVIRONMENT          = var.environment
     }
   }
 

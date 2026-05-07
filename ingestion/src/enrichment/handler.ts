@@ -2,6 +2,7 @@ import type { SQSEvent, Context } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { enrichNewsItem } from "./bedrock.js";
+import { enrichArticle } from "../news/enrich.js";
 import { publish } from "../lib/sqs-publisher.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -35,22 +36,43 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
     }
 
     try {
+      // Phase 1 (existing): Bedrock entity/event enrichment
       const enrichment = await enrichNewsItem(
         newsRecord.title as string,
         (newsRecord.currencies as string[]) ?? []
       );
 
-      // Update the news record with enrichment
+      // Phase 5a: pair-tagging, sentiment classifier, embedding dedup
+      const phase5a = await enrichArticle({
+        id: newsId,
+        title: newsRecord.title as string,
+        body: (newsRecord.body as string | undefined) ?? newsRecord.title as string,
+        publishedAt,
+      });
+
+      // Update the news record with both enrichment sets
       await client.send(
         new UpdateCommand({
           TableName: NEWS_TABLE,
           Key: { newsId, publishedAt },
-          UpdateExpression: "SET enrichment = :enrichment, enrichedAt = :enrichedAt, #status = :status",
+          UpdateExpression: [
+            "SET enrichment = :enrichment,",
+            "enrichedAt = :enrichedAt,",
+            "#status = :status,",
+            "mentionedPairs = :mentionedPairs,",
+            "sentiment = :sentiment,",
+            "duplicateOf = :duplicateOf,",
+            "embeddingModel = :embeddingModel",
+          ].join(" "),
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":enrichment": enrichment,
-            ":enrichedAt": new Date().toISOString(),
+            ":enrichedAt": phase5a.enrichedAt,
             ":status": "enriched",
+            ":mentionedPairs": phase5a.mentionedPairs,
+            ":sentiment": phase5a.sentiment,
+            ":duplicateOf": phase5a.duplicateOf ?? null,
+            ":embeddingModel": phase5a.embeddingModel,
           },
         })
       );
@@ -61,9 +83,14 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
         publishedAt,
         currencies: newsRecord.currencies,
         enrichment,
+        mentionedPairs: phase5a.mentionedPairs,
+        sentiment: phase5a.sentiment,
+        duplicateOf: phase5a.duplicateOf,
       });
 
-      console.log(`[Enrichment] Success: ${newsId} → ${enrichment.sentiment} (${enrichment.confidence})`);
+      console.log(
+        `[Enrichment] Success: ${newsId} → ${enrichment.sentiment} (${enrichment.confidence}), pairs=${phase5a.mentionedPairs.join(",")}, sentiment.score=${phase5a.sentiment.score}`
+      );
     } catch (err) {
       console.error(`[Enrichment] Failed: ${newsId}: ${(err as Error).message}`);
 
