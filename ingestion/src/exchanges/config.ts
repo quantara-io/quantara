@@ -1,14 +1,9 @@
+import type { TradingPair } from "@quantara/shared";
+export { PAIRS } from "@quantara/shared";
+export type { TradingPair };
+
 export const EXCHANGES = ["binanceus", "coinbase", "kraken"] as const;
 export type ExchangeId = (typeof EXCHANGES)[number];
-
-export const PAIRS = [
-  "BTC/USDT",
-  "ETH/USDT",
-  "SOL/USDT",
-  "XRP/USDT",
-  "DOGE/USDT",
-] as const;
-export type TradingPair = (typeof PAIRS)[number];
 
 // Some exchanges use different quote currencies
 export const PAIR_OVERRIDES: Partial<Record<ExchangeId, Partial<Record<TradingPair, string>>>> = {
