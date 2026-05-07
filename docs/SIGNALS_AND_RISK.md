@@ -1030,75 +1030,171 @@ This matches the LLM/sentiment pattern: advisory inputs gracefully degrade; the 
 
 ## 9. Risk management
 
-Risk recommendations are emitted **alongside** each non-`hold` signal. They are advisory and parameterized by the user's tier/profile.
+Risk recommendations are emitted **alongside** each non-`hold` signal. They are advisory and parameterized by the user's per-pair risk profile.
 
-### 9.1 Position sizing
+### 9.1 Account size — percentage-only output
 
-Three models supported, user-selectable per profile:
+**Decision: outputs are `%` of the user's account; user does dollar conversion.** Quantara does not store account balances or integrate with exchange APIs in v1. Reasons:
 
-| Model | Formula | Best for |
+- Simplest path; no PII or balance storage
+- Most defensible for compliance ("not financial advice — based on user-supplied risk preferences")
+- Avoids the security/key-management burden of exchange API integration
+- "Advisory not executor" line stays bright
+
+User-supplied account balance (with `%` + `$` displayed side-by-side) lands in a future UI iteration if survey data shows users want $ amounts. Exchange API integration is **explicitly never** — defeats the advisory-only product line.
+
+### 9.2 Risk profile — per-pair, defaulted by tier
+
+**Decision: per-pair risk profile.** A user can mark BTC as `conservative` and DOGE as `aggressive` independently. Defaults derive from tier:
+
+- Free tier → `conservative` for all pairs
+- Paid tier → `moderate` for all pairs
+- User overrides per pair in settings
+
+Stored on the user record as a map: `riskProfiles: Record<TradingPair, "conservative" | "moderate" | "aggressive">`.
+
+Per-pair (rather than single global) because crypto pairs behave very differently — a user happy taking 3× ATR stops on DOGE may want 1.5× ATR on BTC. The cost is one extra onboarding step (per-pair sliders) and a slightly larger user record. Math at recommendation time is unchanged — just key by `(user.riskProfiles[pair])` instead of `user.riskProfile`.
+
+### 9.3 Position sizing — three models
+
+| Model | Formula | Default for |
 |---|---|---|
-| **Fixed-fractional** | `size = account · risk_pct` (e.g. 1% of account per trade) | Beginners; predictable drawdown |
-| **Volatility-targeted** | `size = (account · risk_pct) / (ATR · multiplier)` | Adapts to current market vol |
-| **Kelly-fractional** | `size = account · 0.25 · kelly_f`, where `kelly_f = (p·b − q) / b` | Advanced users with tracked accuracy |
+| **Fixed-fractional** | `sizePct = risk_pct[profile]` (e.g. 0.5% / 1% / 2% per profile) | Conservative profile, all users; everyone pre-Kelly-unlock |
+| **Volatility-targeted** | `sizePct = risk_pct[profile] / (ATR_pct · multiplier)` | Moderate / aggressive profiles where ATR makes raw-pct unstable |
+| **Kelly-fractional** | `sizePct = 0.25 · kelly_f`, where `kelly_f = (p·b − q) / b` | Aggressive profile (only) once Kelly unlock conditions met |
 
-`p` = signal accuracy (from `SignalHistoryEntry.outcome`), `q = 1 − p`, `b` = avg-win / avg-loss ratio (R-multiple). Capped at 25% Kelly to avoid ruin. Only available once we have ≥30 resolved signals for that pair/timeframe.
+Per-profile risk-pct defaults:
+- Conservative: 0.5% per trade
+- Moderate: 1.0% per trade
+- Aggressive: 2.0% per trade
 
-### 9.2 Stop-loss
+#### 9.3.1 Kelly unlock — bounded plausible regime
 
-Every `buy`/`sell` signal carries a recommended stop-loss derived from ATR:
+Kelly only unlocks for a `(pair, timeframe)` slice when **all** of:
+- `n ≥ 50` resolved signals for that slice
+- `p ∈ [0.45, 0.65]` (sane accuracy band — outside this, the slice is mis-classified or the rule library mis-fires)
+- `b ∈ [0.5, 3.0]` (sane win/loss-ratio band — outside this, the resolution math is suspect)
+
+If unlock conditions aren't met (or any check falls out later), fall back to vol-targeted (or fixed-fractional for conservative profile). Slices unlock independently — BTC/USDT 1d may unlock months before SOL/USDT 15m does.
+
+**Always cap at 25% Kelly.** Real-world Kelly is brutal because real `p` is overestimated and real losses cluster. The cap is non-negotiable.
+
+### 9.4 Stop-loss — ATR-based, profile-multiplied
 
 ```
-stop_distance = ATR(14, signal_timeframe) · stop_multiplier
+stop_distance = ATR(14, signal_timeframe) · stop_multiplier[profile]
 buy_stop  = entry_price − stop_distance
 sell_stop = entry_price + stop_distance
 ```
 
-`stop_multiplier` defaults:
-- Conservative profile: 1.5× ATR
+`stop_multiplier` per profile:
+- Conservative: 1.5× ATR
 - Moderate: 2.0× ATR
 - Aggressive: 3.0× ATR
 
-ATR-based stops adapt to the current volatility regime — wider stops in chaos, tighter in calm. Avoid percentage stops (e.g. "5% below entry"); they're vol-blind.
+ATR-based stops adapt to the current volatility regime — wider in chaos, tighter in calm. Avoid percentage stops (e.g. "5% below entry"); they're vol-blind.
 
-### 9.3 Take-profit
+### 9.5 Take-profit — per-profile R-multiples (asymmetric for crypto)
 
-Recommend **R-multiples** (`R` = stop distance in price units):
+R = stop distance in price units. Profile-specific TP targets, capturing crypto's fat-tail asymmetry:
 
-- TP1: `1R` — close 50% of position
-- TP2: `2R` — close 25%
-- TP3: `3R` — leave 25% with trailing stop
+| Profile | TP1 (50% close) | TP2 (25% close) | TP3 (25% close, trailing) |
+|---|---|---|---|
+| Conservative | 1R | 2R | 3R |
+| Moderate | 1R | 2R | **5R** |
+| Aggressive | 1R | 3R | **8R** |
 
-This is the canonical asymmetric-payoff structure. With a baseline 50% accuracy, 1R/2R/3R staging produces positive expectancy.
+Conservative books profits early (canonical asymmetric-payoff structure). Moderate and aggressive let the runner stretch further to capture extended crypto trends. The 50/25/25 close percentages stay constant across profiles — only the R-multiples change.
 
-### 9.4 Drawdown limits
+#### 9.5.1 Trailing stop on TP3
 
-Per-user limits stored in profile:
-- Daily drawdown cap (default 3% of account) — once breached, suppress all new signals for the rest of the trading day.
-- Weekly drawdown cap (default 7%) — suppress for the rest of the week.
-- Per-pair concurrent-position cap (default 1).
+Once TP1 and TP2 close, the remaining 25% trails:
 
-These are *suggestions* the UI surfaces, not enforcement. Quantara has no execution capability.
+```
+trailing_stop = current_price − 2 · ATR(signal_timeframe)
+```
 
-### 9.5 Schema additions
+Updated on every blender run for the pair (which the user knows happens on TF close). Adapts to volatility; uses indicators we already compute; no new infrastructure.
 
-Extend the `Signal` type:
+### 9.6 Existing-position guidance during gates
+
+When a vol / dispersion / stale gate fires for a pair, **new signals force `hold`** (already locked in §4.6). For users with **existing** open positions on that pair, surface a **generic banner**:
+
+| Gate reason | Banner copy |
+|---|---|
+| `vol` | "BTC volatility elevated — monitor your positions." |
+| `dispersion` | "BTC price disagreement across exchanges — monitor your positions." |
+| `stale` | "BTC exchange data unavailable — monitor your positions." |
+
+No per-position advice (we don't track positions). The banner sits on the pair's signal card; UI work is downstream.
+
+### 9.7 Multi-position aggregation — per-signal sizing + concurrent warning
+
+Each signal's recommended `sizePct` is **per-signal** — assumes the user isn't already taking other concurrent signals. The 7% weekly drawdown cap (§9.8) is the global guardrail.
+
+**UI affordance:** when ≥2 active buy/sell signals exist for the user, surface aggregated risk: *"You'd be at 3% concurrent risk if you took all three signals."* The user reconciles. Quantara doesn't track real positions, only the signals it has issued.
+
+### 9.8 Drawdown limits
+
+Per-profile defaults (overridable in user settings):
+
+| Profile | Daily cap | Weekly cap | Per-pair concurrent cap |
+|---|---|---|---|
+| Conservative | 2% | 5% | 1 |
+| Moderate | 3% | 7% | 1 |
+| Aggressive | 5% | 12% | 2 |
+
+Once the daily cap is breached, the API suppresses all new non-`hold` signals (returns the latest signal but with a banner state) for the rest of the trading day (UTC). Weekly cap suppresses for the rest of the week.
+
+These are **suggestions the UI surfaces** — not enforcement. Quantara has no execution capability and never will.
+
+### 9.9 Schema additions
+
+Extend the `Signal` (or rather, the persisted `BlendedSignal`) type:
 
 ```ts
 export interface RiskRecommendation {
-  positionSizePct: number;          // % of account
+  pair: string;                                          // for cross-ref
+  profile: "conservative" | "moderate" | "aggressive";    // looked up from user.riskProfiles[pair]
+  positionSizePct: number;                                // % of account
   positionSizeModel: "fixed" | "vol-targeted" | "kelly";
-  stopLoss: number;                 // price
-  stopDistanceR: number;            // R-multiple stop distance
-  takeProfit: { price: number; closePct: number }[];
-  invalidationCondition: string;    // human-readable
+  stopLoss: number;                                       // price
+  stopDistanceR: number;                                  // ATR × multiplier
+  takeProfit: { price: number; closePct: number; rMultiple: number }[];
+  invalidationCondition: string;                          // human-readable, mobile UX
+  trailingStopAfterTP2: { multiplier: number; reference: "ATR" };
 }
 
 export interface Signal {
+  // ...existing BlendedSignal fields
+  risk: RiskRecommendation | null;                       // null when type === "hold"
+}
+
+export type RiskProfileMap = Record<TradingPair, "conservative" | "moderate" | "aggressive">;
+
+// On the user record:
+export interface User {
   // ...existing fields
-  risk: RiskRecommendation | null;  // null when type === "hold"
+  riskProfiles: RiskProfileMap;                           // per-pair; default by tier
+  drawdownState: {
+    dailyPnLPct: number;                                  // tracked from signals user marked as "took it"
+    weeklyPnLPct: number;
+    suppressUntil: string | null;                         // ISO8601 if in drawdown lockout
+  };
 }
 ```
+
+Note: `drawdownState` requires the user to mark which signals they actually took (a future UI). Until that exists, drawdown caps are pure UI affordance — Quantara can't enforce because we don't observe positions.
+
+### 9.10 What §9 explicitly defers
+
+| Topic | Phase |
+|---|---|
+| User-self-reported account balance ($ display) | Phase 9+ UI work |
+| Exchange API integration (live balance) | Never (compliance) |
+| Position management agent (closing existing trades) | Out of scope |
+| Drawdown enforcement based on actual trade outcomes | Phase 9+ once "marked-as-taken" UI ships |
+| Per-rule risk weighting | Phase 8 attribution |
 
 ---
 
