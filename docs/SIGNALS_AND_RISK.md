@@ -548,11 +548,11 @@ Per-pair tuning (e.g. DOGE may benefit from a 15m-heavier vector since it lacks 
 
 ### 6.2 What needs to be added
 
-1. **Pair entity extraction** in the enrichment Lambda: tag each article with the symbol(s) it mentions (`BTC`, `ETH`, `SOL`, `XRP`, `DOGE`). Without this, news has no pair-level signal.
-2. **Sentiment polarity** per article: `{score: -1..+1, magnitude: 0..1}`. The enrichment can use a small classifier (FinBERT, finBERT-crypto, or LLM in JSON mode).
+1. **Pair entity extraction** in the enrichment Lambda — regex + LLM classifier union per the §2 decision. Tag each article with the symbol(s) it mentions or affects.
+2. **Sentiment polarity** per article: `{score: -1..+1, magnitude: 0..1}`. **Classifier: Haiku in JSON mode** (decision below).
 3. **Aggregated sentiment** per pair over a rolling window:
    - `last 4h` and `last 24h` windows
-   - Stored in a derived metadata key, e.g. `sentiment:BTC:4h = {score, count, magnitude}`
+   - Stored in a derived metadata key, e.g. `sentiment:BTC:4h = {score, magnitude, articleCount, sourceCounts, computedAt}`
    - Recomputed when new news lands or every 5 min on a schedule.
 
 ### 6.3 How sentiment enters the signal
@@ -564,6 +564,113 @@ Sentiment is **not** treated as an algo rule. It enters at the LLM ratification 
 - Keeping sentiment out of the algo preserves backtestability — algo signals are deterministic from candles alone. Sentiment overlays are tracked separately for attribution.
 
 The Fear & Greed Index *is* a hard rule (it's a single number, well-defined): when the index is in `extreme greed` (>75), apply a small bearish bias; in `extreme fear` (<25), apply a small bullish bias (contrarian, well-supported empirically). Magnitude: ±0.3 confidence shift, never enough to flip direction.
+
+### 6.4 Sentiment classifier — Haiku in JSON mode
+
+**Decision: classify per-article sentiment via Claude Haiku 4.5 in JSON mode.**
+
+```ts
+// Per-article enrichment call
+const result = await anthropic.messages.create({
+  model: "claude-haiku-4-5",
+  max_tokens: 200,
+  system: `Classify the sentiment of a crypto news article. Return JSON only.
+  Schema: { score: -1..+1, magnitude: 0..1, topic: string, mentionedPairs: string[] }`,
+  messages: [{ role: "user", content: `Title: ${title}\n\nBody: ${body.slice(0, 2000)}` }]
+});
+```
+
+Reasons over self-hosted FinBERT-style classifier:
+- Zero model hosting / dependency overhead
+- Updatable without redeploying (system prompt change → behavior change)
+- Crypto vocab stays current (FinBERT was trained pre-2023; vocabulary lags)
+- Cost: ~$0.0005/article × 50 articles/day ≈ **$0.75/month**
+- Same model as ratification — consistent reasoning style
+
+Migrate to a self-hosted classifier only if (a) news volume scales 100×, or (b) we need offline batch sentiment scoring on years of historical news.
+
+### 6.5 Aggregation — equal-weight simple mean
+
+**Decision: aggregate the rolling window with a simple mean of `score`.** No magnitude weighting, no recency decay in v1.
+
+```
+sentiment_4h = {
+  score: mean(article.score for article in window),
+  magnitude: mean(article.magnitude for article in window),
+  articleCount: len(window),
+  sourceCounts: { alpaca: N, coindesk: N, ... },
+  computedAt: now
+}
+```
+
+Trade-off accepted: one off-magnitude article can swing the window. The cleaner math + simpler invariants outweigh the precision loss for v1. Source weighting and recency decay are deferred to **Phase 8** (after attribution data exists), at which point the aggregation can be retuned without breaking the metadata schema (the `sourceCounts` field is already tracked).
+
+### 6.6 Deduplication — embedding similarity
+
+**Decision: dedup via embedding similarity, cosine > 0.85, within a 24h window.**
+
+```
+for each new article:
+  embed(title + first 200 chars of body) → vector
+  if cosine_similarity(vector, any cached vector from last 24h) > 0.85:
+    mark as duplicate of the earlier article (do not score sentiment again)
+  else:
+    add to dedup cache (TTL 24h)
+```
+
+Provider: OpenAI `text-embedding-3-small` or equivalent. Cost ~$0.0001/article × 50/day = ~$0.15/mo.
+
+**Caveat — backtest determinism:** embedding models version (e.g. `text-embedding-3-small` ≠ `-3-large` ≠ `ada-002`). Backtests against historical news will produce different dedup decisions if rerun on a different embedding model version. **Mitigation:**
+- Pin the embedding model version in code (e.g. `text-embedding-3-small` exactly), and require a deliberate migration when bumping
+- Persist the embedding model version alongside each cached vector in DDB (`{vector, model: "text-embedding-3-small", articleId, expiresAt}`)
+- For backtests, reuse the persisted vectors rather than re-embedding (the historical articles already have their decision baked in)
+
+If embedding cost or determinism becomes a real problem, fall back to **title-hash dedup within a 6h window** (deterministic, cheaper, but misses paraphrases).
+
+### 6.7 Realtime invalidation — deferred to Phase 6
+
+**Decision: signals refresh on next TF close. No breaking-news invalidation banner in v1.**
+
+Worst-case staleness when a major news event hits mid-bar: 7 minutes (between 15m closes). For an advisory product where users don't trade in seconds, this is acceptable.
+
+The breaking-news invalidation mechanism (high-magnitude article → mark active signals as `invalidated`, force LLM re-ratify on next close, banner UI) lands as part of **Phase 6 (LLM ratification)**, where the infrastructure to trigger off news events naturally fits.
+
+### 6.8 Sentiment shape at the LLM ratification layer
+
+§7 will spell out the full prompt; here's the bundle §6 produces for it:
+
+```ts
+type SentimentBundle = {
+  pair: string;
+  windows: {
+    "4h":  { score: number; magnitude: number; articleCount: number };
+    "24h": { score: number; magnitude: number; articleCount: number };
+  };
+  recentArticles: Array<{
+    title: string;             // for the LLM to read and quote
+    sentiment: number;         // -1..+1
+    magnitude: number;         // 0..1
+    source: string;            // "alpaca" | "coindesk" | "cointelegraph" | "decrypt"
+    publishedAt: string;       // ISO8601
+    url: string;               // for citation in reasoning string
+  }>;  // top 5 most recent + most magnitude-weighted, deduped, last 24h
+  fearGreed: { value: number; trend24h: number };
+};
+```
+
+The LLM gets aggregated numbers (windows) plus the **top 5 specific articles** so it can quote one in the reasoning string. Quoting matters for product trust: *"the Coinbase staking news at 14:12 keeps confidence below 0.6"* is much better UX than *"sentiment-adjusted hold."*
+
+5 articles × ~200 chars each = ~1KB of additional prompt — cheap.
+
+### 6.9 What §6 explicitly defers
+
+| Topic | Phase |
+|---|---|
+| Per-source weighting (Alpaca vs RSS reliability) | Phase 8 (need attribution data) |
+| Recency decay / magnitude weighting in aggregation | Phase 8 |
+| Migration off Haiku JSON mode to self-hosted classifier | Phase 9+ (only if scale or backtest needs justify) |
+| Real-time news invalidation banner | Phase 6 (LLM ratification's natural feature) |
+| X/Twitter sentiment | Post-Phase-8 (already non-goal in §2) |
 
 ---
 
