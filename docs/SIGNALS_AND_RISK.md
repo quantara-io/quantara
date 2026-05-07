@@ -725,16 +725,157 @@ Output JSON only.`,
 
 Validate the response server-side: if `type` violates the allowed-transformations rule, log it as a guardrail breach and use the algo signal verbatim. This enforces the "downgrade-only" contract at the code level, not just in the prompt.
 
-### 7.3 Model choice
+### 7.3 Model choice — Sonnet 4.6 from v1
 
-Recommend **Claude Haiku 4.5** for ratification — fast, cheap, good at structured output. Reserve Sonnet/Opus for the conversational layer when users ask Genie *"why did this signal fire?"* and we want a longer narrative.
+**Decision: Claude Sonnet 4.6 from day one.**
 
-### 7.4 Failure modes & fallback
+Trade-off: Haiku 4.5 (~$0.001/call) vs Sonnet 4.6 (~$0.012/call). Sonnet picked because **reasoning quality is a stated v1 goal (§1)** and the unit cost difference is small in absolute terms. The `reasoning` string is product UX; better narrative quality directly improves user trust.
 
-- **LLM call times out (>3s):** Use algo signal unchanged. Log.
-- **LLM returns invalid JSON:** Use algo signal unchanged. Log.
-- **LLM violates downgrade-only rule:** Use algo signal unchanged. Log + alert (if this fires often, the prompt is broken).
-- **LLM provider outage:** Algo signals continue to flow. The system never depends on the LLM being up.
+**Cost envelope:**
+- Per-pair daily cap (§7.5): 100/pair × 5 pairs = **500/day maximum**
+- Realistic average given §7.5 gating: 300–800/day
+- Sonnet 4.6: **$3.60–9.60/day average; ~$6/day at the per-pair cap ceiling**
+- Monthly: **~$90–300 expected; ~$180 at hard cap**
+
+Migrate to Haiku-only or per-slice routing only if Phase 8 attribution shows the cost is not pulling its weight on `reasoning` quality.
+
+### 7.4 Allowed transformations — full table
+
+| From | To | Allowed? | Reason |
+|---|---|---|---|
+| `buy` | `hold` | ✅ | Downgrade — bearish context cancels |
+| `buy` | `sell` | ❌ | Sign flip bypasses algo's deterministic rules |
+| `buy` | `buy` (lower conf) | ✅ | Confidence reduction |
+| `buy` | `buy` (higher conf) | ❌ | LLM can't be more bullish than algo |
+| `sell` | `hold` | ✅ | Downgrade |
+| `sell` | `buy` | ❌ | Sign flip |
+| `sell` | `sell` (lower conf) | ✅ | Confidence reduction |
+| `sell` | `sell` (higher conf) | ❌ | LLM can't be more bearish than algo |
+| `hold` | `buy` | ❌ | LLM can't invent direction |
+| `hold` | `sell` | ❌ | Same |
+| `hold` | `hold` (any conf) | ✅ | |
+
+**Confidence increases are forbidden.** Calibration consistency outweighs catching the rare confirming-news case (e.g. "BTC ETF approved" landing during an algo `buy 0.7` — LLM cannot push it to 0.9). Revisit only if Phase 8 attribution shows the algo systematically under-weights confirming news.
+
+### 7.5 Cost gating — when NOT to invoke
+
+Gating conditions (must satisfy all):
+- Algo confidence ≥ 0.6 (don't ratify weak signals — let them stay weak)
+- AT LEAST ONE OF:
+  - ≥1 article tagged for this pair in the last 30 minutes (sentiment context exists)
+  - Volatility flag set on any input timeframe (defer to qualitative judgment in chaos)
+  - Fear & Greed shifted ≥10 points in 24h (regime indicator)
+
+Plus rate limits:
+- **Per-(pair, TF) rate limit:** max 1 ratification per `(pair, TF)` per 5 minutes
+- **Per-pair daily cap:** 100 ratification calls per pair per day. Above the cap, only ratify when ALL gating conditions fire simultaneously (rare extreme cases).
+
+Per-pair caps (rather than a global cap) chosen so a single noisy pair (e.g. DOGE during a meme storm) can't starve attention from the other four. Total system ceiling: 500/day = ~$6/day at Sonnet pricing.
+
+### 7.6 Caching — bin-and-hash, 5-min TTL
+
+LLM responses are not bit-deterministic, but stable UX requires "same input → same output" within a window.
+
+```
+key = hash(
+  pair +
+  timeframe +
+  candidate.type +
+  bin(candidate.confidence, 0.02) +
+  bin(sentiment.score, 0.05) +
+  bin(sentiment.magnitude, 0.05) +
+  sentiment.articleCount +
+  fearGreed.value
+)
+```
+
+Bins are coarse enough that trivial state drift (confidence 0.781 vs 0.783) lands in the same bucket. Cache stored in DDB `ratification-cache` table, TTL = 5 min, matches the per-(pair, TF) rate limit.
+
+Cache hit returns the prior response without calling the LLM (cost = $0). Cache miss calls the LLM and writes the result.
+
+### 7.7 Server-side validation guardrail
+
+Validate every LLM response server-side before applying. Code shape:
+
+```ts
+function validateRatification(
+  candidate: TimeframeVote,
+  llmResponse: { type, confidence, reasoning, downgraded, downgradeReason }
+): { ok: boolean; reason?: string; ratified?: TimeframeVote } {
+  // 1. Type transformation rules (§7.4 table)
+  if (candidate.type === "hold" && llmResponse.type !== "hold") {
+    return { ok: false, reason: "hold→non-hold not allowed" };
+  }
+  if (candidate.type === "buy" && llmResponse.type === "sell") {
+    return { ok: false, reason: "buy→sell sign flip" };
+  }
+  if (candidate.type === "sell" && llmResponse.type === "buy") {
+    return { ok: false, reason: "sell→buy sign flip" };
+  }
+
+  // 2. Confidence bound (no increases)
+  if (llmResponse.confidence > candidate.confidence + 1e-6) {
+    return { ok: false, reason: "confidence increase forbidden" };
+  }
+
+  // 3. Schema bounds
+  if (llmResponse.confidence < 0 || llmResponse.confidence > 1) {
+    return { ok: false, reason: "confidence out of [0, 1]" };
+  }
+
+  // 4. Reasoning sanity
+  if (!llmResponse.reasoning || llmResponse.reasoning.length < 20 || llmResponse.reasoning.length > 600) {
+    return { ok: false, reason: "reasoning length out of bounds" };
+  }
+
+  return {
+    ok: true,
+    ratified: { ...candidate, type: llmResponse.type, confidence: llmResponse.confidence, reasoning: llmResponse.reasoning },
+  };
+}
+```
+
+On validation failure: **fall back to the algo signal unchanged** and log the failure with the LLM raw response. Failures > 1% over 24h → page (prompt drift or model regression).
+
+### 7.8 Failure modes & fallback
+
+All map to fallback ("use algo signal verbatim"); only the log action differs.
+
+| Failure | Action |
+|---|---|
+| LLM call times out (> 3s p99) | Fallback. Log latency. |
+| LLM returns invalid JSON | Fallback. Log raw. |
+| LLM violates type transform (hold→buy etc.) | Fallback. Log + alert if rate > 1%/day. |
+| LLM increases confidence | Fallback. Log raw. |
+| Reasoning < 20 or > 600 chars | Fallback. Log raw. |
+| LLM provider outage | Fallback. Algo signals continue to flow. |
+| Daily cap exceeded for pair | Skip ratification (cost gating, not failure). |
+
+The system never depends on the LLM being up. Algo is the source of truth; LLM is an opt-in refinement.
+
+### 7.9 Output shape — every ratification persisted
+
+Persist every ratification call (success, failure, cache hit) to a `ratifications` DDB table, TTL 30 days. Critical for Phase 8 attribution and prompt iteration.
+
+```ts
+type RatificationRecord = {
+  pair: string;
+  timeframe: Timeframe;
+  algoCandidate: TimeframeVote;             // input
+  llmRequest: { model, systemHash, userJsonHash };  // for replay
+  llmRawResponse: object | null;             // before validation; null on cache hit
+  cacheHit: boolean;
+  validation: { ok: boolean; reason?: string };
+  ratified: TimeframeVote | null;            // post-validation; null if fellback
+  fellBackToAlgo: boolean;
+  latencyMs: number;
+  costUsd: number;                           // 0 on cache hit
+  invokedReason: "news" | "vol" | "fng-shift" | "all";
+  invokedAt: string;
+};
+```
+
+Phase 8 reads this table to compute: ratification accuracy delta vs algo-only, cost-per-improved-signal, downgrade hit rate, model-version regression detection.
 
 ---
 
