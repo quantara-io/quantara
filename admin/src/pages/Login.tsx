@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { startAuthentication } from "@simplewebauthn/browser";
 import { apiFetch } from "../lib/api";
 import { saveTokens } from "../lib/auth";
 
@@ -178,6 +179,55 @@ export function Login() {
     window.location.href = `/api/auth/oauth/${provider}?redirect_uri=${encodeURIComponent(redirectUri)}`;
   }
 
+  async function passkeyLogin() {
+    setError("");
+    setBusy(true);
+    try {
+      const optsRes = await apiFetch<Record<string, unknown> & { publicKey?: Record<string, unknown> }>(
+        "/api/auth/passkey/login/options",
+        { method: "POST", body: email ? { email } : {}, noAuth: true },
+      );
+      if (!optsRes.success || !optsRes.data) {
+        return setError(optsRes.error?.message ?? "Failed to start passkey sign-in");
+      }
+      // Aldero may wrap the WebAuthn options under `publicKey` or return them flat — handle both.
+      const optionsJSON = (optsRes.data.publicKey ?? optsRes.data) as unknown as Parameters<typeof startAuthentication>[0]["optionsJSON"];
+
+      const assertion = await startAuthentication({ optionsJSON });
+
+      const verifyRes = await apiFetch<AuthResult>("/api/auth/passkey/login/verify", {
+        method: "POST",
+        body: assertion,
+        noAuth: true,
+      });
+      if (!verifyRes.success) {
+        return setError(verifyRes.error?.message ?? "Passkey sign-in failed");
+      }
+      if (verifyRes.data?.mfaRequired) {
+        setMfaToken(verifyRes.data.mfaToken ?? "");
+        setAvailableMethods(verifyRes.data.availableMethods ?? ["totp"]);
+        setMfaMethod((verifyRes.data.availableMethods ?? ["totp"])[0]);
+        setStep("mfa");
+        return;
+      }
+      if (verifyRes.data?.accessToken) {
+        saveTokens(verifyRes.data.accessToken, verifyRes.data.refreshToken ?? "");
+        navigate("/", { replace: true });
+      }
+    } catch (err) {
+      const name = (err as Error).name;
+      const msg = (err as Error).message;
+      // User cancelled the browser prompt or no credentials available — treat softly.
+      if (name === "NotAllowedError" || name === "AbortError") {
+        setError("Passkey sign-in cancelled.");
+      } else {
+        setError(msg || "Passkey sign-in failed");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="min-h-full flex items-center justify-center px-4 py-12">
       <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-xl p-6">
@@ -200,6 +250,15 @@ export function Login() {
               </button>
               <button onClick={() => oauth("apple")} className="w-full rounded-md border border-slate-700 bg-black text-white px-3 py-2 text-sm font-medium hover:bg-slate-900 transition">
                 Continue with Apple
+              </button>
+              <button onClick={passkeyLogin} disabled={busy} className="w-full rounded-md border border-slate-700 bg-slate-800 text-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-700 transition disabled:opacity-50 flex items-center justify-center gap-2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="8" cy="12" r="4" />
+                  <path d="M12 12h10" />
+                  <path d="M18 12v3" />
+                  <path d="M22 12v2" />
+                </svg>
+                Sign in with passkey
               </button>
             </div>
             <div className="flex items-center gap-3 my-4">
