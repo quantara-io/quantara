@@ -97,6 +97,8 @@ describe("storeNewsRecords", () => {
     expect(stored).toBe(1);
     const writes = send.mock.calls.filter((c) => c[0].__cmd === "BatchWrite");
     expect(writes[0][0].input.RequestItems["test-news-events"]).toHaveLength(1);
-    expect(writes[0][0].input.RequestItems["test-news-events"][0].PutRequest.Item.newsId).toBe("new");
+    expect(writes[0][0].input.RequestItems["test-news-events"][0].PutRequest.Item.newsId).toBe(
+      "new",
+    );
   });
 });

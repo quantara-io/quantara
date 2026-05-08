@@ -7,6 +7,7 @@ Print a human-readable status table for the agent workflow. No state changes —
 ## What to print
 
 ### 1. In-flight issues
+
 ```bash
 gh issue list --label agent-claimed --state open \
   --json number,title,assignees,updatedAt \
@@ -14,6 +15,7 @@ gh issue list --label agent-claimed --state open \
 ```
 
 ### 2. Open agent PRs (CI state included)
+
 ```bash
 gh pr list --search 'head:agent/' --state open \
   --json number,title,headRefName,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,updatedAt \
@@ -21,13 +23,16 @@ gh pr list --search 'head:agent/' --state open \
 ```
 
 ### 3. Local worktrees
+
 ```bash
 git -C /Users/nate/aldero.io/quantara worktree list
 ls -lt ~/.quantara-worktrees/ 2>/dev/null
 ```
 
 ### 4. Stale workers (any worktree with last commit > 1 hour ago, or branch with no commits in 1h)
+
 For each worktree under `~/.quantara-worktrees/`:
+
 ```bash
 for wt in ~/.quantara-worktrees/*/; do
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
@@ -41,6 +46,7 @@ done
 ```
 
 ### 5. Escalations awaiting human
+
 ```bash
 gh pr list --label needs-human-review --state open --json number,title,url \
   --template '{{range .}}#{{.number}}  {{.title}}  {{.url}}{{"\n"}}{{end}}'

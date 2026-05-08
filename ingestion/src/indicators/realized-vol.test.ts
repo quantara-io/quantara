@@ -8,7 +8,7 @@ function makeCloses(n = 200, seed = 33): number[] {
   let s = seed;
   for (let i = 0; i < n; i++) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 500;
+    const move = (((s >>> 0) % 201) - 100) / 500;
     val = Math.max(0.01, val + move);
     closes.push(val);
   }

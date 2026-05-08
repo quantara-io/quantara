@@ -3,9 +3,14 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 
 import { alderoPost, AlderoError } from "../lib/aldero-client.js";
 import {
-  MagicLinkRequest, MagicLinkVerifyRequest, AuthSuccessResponse,
-  PasswordResetRequest, PasswordResetConfirm,
-  EmailVerifySendRequest, EmailVerifyConfirmRequest, SuccessResponse,
+  MagicLinkRequest,
+  MagicLinkVerifyRequest,
+  AuthSuccessResponse,
+  PasswordResetRequest,
+  PasswordResetConfirm,
+  EmailVerifySendRequest,
+  EmailVerifyConfirmRequest,
+  SuccessResponse,
 } from "../lib/schemas/auth.js";
 import { ErrorResponse } from "../lib/schemas/common.js";
 import { requireAuth } from "../middleware/require-auth.js";
@@ -24,14 +29,18 @@ const magicLinkRoute = createRoute({
   description: "Sends a passwordless login link to the user's email. Link expires in 10 minutes.",
   request: { body: { content: { "application/json": { schema: MagicLinkRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Magic link sent" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Magic link sent",
+    },
   },
 });
 
 authPassword.openapi(magicLinkRoute, async (c) => {
   const body = c.req.valid("json");
   const origin = c.req.header("Origin") || c.req.header("Referer")?.split("/api")[0] || "";
-  const redirectUrl = (body as any).redirectUri || (origin ? origin + "/api/docs/demo?magic=true" : undefined);
+  const redirectUrl =
+    (body as any).redirectUri || (origin ? origin + "/api/docs/demo?magic=true" : undefined);
   try {
     await alderoPost("/v1/auth/magic-link/request", {
       email: body.email,
@@ -40,7 +49,10 @@ authPassword.openapi(magicLinkRoute, async (c) => {
   } catch {
     // Always return success to prevent email enumeration
   }
-  return c.json({ success: true as const, data: { message: "If an account exists, a magic link has been sent" } });
+  return c.json({
+    success: true as const,
+    data: { message: "If an account exists, a magic link has been sent" },
+  });
 });
 
 // --- POST /magic-link/verify ---
@@ -52,19 +64,31 @@ const magicLinkVerifyRoute = createRoute({
   description: "Exchange the magic link token for access tokens.",
   request: { body: { content: { "application/json": { schema: MagicLinkVerifyRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "Login successful" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid or expired token" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "Login successful",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid or expired token",
+    },
   },
 });
 
 authPassword.openapi(magicLinkVerifyRoute, async (c) => {
   const body = c.req.valid("json");
   try {
-    const result = await alderoPost("/v1/auth/magic-link/verify", body) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/magic-link/verify", body)) as Record<
+      string,
+      unknown
+    >;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "INVALID_TOKEN", message: err.message } }, 401);
+      return c.json(
+        { success: false as const, error: { code: "INVALID_TOKEN", message: err.message } },
+        401,
+      );
     }
     throw err;
   }
@@ -79,7 +103,10 @@ const resetRequestRoute = createRoute({
   description: "Sends a password reset email. Link expires in 1 hour.",
   request: { body: { content: { "application/json": { schema: PasswordResetRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Reset email sent" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Reset email sent",
+    },
   },
 });
 
@@ -95,7 +122,10 @@ authPassword.openapi(resetRequestRoute, async (c) => {
   } catch {
     // Always return success to prevent email enumeration
   }
-  return c.json({ success: true as const, data: { message: "If an account exists, a reset link has been sent" } });
+  return c.json({
+    success: true as const,
+    data: { message: "If an account exists, a reset link has been sent" },
+  });
 });
 
 // --- POST /password/reset ---
@@ -107,8 +137,14 @@ const resetRoute = createRoute({
   description: "Set a new password using the token from the reset email.",
   request: { body: { content: { "application/json": { schema: PasswordResetConfirm } } } },
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Password reset" },
-    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid or expired token" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Password reset",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid or expired token",
+    },
   },
 });
 
@@ -119,7 +155,10 @@ authPassword.openapi(resetRoute, async (c) => {
     return c.json({ success: true as const, data: { message: "Password has been reset" } });
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "RESET_FAILED", message: err.message } }, 400);
+      return c.json(
+        { success: false as const, error: { code: "RESET_FAILED", message: err.message } },
+        400,
+      );
     }
     throw err;
   }
@@ -155,8 +194,14 @@ const verifyEmailConfirmRoute = createRoute({
   security: [{ Bearer: [] }],
   request: { body: { content: { "application/json": { schema: EmailVerifyConfirmRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Email verified" },
-    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid code" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Email verified",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid code",
+    },
   },
 });
 
@@ -168,7 +213,10 @@ authPassword.openapi(verifyEmailConfirmRoute, async (c) => {
     return c.json({ success: true as const, data: { message: "Email verified" } });
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "INVALID_CODE", message: err.message } }, 400);
+      return c.json(
+        { success: false as const, error: { code: "INVALID_CODE", message: err.message } },
+        400,
+      );
     }
     throw err;
   }

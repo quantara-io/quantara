@@ -78,7 +78,6 @@ const bullishRule: Rule = {
   requiresPrior: 50,
 };
 
-
 // ---------------------------------------------------------------------------
 // §4.8 Golden fixture
 // ---------------------------------------------------------------------------
@@ -186,11 +185,7 @@ describe("§4.8 golden worked example — BTC/USDT 1h", () => {
       when: (s) => {
         const prev = s.history.macdHist[1]; // index 1 = t-1 (most recent is index 0)
         return (
-          s.macdHist !== null &&
-          s.macdHist > 0 &&
-          prev !== null &&
-          prev !== undefined &&
-          prev <= 0
+          s.macdHist !== null && s.macdHist > 0 && prev !== null && prev !== undefined && prev <= 0
         );
       },
       appliesTo: ["1h", "4h", "1d"],

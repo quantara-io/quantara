@@ -1,11 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import {
-  sma,
-  ema,
-  wilderSmooth,
-  linearRegressionSlope,
-} from "./helpers.js";
+import { sma, ema, wilderSmooth, linearRegressionSlope } from "./helpers.js";
 
 /**
  * 50-bar fixture: [1, 2, 3, ..., 50].

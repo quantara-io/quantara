@@ -27,11 +27,7 @@ function makeOneDayBars(startMs: number, n: number, base: number) {
 
 describe("vwap", () => {
   it("returns null for non-15m/1h timeframes", () => {
-    const { high, low, close, volume, openTime } = makeOneDayBars(
-      DAY1_START,
-      5,
-      100,
-    );
+    const { high, low, close, volume, openTime } = makeOneDayBars(DAY1_START, 5, 100);
     for (const tf of ["1m", "5m", "4h", "1d"] as const) {
       const r = vwap(high, low, close, volume, openTime, tf);
       r.forEach((v) => expect(v).toBeNull());
@@ -39,32 +35,20 @@ describe("vwap", () => {
   });
 
   it("returns non-null values for 1h timeframe", () => {
-    const { high, low, close, volume, openTime } = makeOneDayBars(
-      DAY1_START,
-      5,
-      100,
-    );
+    const { high, low, close, volume, openTime } = makeOneDayBars(DAY1_START, 5, 100);
     const r = vwap(high, low, close, volume, openTime, "1h");
     r.forEach((v) => expect(v).not.toBeNull());
   });
 
   it("returns non-null values for 15m timeframe", () => {
-    const { high, low, close, volume, openTime } = makeOneDayBars(
-      DAY1_START,
-      5,
-      100,
-    );
+    const { high, low, close, volume, openTime } = makeOneDayBars(DAY1_START, 5, 100);
     const r = vwap(high, low, close, volume, openTime, "15m");
     r.forEach((v) => expect(v).not.toBeNull());
   });
 
   it("VWAP equals typical price when all bars identical", () => {
     // TP = (101 + 99 + 100) / 3 = 100
-    const { high, low, close, volume, openTime } = makeOneDayBars(
-      DAY1_START,
-      5,
-      100,
-    );
+    const { high, low, close, volume, openTime } = makeOneDayBars(DAY1_START, 5, 100);
     const r = vwap(high, low, close, volume, openTime, "1h");
     r.forEach((v) => expect(v).toBeCloseTo(100, 8));
   });

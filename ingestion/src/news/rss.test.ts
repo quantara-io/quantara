@@ -73,9 +73,7 @@ describe("fetchRssNews", () => {
   });
 
   it("derives stable newsIds from the same guid (same hash on re-parse)", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue({ ok: true, text: async () => SAMPLE_FEED });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => SAMPLE_FEED });
     vi.stubGlobal("fetch", fetchMock);
 
     const first = await fetchRssNews();

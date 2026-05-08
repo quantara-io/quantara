@@ -31,22 +31,22 @@ export class NewsPoller {
 
     // Initial polls
     this.poll().catch((err) =>
-      console.error(`[NewsPoller] Initial poll error: ${(err as Error).message}`)
+      console.error(`[NewsPoller] Initial poll error: ${(err as Error).message}`),
     );
     this.pollFearGreed().catch((err) =>
-      console.error(`[NewsPoller] Initial F&G error: ${(err as Error).message}`)
+      console.error(`[NewsPoller] Initial F&G error: ${(err as Error).message}`),
     );
 
     // Recurring polls
     this.timer = setInterval(() => {
       this.poll().catch((err) =>
-        console.error(`[NewsPoller] Poll error: ${(err as Error).message}`)
+        console.error(`[NewsPoller] Poll error: ${(err as Error).message}`),
       );
     }, POLL_INTERVAL_MS);
 
     this.fgTimer = setInterval(() => {
       this.pollFearGreed().catch((err) =>
-        console.error(`[NewsPoller] F&G error: ${(err as Error).message}`)
+        console.error(`[NewsPoller] F&G error: ${(err as Error).message}`),
       );
     }, FEAR_GREED_INTERVAL_MS);
   }
@@ -104,7 +104,7 @@ export class NewsPoller {
     }
 
     console.log(
-      `[NewsPoller] Stored ${stored} new articles (${alpacaRecords.length} Alpaca, ${rssRecords.length} RSS)`
+      `[NewsPoller] Stored ${stored} new articles (${alpacaRecords.length} Alpaca, ${rssRecords.length} RSS)`,
     );
   }
 

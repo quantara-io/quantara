@@ -9,7 +9,7 @@ function makeCloses(n = 200, seed = 99): number[] {
   let s = seed;
   for (let i = 0; i < n; i++) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 100;
+    const move = (((s >>> 0) % 201) - 100) / 100;
     val = Math.max(1, val + move);
     closes.push(val);
   }
@@ -210,10 +210,7 @@ describe("macdUpdate — mid-warm-up checkpoint parity", () => {
    * Run macdUpdate incrementally from bar 25 through checkpointBar,
    * returning the state immediately after checkpointBar is processed.
    */
-  function runIncrementalToBar(
-    closes: number[],
-    checkpointBar: number,
-  ): MacdIncrState {
+  function runIncrementalToBar(closes: number[], checkpointBar: number): MacdIncrState {
     let state = buildColdStateAfterBar25(closes);
     for (let i = 26; i <= checkpointBar; i++) {
       state = macdUpdate(state, closes[i]);
@@ -264,9 +261,7 @@ describe("macdUpdate — mid-warm-up checkpoint parity", () => {
     },
   );
 
-  it.each(
-    [25, 26, 27, 28, 29, 30, 31, 32, 33].map((bar) => ({ bar })),
-  )(
+  it.each([25, 26, 27, 28, 29, 30, 31, 32, 33].map((bar) => ({ bar })))(
     "checkpoint at bar $bar with preserved buffer: signal seeds at bar 33," +
       " signalEma and hist match full recompute",
     ({ bar }) => {
@@ -355,14 +350,19 @@ describe("macd — single-bar-update parity", () => {
     }
 
     // Seed signal EMA with SMA of first 9 MACD values.
-    const signalEma =
-      macdSeedVals.slice(0, 9).reduce((a, b) => a + b, 0) / 9;
+    const signalEma = macdSeedVals.slice(0, 9).reduce((a, b) => a + b, 0) / 9;
 
     // Update emaFast/emaSlow to match bar 33 state after seeding.
     // (they're already at bar 33 from the loop above)
 
     // Advance incrementally bar 34..100.
-    let state: MacdIncrState = { emaFast, emaSlow, signalEma, macdValuesSinceSeed: [], signalSeedingActive: true };
+    let state: MacdIncrState = {
+      emaFast,
+      emaSlow,
+      signalEma,
+      macdValuesSinceSeed: [],
+      signalSeedingActive: true,
+    };
     for (let i = 34; i <= 100; i++) {
       const upd = macdUpdate(state, closes[i]);
       state = upd;

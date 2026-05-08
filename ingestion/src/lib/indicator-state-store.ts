@@ -1,9 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DynamoDBDocumentClient,
-  PutCommand,
-  QueryCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { IndicatorState } from "@quantara/shared";
 import type { Timeframe } from "@quantara/shared";
 
@@ -77,7 +73,7 @@ export async function putIndicatorState(state: IndicatorState): Promise<void> {
         history: state.history,
         ttl,
       },
-    })
+    }),
   );
 }
 
@@ -88,7 +84,7 @@ export async function putIndicatorState(state: IndicatorState): Promise<void> {
 export async function getLatestIndicatorState(
   pair: string,
   exchange: string,
-  timeframe: Timeframe
+  timeframe: Timeframe,
 ): Promise<IndicatorState | null> {
   const pk = buildPk(pair, exchange, timeframe);
 
@@ -100,7 +96,7 @@ export async function getLatestIndicatorState(
       ExpressionAttributeValues: { ":pk": pk },
       ScanIndexForward: false,
       Limit: 1,
-    })
+    }),
   );
 
   const item = result.Items?.[0];

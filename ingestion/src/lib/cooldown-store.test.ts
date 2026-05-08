@@ -57,7 +57,9 @@ describe("tickCooldowns", () => {
 
   it("increments all bar counters by 1", async () => {
     const stored = { "rsi-oversold": 2, "ema-cross-bull": 5 };
-    send.mockResolvedValueOnce({ Item: { metaKey: "cooldown#BTC/USDT#15m", lastFireBars: stored } });
+    send.mockResolvedValueOnce({
+      Item: { metaKey: "cooldown#BTC/USDT#15m", lastFireBars: stored },
+    });
     send.mockResolvedValueOnce({});
     const { tickCooldowns } = await import("./cooldown-store.js");
     await tickCooldowns("BTC/USDT", "15m");
@@ -72,7 +74,9 @@ describe("tickCooldowns", () => {
 
   it("writes to the correct table", async () => {
     const stored = { "rule-a": 1 };
-    send.mockResolvedValueOnce({ Item: { metaKey: "cooldown#BTC/USDT#15m", lastFireBars: stored } });
+    send.mockResolvedValueOnce({
+      Item: { metaKey: "cooldown#BTC/USDT#15m", lastFireBars: stored },
+    });
     send.mockResolvedValueOnce({});
     const { tickCooldowns } = await import("./cooldown-store.js");
     await tickCooldowns("BTC/USDT", "15m");
@@ -91,7 +95,9 @@ describe("recordRuleFires", () => {
   it("resets the fired rules' counters to 0", async () => {
     const existing = { "rsi-oversold": 4, "ema-cross-bull": 2 };
     // getLastFireBars call returns existing state.
-    send.mockResolvedValueOnce({ Item: { metaKey: "cooldown#BTC/USDT#15m", lastFireBars: existing } });
+    send.mockResolvedValueOnce({
+      Item: { metaKey: "cooldown#BTC/USDT#15m", lastFireBars: existing },
+    });
     send.mockResolvedValueOnce({});
     const { recordRuleFires } = await import("./cooldown-store.js");
     await recordRuleFires("BTC/USDT", "15m", ["rsi-oversold"]);
@@ -116,7 +122,9 @@ describe("recordRuleFires", () => {
 
   it("resets all rules listed in ruleNames to 0", async () => {
     const existing = { "rule-a": 5, "rule-b": 3, "rule-c": 1 };
-    send.mockResolvedValueOnce({ Item: { metaKey: "cooldown#BTC/USDT#1h", lastFireBars: existing } });
+    send.mockResolvedValueOnce({
+      Item: { metaKey: "cooldown#BTC/USDT#1h", lastFireBars: existing },
+    });
     send.mockResolvedValueOnce({});
     const { recordRuleFires } = await import("./cooldown-store.js");
     await recordRuleFires("BTC/USDT", "1h", ["rule-a", "rule-b"]);

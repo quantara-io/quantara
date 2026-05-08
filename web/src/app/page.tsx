@@ -5,9 +5,7 @@ export default function Home() {
         <h1 className="font-display text-5xl font-bold tracking-tight bg-gradient-to-r from-white to-cyan-500 bg-clip-text text-transparent">
           Quantara
         </h1>
-        <p className="text-text-secondary text-lg">
-          Intelligence. Ownership. Execution.
-        </p>
+        <p className="text-text-secondary text-lg">Intelligence. Ownership. Execution.</p>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

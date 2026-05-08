@@ -9,11 +9,11 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: '24'
+  NODE_VERSION: "24"
   AWS_REGION: us-west-2
   ECR_REPO: quantara-dev-ingestion
-  NEXT_TELEMETRY_DISABLED: '1'
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  NEXT_TELEMETRY_DISABLED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   lint:

@@ -1,18 +1,13 @@
 import { randomUUID } from "node:crypto";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DynamoDBDocumentClient,
-  PutCommand,
-  QueryCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal } from "@quantara/shared";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const SIGNALS_V2_TABLE =
-  process.env.TABLE_SIGNALS_V2 ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+  process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
 
 /** 90-day TTL for signals */
 const TTL_SECONDS = 86400 * 90;
@@ -46,9 +41,7 @@ export interface SignalRecord {
  * Returns the generated signalId and emittedAt ISO8601 string.
  * Does not mutate the input signal.
  */
-export async function putSignal(
-  signal: BlendedSignal
-): Promise<SignalRecord> {
+export async function putSignal(signal: BlendedSignal): Promise<SignalRecord> {
   const emittedAt = new Date(signal.asOf).toISOString();
   const signalId = makeSignalId(signal.asOf);
   const emittedAtSignalId = buildSortKey(emittedAt, signalId);
@@ -75,7 +68,7 @@ export async function putSignal(
         risk: signal.risk ?? null,
         ttl,
       },
-    })
+    }),
   );
 
   return { signalId, emittedAt };
@@ -86,7 +79,7 @@ export async function putSignal(
  * Returns null if no signal exists.
  */
 export async function getLatestSignal(
-  pair: string
+  pair: string,
 ): Promise<(BlendedSignal & SignalRecord) | null> {
   const results = await getRecentSignals(pair, 1);
   return results[0] ?? null;
@@ -97,7 +90,7 @@ export async function getLatestSignal(
  */
 export async function getRecentSignals(
   pair: string,
-  limit = 10
+  limit = 10,
 ): Promise<Array<BlendedSignal & SignalRecord>> {
   const result = await client.send(
     new QueryCommand({
@@ -107,7 +100,7 @@ export async function getRecentSignals(
       ExpressionAttributeValues: { ":pair": pair },
       ScanIndexForward: false,
       Limit: limit,
-    })
+    }),
   );
 
   return (result.Items ?? []).map((item) => ({

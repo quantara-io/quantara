@@ -5,10 +5,24 @@
 import { createServer } from "node:http";
 
 import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { ECSClient, DescribeServicesCommand, ListTasksCommand, DescribeClustersCommand } from "@aws-sdk/client-ecs";
+import {
+  DynamoDBDocumentClient,
+  ScanCommand,
+  GetCommand,
+  QueryCommand,
+} from "@aws-sdk/lib-dynamodb";
+import {
+  ECSClient,
+  DescribeServicesCommand,
+  ListTasksCommand,
+  DescribeClustersCommand,
+} from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
-import { CloudWatchLogsClient, GetLogEventsCommand, DescribeLogStreamsCommand } from "@aws-sdk/client-cloudwatch-logs";
+import {
+  CloudWatchLogsClient,
+  GetLogEventsCommand,
+  DescribeLogStreamsCommand,
+} from "@aws-sdk/client-cloudwatch-logs";
 import { LambdaClient, ListFunctionsCommand, GetFunctionCommand } from "@aws-sdk/client-lambda";
 
 const REGION = "us-west-2";
@@ -24,105 +38,155 @@ const lambda = new LambdaClient({ region: REGION });
 const ACCOUNT_ID = "442725244722";
 
 const TABLES = [
-  "prices", "candles", "news-events", "ingestion-metadata",
-  "signals", "signal-history", "users", "deals",
-  "deal-interests", "coach-sessions", "coach-messages", "campaigns",
+  "prices",
+  "candles",
+  "news-events",
+  "ingestion-metadata",
+  "signals",
+  "signal-history",
+  "users",
+  "deals",
+  "deal-interests",
+  "coach-sessions",
+  "coach-messages",
+  "campaigns",
 ];
 
 const SQS_QUEUES = [
-  "enrichment", "enrichment-dlq",
-  "market-events", "market-events-dlq",
-  "enriched-news", "enriched-news-dlq",
+  "enrichment",
+  "enrichment-dlq",
+  "market-events",
+  "market-events-dlq",
+  "enriched-news",
+  "enriched-news-dlq",
 ];
 
 const LAMBDAS = ["api", "ingestion", "backfill", "news-backfill", "enrichment"];
 
 async function getTableCount(table: string): Promise<number> {
   try {
-    const result = await dynamo.send(new ScanCommand({
-      TableName: `${PREFIX}-${table}`,
-      Select: "COUNT",
-    }));
+    const result = await dynamo.send(
+      new ScanCommand({
+        TableName: `${PREFIX}-${table}`,
+        Select: "COUNT",
+      }),
+    );
     return result.Count ?? 0;
-  } catch { return -1; }
+  } catch {
+    return -1;
+  }
 }
 
 async function getTableSize(table: string): Promise<number> {
   try {
     const result = await new DynamoDBClient({ region: REGION }).send(
-      new DescribeTableCommand({ TableName: `${PREFIX}-${table}` })
+      new DescribeTableCommand({ TableName: `${PREFIX}-${table}` }),
     );
     return result.Table?.TableSizeBytes ?? 0;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
 }
 
 async function getFearGreed(): Promise<{ value: number; classification: string } | null> {
   try {
-    const result = await dynamo.send(new GetCommand({
-      TableName: `${PREFIX}-ingestion-metadata`,
-      Key: { metaKey: "market:fear-greed" },
-    }));
+    const result = await dynamo.send(
+      new GetCommand({
+        TableName: `${PREFIX}-ingestion-metadata`,
+        Key: { metaKey: "market:fear-greed" },
+      }),
+    );
     if (!result.Item) return null;
-    return { value: result.Item.value as number, classification: result.Item.classification as string };
-  } catch { return null; }
+    return {
+      value: result.Item.value as number,
+      classification: result.Item.classification as string,
+    };
+  } catch {
+    return null;
+  }
 }
 
-async function getEcsStatus(): Promise<{ status: string; running: number; desired: number; taskId?: string }> {
+async function getEcsStatus(): Promise<{
+  status: string;
+  running: number;
+  desired: number;
+  taskId?: string;
+}> {
   try {
-    const svc = await ecs.send(new DescribeServicesCommand({
-      cluster: `${PREFIX}-ingestion`,
-      services: [`${PREFIX}-ingestion`],
-    }));
+    const svc = await ecs.send(
+      new DescribeServicesCommand({
+        cluster: `${PREFIX}-ingestion`,
+        services: [`${PREFIX}-ingestion`],
+      }),
+    );
     const service = svc.services?.[0];
-    const tasks = await ecs.send(new ListTasksCommand({
-      cluster: `${PREFIX}-ingestion`,
-      serviceName: `${PREFIX}-ingestion`,
-    }));
+    const tasks = await ecs.send(
+      new ListTasksCommand({
+        cluster: `${PREFIX}-ingestion`,
+        serviceName: `${PREFIX}-ingestion`,
+      }),
+    );
     return {
       status: service?.status ?? "UNKNOWN",
       running: service?.runningCount ?? 0,
       desired: service?.desiredCount ?? 0,
       taskId: tasks.taskArns?.[0]?.split("/").pop(),
     };
-  } catch { return { status: "ERROR", running: 0, desired: 0 }; }
+  } catch {
+    return { status: "ERROR", running: 0, desired: 0 };
+  }
 }
 
-async function getQueueDepth(queue: string): Promise<{ messages: number; inflight: number; dlq: boolean }> {
+async function getQueueDepth(
+  queue: string,
+): Promise<{ messages: number; inflight: number; dlq: boolean }> {
   try {
     const url = `https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/${PREFIX}-${queue}`;
-    const result = await sqs.send(new GetQueueAttributesCommand({
-      QueueUrl: url,
-      AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
-    }));
+    const result = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: url,
+        AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
+      }),
+    );
     return {
       messages: parseInt(result.Attributes?.ApproximateNumberOfMessages ?? "0"),
       inflight: parseInt(result.Attributes?.ApproximateNumberOfMessagesNotVisible ?? "0"),
       dlq: queue.endsWith("-dlq"),
     };
-  } catch { return { messages: -1, inflight: 0, dlq: queue.endsWith("-dlq") }; }
+  } catch {
+    return { messages: -1, inflight: 0, dlq: queue.endsWith("-dlq") };
+  }
 }
 
 async function getRecentLogs(limit = 15): Promise<string[]> {
   try {
-    const streams = await logs.send(new DescribeLogStreamsCommand({
-      logGroupName: `/ecs/${PREFIX}-ingestion`,
-      orderBy: "LastEventTime",
-      descending: true,
-      limit: 1,
-    }));
+    const streams = await logs.send(
+      new DescribeLogStreamsCommand({
+        logGroupName: `/ecs/${PREFIX}-ingestion`,
+        orderBy: "LastEventTime",
+        descending: true,
+        limit: 1,
+      }),
+    );
     const streamName = streams.logStreams?.[0]?.logStreamName;
     if (!streamName) return ["No log streams found"];
-    const events = await logs.send(new GetLogEventsCommand({
-      logGroupName: `/ecs/${PREFIX}-ingestion`,
-      logStreamName: streamName,
-      limit,
-      startFromHead: false,
-    }));
-    return (events.events ?? []).map(e => e.message ?? "").filter(Boolean);
-  } catch (err) { return [`Error: ${(err as Error).message}`]; }
+    const events = await logs.send(
+      new GetLogEventsCommand({
+        logGroupName: `/ecs/${PREFIX}-ingestion`,
+        logStreamName: streamName,
+        limit,
+        startFromHead: false,
+      }),
+    );
+    return (events.events ?? []).map((e) => e.message ?? "").filter(Boolean);
+  } catch (err) {
+    return [`Error: ${(err as Error).message}`];
+  }
 }
 
-async function getLambdaStatus(name: string): Promise<{ state: string; lastModified: string; size: number }> {
+async function getLambdaStatus(
+  name: string,
+): Promise<{ state: string; lastModified: string; size: number }> {
   try {
     const result = await lambda.send(new GetFunctionCommand({ FunctionName: `${PREFIX}-${name}` }));
     return {
@@ -130,92 +194,162 @@ async function getLambdaStatus(name: string): Promise<{ state: string; lastModif
       lastModified: result.Configuration?.LastModified ?? "",
       size: result.Configuration?.CodeSize ?? 0,
     };
-  } catch { return { state: "NOT FOUND", lastModified: "", size: 0 }; }
+  } catch {
+    return { state: "NOT FOUND", lastModified: "", size: 0 };
+  }
 }
 
 const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
 const EXCHANGES_LIST = ["binanceus", "coinbase", "kraken"];
 
-async function getLatestPrices(): Promise<Array<{ pair: string; exchange: string; price: number; bid: number; ask: number; volume24h: number; timestamp: string }>> {
-  const results: Array<{ pair: string; exchange: string; price: number; bid: number; ask: number; volume24h: number; timestamp: string }> = [];
+async function getLatestPrices(): Promise<
+  Array<{
+    pair: string;
+    exchange: string;
+    price: number;
+    bid: number;
+    ask: number;
+    volume24h: number;
+    timestamp: string;
+  }>
+> {
+  const results: Array<{
+    pair: string;
+    exchange: string;
+    price: number;
+    bid: number;
+    ask: number;
+    volume24h: number;
+    timestamp: string;
+  }> = [];
   for (const pair of PAIRS) {
     try {
-      const result = await dynamo.send(new QueryCommand({
-        TableName: `${PREFIX}-prices`,
-        KeyConditionExpression: "#pair = :pair",
-        ExpressionAttributeNames: { "#pair": "pair" },
-        ExpressionAttributeValues: { ":pair": pair },
-        ScanIndexForward: false,
-        Limit: 3,
-      }));
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: `${PREFIX}-prices`,
+          KeyConditionExpression: "#pair = :pair",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: { ":pair": pair },
+          ScanIndexForward: false,
+          Limit: 3,
+        }),
+      );
       for (const item of result.Items ?? []) {
         results.push(item as any);
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return results;
 }
 
-async function getRecentCandles(pair: string, exchange: string, timeframe: string, limit = 60): Promise<Array<{ open: number; high: number; low: number; close: number; volume: number; openTime: number }>> {
+async function getRecentCandles(
+  pair: string,
+  exchange: string,
+  timeframe: string,
+  limit = 60,
+): Promise<
+  Array<{
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    openTime: number;
+  }>
+> {
   try {
     const prefix = `${exchange}#${timeframe}#`;
-    const result = await dynamo.send(new QueryCommand({
-      TableName: `${PREFIX}-candles`,
-      KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :prefix)",
-      ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
-      ExpressionAttributeValues: { ":pair": pair, ":prefix": prefix },
-      ScanIndexForward: false,
-      Limit: limit,
-    }));
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: `${PREFIX}-candles`,
+        KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :prefix)",
+        ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+        ExpressionAttributeValues: { ":pair": pair, ":prefix": prefix },
+        ScanIndexForward: false,
+        Limit: limit,
+      }),
+    );
     return ((result.Items ?? []) as any[]).reverse();
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
-async function getRecentNews(limit = 50): Promise<Array<{ newsId: string; title: string; source: string; publishedAt: string; currencies: string[]; rawSentiment: string; status: string }>> {
+async function getRecentNews(limit = 50): Promise<
+  Array<{
+    newsId: string;
+    title: string;
+    source: string;
+    publishedAt: string;
+    currencies: string[];
+    rawSentiment: string;
+    status: string;
+  }>
+> {
   try {
-    const result = await dynamo.send(new ScanCommand({
-      TableName: `${PREFIX}-news-events`,
-      Limit: 200,
-    }));
+    const result = await dynamo.send(
+      new ScanCommand({
+        TableName: `${PREFIX}-news-events`,
+        Limit: 200,
+      }),
+    );
     const items = (result.Items ?? []) as any[];
     items.sort((a, b) => (b.publishedAt ?? "").localeCompare(a.publishedAt ?? ""));
     return items.slice(0, limit);
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 async function collectData() {
-  const [
+  const [tableCounts, fearGreed, ecsStatus, queueDepths, recentLogs, lambdaStatuses] =
+    await Promise.all([
+      Promise.all(
+        TABLES.map(async (t) => ({
+          name: t,
+          count: await getTableCount(t),
+          size: await getTableSize(t),
+        })),
+      ),
+      getFearGreed(),
+      getEcsStatus(),
+      Promise.all(SQS_QUEUES.map(async (q) => ({ name: q, ...(await getQueueDepth(q)) }))),
+      getRecentLogs(20),
+      Promise.all(LAMBDAS.map(async (l) => ({ name: l, ...(await getLambdaStatus(l)) }))),
+    ]);
+
+  return {
     tableCounts,
     fearGreed,
     ecsStatus,
     queueDepths,
     recentLogs,
     lambdaStatuses,
-  ] = await Promise.all([
-    Promise.all(TABLES.map(async t => ({ name: t, count: await getTableCount(t), size: await getTableSize(t) }))),
-    getFearGreed(),
-    getEcsStatus(),
-    Promise.all(SQS_QUEUES.map(async q => ({ name: q, ...await getQueueDepth(q) }))),
-    getRecentLogs(20),
-    Promise.all(LAMBDAS.map(async l => ({ name: l, ...await getLambdaStatus(l) }))),
-  ]);
-
-  return { tableCounts, fearGreed, ecsStatus, queueDepths, recentLogs, lambdaStatuses, timestamp: new Date().toISOString() };
+    timestamp: new Date().toISOString(),
+  };
 }
 
 function renderHTML(data: Awaited<ReturnType<typeof collectData>>): string {
   const fgColor = data.fearGreed
-    ? data.fearGreed.value <= 25 ? "#ef4444"
-      : data.fearGreed.value <= 45 ? "#f97316"
-      : data.fearGreed.value <= 55 ? "#eab308"
-      : data.fearGreed.value <= 75 ? "#84cc16"
-      : "#22c55e"
+    ? data.fearGreed.value <= 25
+      ? "#ef4444"
+      : data.fearGreed.value <= 45
+        ? "#f97316"
+        : data.fearGreed.value <= 55
+          ? "#eab308"
+          : data.fearGreed.value <= 75
+            ? "#84cc16"
+            : "#22c55e"
     : "#6b7280";
 
   const ecsColor = data.ecsStatus.running > 0 ? "#22c55e" : "#ef4444";
 
   const totalRecords = data.tableCounts.reduce((sum, t) => sum + (t.count > 0 ? t.count : 0), 0);
-  const totalSizeMB = (data.tableCounts.reduce((sum, t) => sum + t.size, 0) / 1024 / 1024).toFixed(1);
+  const totalSizeMB = (data.tableCounts.reduce((sum, t) => sum + t.size, 0) / 1024 / 1024).toFixed(
+    1,
+  );
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -291,29 +425,43 @@ function renderHTML(data: Awaited<ReturnType<typeof collectData>>): string {
 <div class="grid">
   <div class="card">
     <h2>DynamoDB Tables</h2>
-    ${data.tableCounts.map(t => {
-      const color = t.count < 0 ? "red" : t.count > 1000 ? "green" : t.count > 0 ? "cyan" : "yellow";
-      return `<div class="stat"><span class="label">${t.name}</span><span class="value ${color}">${t.count < 0 ? "ERROR" : t.count.toLocaleString()}</span></div>`;
-    }).join("\n    ")}
+    ${data.tableCounts
+      .map((t) => {
+        const color =
+          t.count < 0 ? "red" : t.count > 1000 ? "green" : t.count > 0 ? "cyan" : "yellow";
+        return `<div class="stat"><span class="label">${t.name}</span><span class="value ${color}">${t.count < 0 ? "ERROR" : t.count.toLocaleString()}</span></div>`;
+      })
+      .join("\n    ")}
   </div>
 
   <div class="card">
     <h2>SQS Queues</h2>
-    ${data.queueDepths.map(q => {
-      const color = q.messages < 0 ? "red" : q.dlq && q.messages > 0 ? "red" : q.messages > 0 ? "yellow" : "green";
-      const icon = q.dlq ? " (DLQ)" : "";
-      return `<div class="stat"><span class="label">${q.name}${icon}</span><span class="value ${color}">${q.messages < 0 ? "ERROR" : `${q.messages} msg / ${q.inflight} inflight`}</span></div>`;
-    }).join("\n    ")}
+    ${data.queueDepths
+      .map((q) => {
+        const color =
+          q.messages < 0
+            ? "red"
+            : q.dlq && q.messages > 0
+              ? "red"
+              : q.messages > 0
+                ? "yellow"
+                : "green";
+        const icon = q.dlq ? " (DLQ)" : "";
+        return `<div class="stat"><span class="label">${q.name}${icon}</span><span class="value ${color}">${q.messages < 0 ? "ERROR" : `${q.messages} msg / ${q.inflight} inflight`}</span></div>`;
+      })
+      .join("\n    ")}
   </div>
 
   <div class="card">
     <h2>Lambda Functions</h2>
-    ${data.lambdaStatuses.map(l => {
-      const color = l.state === "Active" ? "green" : l.state === "NOT FOUND" ? "red" : "yellow";
-      const modified = l.lastModified ? new Date(l.lastModified).toLocaleString() : "—";
-      const sizeMB = (l.size / 1024 / 1024).toFixed(1);
-      return `<div class="stat"><span class="label">${l.name} (${sizeMB}MB)</span><span class="value ${color}">${l.state} &middot; ${modified}</span></div>`;
-    }).join("\n    ")}
+    ${data.lambdaStatuses
+      .map((l) => {
+        const color = l.state === "Active" ? "green" : l.state === "NOT FOUND" ? "red" : "yellow";
+        const modified = l.lastModified ? new Date(l.lastModified).toLocaleString() : "—";
+        const sizeMB = (l.size / 1024 / 1024).toFixed(1);
+        return `<div class="stat"><span class="label">${l.name} (${sizeMB}MB)</span><span class="value ${color}">${l.state} &middot; ${modified}</span></div>`;
+      })
+      .join("\n    ")}
   </div>
 
   <div class="card">
@@ -329,11 +477,13 @@ function renderHTML(data: Awaited<ReturnType<typeof collectData>>): string {
 
 <div class="logs">
   <h2>Recent Fargate Logs</h2>
-  ${data.recentLogs.map(line => {
-    const escaped = line.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const highlighted = escaped.replace(/\[(.*?)\]/g, '<span class="tag">[$1]</span>');
-    return `<div class="log-line">${highlighted}</div>`;
-  }).join("\n  ")}
+  ${data.recentLogs
+    .map((line) => {
+      const escaped = line.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const highlighted = escaped.replace(/\[(.*?)\]/g, '<span class="tag">[$1]</span>');
+      return `<div class="log-line">${highlighted}</div>`;
+    })
+    .join("\n  ")}
 </div>
 
 </body>
@@ -348,18 +498,32 @@ function renderMarketHTML(
   selectedExchange: string,
 ): string {
   // Group prices by pair, pick latest per exchange
-  const byPair: Record<string, Array<{ exchange: string; price: number; bid: number; ask: number; volume24h: number; timestamp: string }>> = {};
+  const byPair: Record<
+    string,
+    Array<{
+      exchange: string;
+      price: number;
+      bid: number;
+      ask: number;
+      volume24h: number;
+      timestamp: string;
+    }>
+  > = {};
   for (const p of prices) {
     if (!byPair[p.pair]) byPair[p.pair] = [];
     byPair[p.pair].push(p);
   }
 
   const fgColor = fearGreed
-    ? fearGreed.value <= 25 ? "#ef4444"
-      : fearGreed.value <= 45 ? "#f97316"
-      : fearGreed.value <= 55 ? "#eab308"
-      : fearGreed.value <= 75 ? "#84cc16"
-      : "#22c55e"
+    ? fearGreed.value <= 25
+      ? "#ef4444"
+      : fearGreed.value <= 45
+        ? "#f97316"
+        : fearGreed.value <= 55
+          ? "#eab308"
+          : fearGreed.value <= 75
+            ? "#84cc16"
+            : "#22c55e"
     : "#6b7280";
 
   // Build simple candlestick SVG
@@ -412,27 +576,32 @@ function renderMarketHTML(
 </p>
 
 <div class="price-grid">
-${PAIRS.map(pair => {
+${PAIRS.map((pair) => {
   const exchanges = byPair[pair] ?? [];
   return `  <div class="price-card">
     <div class="pair">${pair.replace("/USDT", "")}<span style="color:#475569;font-size:11px;font-weight:400"> /USDT</span></div>
-    ${exchanges.length === 0 ? '<div class="exchange-row"><span class="exchange-name">No data</span></div>' :
-    exchanges.map(e => {
-      const spread = e.ask && e.bid ? ((e.ask - e.bid) / e.bid * 100).toFixed(3) : "—";
-      return `<div class="exchange-row">
+    ${
+      exchanges.length === 0
+        ? '<div class="exchange-row"><span class="exchange-name">No data</span></div>'
+        : exchanges
+            .map((e) => {
+              const spread = e.ask && e.bid ? (((e.ask - e.bid) / e.bid) * 100).toFixed(3) : "—";
+              return `<div class="exchange-row">
       <span class="exchange-name">${e.exchange}</span>
       <span class="price-val">$${e.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
       <span class="spread">${spread}% spread</span>
     </div>`;
-    }).join("\n    ")}
+            })
+            .join("\n    ")
+    }
   </div>`;
 }).join("\n")}
 </div>
 
 <div class="pair-selector">
-  ${PAIRS.map(p => `<a href="/market?pair=${encodeURIComponent(p)}&exchange=${selectedExchange}" class="${p === selectedPair ? 'sel' : ''}">${p.replace("/USDT","")}</a>`).join("")}
+  ${PAIRS.map((p) => `<a href="/market?pair=${encodeURIComponent(p)}&exchange=${selectedExchange}" class="${p === selectedPair ? "sel" : ""}">${p.replace("/USDT", "")}</a>`).join("")}
   &nbsp;&middot;&nbsp;
-  ${EXCHANGES_LIST.map(e => `<a href="/market?pair=${encodeURIComponent(selectedPair)}&exchange=${e}" class="${e === selectedExchange ? 'sel' : ''}">${e}</a>`).join("")}
+  ${EXCHANGES_LIST.map((e) => `<a href="/market?pair=${encodeURIComponent(selectedPair)}&exchange=${e}" class="${e === selectedExchange ? "sel" : ""}">${e}</a>`).join("")}
 </div>
 
 <div class="chart-section">
@@ -445,8 +614,18 @@ ${PAIRS.map(pair => {
 </html>`;
 }
 
-function buildCandleSvg(candles: Array<{ open: number; high: number; low: number; close: number; volume: number; openTime: number }>): string {
-  if (candles.length === 0) return '<p style="color:#475569;font-size:12px;">No candle data available for this pair/exchange.</p>';
+function buildCandleSvg(
+  candles: Array<{
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    openTime: number;
+  }>,
+): string {
+  if (candles.length === 0)
+    return '<p style="color:#475569;font-size:12px;">No candle data available for this pair/exchange.</p>';
 
   const W = 1100;
   const H = 320;
@@ -454,14 +633,14 @@ function buildCandleSvg(candles: Array<{ open: number; high: number; low: number
   const chartW = W - PAD * 2;
   const chartH = H - PAD * 2;
 
-  const allHighs = candles.map(c => c.high);
-  const allLows = candles.map(c => c.low);
+  const allHighs = candles.map((c) => c.high);
+  const allLows = candles.map((c) => c.low);
   const maxPrice = Math.max(...allHighs);
   const minPrice = Math.min(...allLows);
   const priceRange = maxPrice - minPrice || 1;
 
   const barW = Math.max(2, Math.floor(chartW / candles.length) - 2);
-  const gap = Math.max(1, Math.floor((chartW - barW * candles.length) / (candles.length)));
+  const gap = Math.max(1, Math.floor((chartW - barW * candles.length) / candles.length));
 
   function yPos(price: number): number {
     return PAD + chartH - ((price - minPrice) / priceRange) * chartH;
@@ -512,13 +691,20 @@ function buildCandleSvg(candles: Array<{ open: number; high: number; low: number
   </svg>`;
 }
 
-function renderNewsHTML(news: Awaited<ReturnType<typeof getRecentNews>>, fearGreed: Awaited<ReturnType<typeof getFearGreed>>): string {
+function renderNewsHTML(
+  news: Awaited<ReturnType<typeof getRecentNews>>,
+  fearGreed: Awaited<ReturnType<typeof getFearGreed>>,
+): string {
   const fgColor = fearGreed
-    ? fearGreed.value <= 25 ? "#ef4444"
-      : fearGreed.value <= 45 ? "#f97316"
-      : fearGreed.value <= 55 ? "#eab308"
-      : fearGreed.value <= 75 ? "#84cc16"
-      : "#22c55e"
+    ? fearGreed.value <= 25
+      ? "#ef4444"
+      : fearGreed.value <= 45
+        ? "#f97316"
+        : fearGreed.value <= 55
+          ? "#eab308"
+          : fearGreed.value <= 75
+            ? "#84cc16"
+            : "#22c55e"
     : "#6b7280";
 
   return `<!DOCTYPE html>
@@ -581,26 +767,32 @@ function renderNewsHTML(news: Awaited<ReturnType<typeof getRecentNews>>, fearGre
     <div class="stat-label">Total Articles</div>
   </div>
   <div class="stat-box">
-    <div class="stat-num">${news.filter(n => n.status === "enriched").length}</div>
+    <div class="stat-num">${news.filter((n) => n.status === "enriched").length}</div>
     <div class="stat-label">Enriched</div>
   </div>
   <div class="stat-box">
-    <div class="stat-num">${news.filter(n => n.status === "raw").length}</div>
+    <div class="stat-num">${news.filter((n) => n.status === "raw").length}</div>
     <div class="stat-label">Awaiting Enrichment</div>
   </div>
   <div class="stat-box">
-    <div class="stat-num">${new Set(news.map(n => n.source)).size}</div>
+    <div class="stat-num">${new Set(news.map((n) => n.source)).size}</div>
     <div class="stat-label">Sources</div>
   </div>
 </div>
 
 <div class="news-list">
-${news.map(n => {
-  const time = n.publishedAt ? new Date(n.publishedAt).toLocaleString() : "—";
-  const currencies = (n.currencies ?? []).slice(0, 6);
-  const sentimentClass = n.rawSentiment === "bullish" ? "bullish" : n.rawSentiment === "bearish" ? "bearish" : "neutral";
-  const escaped = (n.title ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return `  <div class="news-item">
+${news
+  .map((n) => {
+    const time = n.publishedAt ? new Date(n.publishedAt).toLocaleString() : "—";
+    const currencies = (n.currencies ?? []).slice(0, 6);
+    const sentimentClass =
+      n.rawSentiment === "bullish"
+        ? "bullish"
+        : n.rawSentiment === "bearish"
+          ? "bearish"
+          : "neutral";
+    const escaped = (n.title ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `  <div class="news-item">
     <div class="news-header">
       <div class="news-title">${escaped}</div>
     </div>
@@ -609,10 +801,11 @@ ${news.map(n => {
       <span class="news-time">${time}</span>
       <span class="sentiment ${sentimentClass}">${n.rawSentiment ?? "neutral"}</span>
       <span class="status-pill ${n.status ?? "raw"}">${n.status ?? "raw"}</span>
-      ${currencies.map(c => `<span class="tag-pill">${c}</span>`).join("")}
+      ${currencies.map((c) => `<span class="tag-pill">${c}</span>`).join("")}
     </div>
   </div>`;
-}).join("\n")}
+  })
+  .join("\n")}
 </div>
 
 </body>
@@ -627,7 +820,9 @@ const server = createServer(async (req, res) => {
       const html = renderHTML(data);
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(html);
-      console.log(`[Dashboard] Served. ${data.tableCounts.reduce((s, t) => s + (t.count > 0 ? t.count : 0), 0).toLocaleString()} total records.`);
+      console.log(
+        `[Dashboard] Served. ${data.tableCounts.reduce((s, t) => s + (t.count > 0 ? t.count : 0), 0).toLocaleString()} total records.`,
+      );
     } catch (err) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(`Error: ${(err as Error).message}`);
@@ -646,7 +841,9 @@ const server = createServer(async (req, res) => {
       const html = renderMarketHTML(prices, candles, fearGreed, selectedPair, selectedExchange);
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(html);
-      console.log(`[Dashboard] Market page served. ${prices.length} prices, ${candles.length} candles.`);
+      console.log(
+        `[Dashboard] Market page served. ${prices.length} prices, ${candles.length} candles.`,
+      );
     } catch (err) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end(`Error: ${(err as Error).message}`);

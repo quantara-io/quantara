@@ -136,7 +136,7 @@ function makeBlendedSignal(): BlendedSignal {
     gateReason: null,
     rulesFired: [],
     perTimeframe: { "15m": null, "1h": null, "4h": null, "1d": null, "1m": null, "5m": null },
-    weightsUsed: { "15m": 0.15, "1h": 0.20, "4h": 0.30, "1d": 0.35, "1m": 0, "5m": 0 },
+    weightsUsed: { "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35, "1m": 0, "5m": 0 },
     asOf: 1700000900000,
     emittingTimeframe: "15m",
     risk: null,
@@ -206,7 +206,10 @@ beforeEach(() => {
   // Default mocks.
   tryClaimProcessedCloseMock.mockResolvedValue(true);
   getCandles.mockResolvedValue([makeCandle()]);
-  canonicalizeCandleMock.mockReturnValue({ consensus: makeCandle({ exchange: "consensus" }), dispersion: 0.002 });
+  canonicalizeCandleMock.mockReturnValue({
+    consensus: makeCandle({ exchange: "consensus" }),
+    dispersion: 0.002,
+  });
   getLastFireBarsMock.mockResolvedValue({});
   tickCooldownsMock.mockResolvedValue(undefined);
   recordRuleFiresMock.mockResolvedValue(undefined);
@@ -542,9 +545,7 @@ describe("stale-vote sentinel on consensus skip", () => {
     await handler({});
 
     // send should have been called with PutCommand for the sentinel vote per pair.
-    const putCallCount = send.mock.calls.filter(
-      (call) => call[0]?.__cmd === "Put",
-    ).length;
+    const putCallCount = send.mock.calls.filter((call) => call[0]?.__cmd === "Put").length;
     expect(putCallCount).toBeGreaterThanOrEqual(1);
 
     vi.useRealTimers();

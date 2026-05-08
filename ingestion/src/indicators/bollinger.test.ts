@@ -8,7 +8,7 @@ function makeCloses(n = 200, seed = 22): number[] {
   let s = seed;
   for (let i = 0; i < n; i++) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 200;
+    const move = (((s >>> 0) % 201) - 100) / 200;
     val = Math.max(1, val + move);
     closes.push(val);
   }
@@ -69,8 +69,7 @@ describe("bollinger", () => {
 
   it("mid equals SMA of close over 20 bars", () => {
     for (let i = 19; i < closes.length; i++) {
-      const expectedMid =
-        closes.slice(i - 19, i + 1).reduce((a, b) => a + b, 0) / 20;
+      const expectedMid = closes.slice(i - 19, i + 1).reduce((a, b) => a + b, 0) / 20;
       expect(mid[i]).toBeCloseTo(expectedMid, 8);
     }
   });

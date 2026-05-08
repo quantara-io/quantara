@@ -25,11 +25,13 @@ describe("requireAuth", () => {
     // instance with require-auth.js after vi.resetModules() — instanceof
     // checks against a stale top-level import would silently fall through.
     const { UnauthorizedError } = await import("../lib/errors.js");
-    authenticateMock.mockRejectedValue(new UnauthorizedError("Missing or invalid Authorization header"));
+    authenticateMock.mockRejectedValue(
+      new UnauthorizedError("Missing or invalid Authorization header"),
+    );
     const app = await buildApp();
     const res = await app.request("/");
     expect(res.status).toBe(401);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body).toEqual({
       success: false,
       error: { code: "UNAUTHORIZED", message: "Missing or invalid Authorization header" },
@@ -51,7 +53,7 @@ describe("requireAuth", () => {
     const app = await buildApp();
     const res = await app.request("/", { headers: { Authorization: "Bearer t" } });
     expect(res.status).toBe(200);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body.auth).toEqual(ctx);
     expect(authenticateMock).toHaveBeenCalledWith("Bearer t");
   });

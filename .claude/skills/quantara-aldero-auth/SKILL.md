@@ -15,17 +15,17 @@ Don't introduce password hashing, refresh-token tables, JWT signing keys, or any
 
 ## Layout
 
-| File | Responsibility |
-|---|---|
-| `backend/src/lib/aldero-client.ts` | `alderoPost`, `alderoGet`, `alderoDelete`, `getAlderoRedirectUrl`, `AlderoError` |
-| `backend/src/middleware/auth.ts` | `authenticate(authHeader)` — verifies Bearer JWT via JWKS, returns `AuthContext` |
-| `backend/src/middleware/require-auth.ts` | Hono middleware wrapping `authenticate`, sets `c.set("auth", ...)` |
-| `backend/src/routes/auth.ts` | `/config`, `/signup`, `/login`, `/logout`, `/token/refresh`, `/me`, PATCH `/me` |
-| `backend/src/routes/auth-oauth.ts` | `/oauth/:provider`, `/oauth/:provider/callback`, `/oauth/:provider/native` |
-| `backend/src/routes/auth-mfa.ts` | TOTP/email MFA enroll/verify/recovery |
-| `backend/src/routes/auth-passkey.ts` | WebAuthn (passthrough WebAuthn payloads to Aldero) |
-| `backend/src/routes/auth-password.ts` | Magic link, password reset, email verify |
-| `backend/src/lib/schemas/auth.ts` | All auth zod schemas (UserProfile, AuthSuccessResponse, MFA shapes, etc.) |
+| File                                     | Responsibility                                                                   |
+| ---------------------------------------- | -------------------------------------------------------------------------------- |
+| `backend/src/lib/aldero-client.ts`       | `alderoPost`, `alderoGet`, `alderoDelete`, `getAlderoRedirectUrl`, `AlderoError` |
+| `backend/src/middleware/auth.ts`         | `authenticate(authHeader)` — verifies Bearer JWT via JWKS, returns `AuthContext` |
+| `backend/src/middleware/require-auth.ts` | Hono middleware wrapping `authenticate`, sets `c.set("auth", ...)`               |
+| `backend/src/routes/auth.ts`             | `/config`, `/signup`, `/login`, `/logout`, `/token/refresh`, `/me`, PATCH `/me`  |
+| `backend/src/routes/auth-oauth.ts`       | `/oauth/:provider`, `/oauth/:provider/callback`, `/oauth/:provider/native`       |
+| `backend/src/routes/auth-mfa.ts`         | TOTP/email MFA enroll/verify/recovery                                            |
+| `backend/src/routes/auth-passkey.ts`     | WebAuthn (passthrough WebAuthn payloads to Aldero)                               |
+| `backend/src/routes/auth-password.ts`    | Magic link, password reset, email verify                                         |
+| `backend/src/lib/schemas/auth.ts`        | All auth zod schemas (UserProfile, AuthSuccessResponse, MFA shapes, etc.)        |
 
 All five `auth*` route files mount at `/api/auth` in `backend/src/index.ts`.
 
@@ -35,7 +35,7 @@ All five `auth*` route files mount at `/api/auth` in `backend/src/index.ts`.
 import { alderoPost, alderoGet, AlderoError } from "../lib/aldero-client.js";
 
 // Unauthenticated → uses M2M Basic auth (client_id:secret from SSM)
-const result = await alderoPost("/v1/auth/login", body) as Record<string, unknown>;
+const result = (await alderoPost("/v1/auth/login", body)) as Record<string, unknown>;
 
 // Authenticated → forwards user's Bearer token
 const token = c.req.header("Authorization")?.slice(7);
@@ -50,10 +50,10 @@ Three helpers, all return `unknown` (cast to `Record<string, unknown>` and pass 
 
 `AlderoError` carries `statusCode` and `body`. Two paths to credentials:
 
-| Source | Variable / SSM path |
-|---|---|
-| Env (local dev) | `ALDERO_M2M_CLIENT_ID`, `ALDERO_CLIENT_SECRET` |
-| SSM (deployed) | `/quantara/<env>/aldero-m2m-client-id`, `/quantara/<env>/aldero-client-secret` |
+| Source          | Variable / SSM path                                                            |
+| --------------- | ------------------------------------------------------------------------------ |
+| Env (local dev) | `ALDERO_M2M_CLIENT_ID`, `ALDERO_CLIENT_SECRET`                                 |
+| SSM (deployed)  | `/quantara/<env>/aldero-m2m-client-id`, `/quantara/<env>/aldero-client-secret` |
 
 The client caches both in module scope after the first SSM fetch. There is also a fallback to `APP_ID` env var if no client id is found.
 
@@ -63,7 +63,7 @@ Catch `AlderoError` at the route boundary and translate it into a Quantara error
 
 ```ts
 try {
-  const result = await alderoPost("/v1/auth/login", body) as Record<string, unknown>;
+  const result = (await alderoPost("/v1/auth/login", body)) as Record<string, unknown>;
   return c.json({ success: true as const, data: result } as any);
 } catch (err) {
   if (err instanceof AlderoError) {
@@ -72,11 +72,18 @@ try {
     if (errBody?.error === "mfa_required") {
       return c.json({
         success: true as const,
-        data: { mfaRequired: true, mfaToken: errBody.mfa_token, availableMethods: errBody.available_methods },
+        data: {
+          mfaRequired: true,
+          mfaToken: errBody.mfa_token,
+          availableMethods: errBody.available_methods,
+        },
       } as any);
     }
     const code = err.statusCode === 423 ? "ACCOUNT_LOCKED" : "INVALID_CREDENTIALS";
-    return c.json({ success: false as const, error: { code, message: err.message } }, err.statusCode as 401);
+    return c.json(
+      { success: false as const, error: { code, message: err.message } },
+      err.statusCode as 401,
+    );
   }
   throw err;
 }

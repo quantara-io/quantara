@@ -76,23 +76,25 @@ To change CPU/memory: `var.fargate_cpu` / `var.fargate_memory` (defaults 256 / 5
 
 Secrets live in SSM Parameter Store under `/quantara/<env>/...`:
 
-| Param | Reader |
-|---|---|
-| `/quantara/<env>/aldero-m2m-client-id` | API Lambda |
-| `/quantara/<env>/aldero-client-secret` | API Lambda (SecureString) |
-| `/quantara/<env>/oauth-state-secret` | API Lambda (SecureString) |
-| `/quantara/<env>/api-keys/<client>` | API Lambda (SecureString) |
-| `/quantara/<env>/docs-allowed-ips` | API Lambda |
-| `/quantara/<env>/cryptopanic-api-key` | Ingestion (SecureString) |
+| Param                                                                | Reader                                    |
+| -------------------------------------------------------------------- | ----------------------------------------- |
+| `/quantara/<env>/aldero-m2m-client-id`                               | API Lambda                                |
+| `/quantara/<env>/aldero-client-secret`                               | API Lambda (SecureString)                 |
+| `/quantara/<env>/oauth-state-secret`                                 | API Lambda (SecureString)                 |
+| `/quantara/<env>/api-keys/<client>`                                  | API Lambda (SecureString)                 |
+| `/quantara/<env>/docs-allowed-ips`                                   | API Lambda                                |
+| `/quantara/<env>/cryptopanic-api-key`                                | Ingestion (SecureString)                  |
 | `/quantara/<env>/alpaca/key-id`, `/quantara/<env>/alpaca/secret-key` | Fargate (via ECS `secrets`, SecureString) |
 
 The API Lambda IAM grants `ssm:GetParameter*` on `/quantara/<env>/*` (lambda.tf, `lambda_ssm` policy). The Fargate execution role has narrower grants (only the Alpaca params) — extend `local.alpaca_ssm_param_arns` and the `ingestion_ecs_execution_alpaca_ssm` policy if you add new ECS-exposed secrets.
 
 Rotate a secret without redeploying:
+
 ```bash
 aws ssm put-parameter --profile quantara-dev --region us-west-2 \
   --name '/quantara/dev/<param>' --type SecureString --value '<new>' --overwrite
 ```
+
 The Lambda re-reads after its 5-minute cache TTL. The Fargate `secrets` block resolves on container start, so rotate + `aws ecs update-service --force-new-deployment` for that.
 
 ## Plan / apply

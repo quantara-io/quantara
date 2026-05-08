@@ -17,7 +17,10 @@ export async function requireAuth(c: Context, next: Next) {
     await next();
   } catch (err) {
     if (err instanceof AppError) {
-      return c.json({ success: false, error: { code: err.code, message: err.message } }, err.statusCode as 401);
+      return c.json(
+        { success: false, error: { code: err.code, message: err.message } },
+        err.statusCode as 401,
+      );
     }
     throw err;
   }

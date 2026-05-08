@@ -141,9 +141,7 @@ export function scoreTimeframe(
   // We check eligibility (excluding the `when` predicate) to decide whether we
   // have enough information to produce any opinion at all.
   const hasEligibleRule = rules.some(
-    (r) =>
-      r.appliesTo.includes(state.timeframe) &&
-      state.barsSinceStart >= r.requiresPrior,
+    (r) => r.appliesTo.includes(state.timeframe) && state.barsSinceStart >= r.requiresPrior,
   );
 
   // If no rule is eligible at all (all blocked by warm-up or timeframe), no opinion.

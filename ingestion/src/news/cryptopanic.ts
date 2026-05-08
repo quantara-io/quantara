@@ -21,7 +21,7 @@ async function getApiKey(): Promise<string> {
     new GetParameterCommand({
       Name: PARAM_NAME,
       WithDecryption: true,
-    })
+    }),
   );
 
   cachedApiKey = result.Parameter?.Value ?? "";

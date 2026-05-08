@@ -52,7 +52,7 @@ export async function storeCandles(candles: Candle[]): Promise<void> {
             },
           })),
         },
-      })
+      }),
     );
   }
 
@@ -63,7 +63,7 @@ export async function getCandles(
   pair: string,
   exchange: string,
   timeframe: string,
-  limit = 100
+  limit = 100,
 ): Promise<Candle[]> {
   const prefix = `${exchange}#${timeframe}#`;
   const result = await client.send(
@@ -74,7 +74,7 @@ export async function getCandles(
       ExpressionAttributeValues: { ":pair": pair, ":prefix": prefix },
       ScanIndexForward: false,
       Limit: limit,
-    })
+    }),
   );
 
   return (result.Items ?? []) as Candle[];

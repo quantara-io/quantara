@@ -7,10 +7,7 @@ const bedrock = new BedrockRuntimeClient({});
 
 const MODEL_ID = "anthropic.claude-3-5-haiku-20241022-v1:0";
 
-export async function enrichNewsItem(
-  title: string,
-  currencies: string[]
-): Promise<NewsEnrichment> {
+export async function enrichNewsItem(title: string, currencies: string[]): Promise<NewsEnrichment> {
   const prompt = buildEnrichmentMessage(title, currencies);
 
   const response = await bedrock.send(
@@ -28,7 +25,7 @@ export async function enrichNewsItem(
           },
         ],
       }),
-    })
+    }),
   );
 
   const body = JSON.parse(new TextDecoder().decode(response.body));

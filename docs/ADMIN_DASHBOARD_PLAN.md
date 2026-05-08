@@ -15,13 +15,13 @@ which is the source of truth for engine semantics.
 Five pages under `admin/src/pages/`, all reading from DynamoDB via
 `/api/admin/*` routes in `backend/src/routes/admin.ts`:
 
-| Page | What it shows | Backend |
-|---|---|---|
-| Overview | Table counts, SQS depths, ECS service health, F&G index, last 20 ingestion log lines, Lambda function listing | `getStatus()` |
-| Market | Latest prices per pair (3 exchanges); recent 1m candles for a chosen pair × exchange | `getMarket()` |
-| News | Recent news events | `getNews()` |
-| Whitelist | Docs IP allowlist | SSM |
-| Login | Auth (password, OAuth, MFA, passkey) | — |
+| Page      | What it shows                                                                                                 | Backend       |
+| --------- | ------------------------------------------------------------------------------------------------------------- | ------------- |
+| Overview  | Table counts, SQS depths, ECS service health, F&G index, last 20 ingestion log lines, Lambda function listing | `getStatus()` |
+| Market    | Latest prices per pair (3 exchanges); recent 1m candles for a chosen pair × exchange                          | `getMarket()` |
+| News      | Recent news events                                                                                            | `getNews()`   |
+| Whitelist | Docs IP allowlist                                                                                             | SSM           |
+| Login     | Auth (password, OAuth, MFA, passkey)                                                                          | —             |
 
 This is an **infrastructure** dashboard — useful for "is anything on
 fire" but it surfaces nothing the signal engine produces. There is no
@@ -65,21 +65,21 @@ reading any of it on the admin side yet.
 When something looks wrong or surprising on the engine side, an admin
 has no way to ask:
 
-1. *Why did BTC/USDT emit a buy at 18:04?* — which TF voted, which
+1. _Why did BTC/USDT emit a buy at 18:04?_ — which TF voted, which
    rules fired, what the bullish/bearish scores were.
-2. *Why is everything stuck on hold?* — is a gate firing, on which pair,
+2. _Why is everything stuck on hold?_ — is a gate firing, on which pair,
    since when.
-3. *Are warm-ups complete?* — `barsSinceStart >= requiresPrior` per TF
+3. _Are warm-ups complete?_ — `barsSinceStart >= requiresPrior` per TF
    per pair. After cold start this should converge in ~24h.
-4. *Is the signal mix realistic?* — buy/sell/hold ratios per pair over
+4. _Is the signal mix realistic?_ — buy/sell/hold ratios per pair over
    24h, or are we permanently 95% hold.
-5. *Which rules actually fire?* — there are 50+ rules in the `RULES`
+5. _Which rules actually fire?_ — there are 50+ rules in the `RULES`
    constant; most might never fire and we wouldn't know.
-6. *Which exchanges are going stale?* — gate inputs in real time.
-7. *Is dispersion spiking or sustained?* — the gate fires on 3-bar
+6. _Which exchanges are going stale?_ — gate inputs in real time.
+7. _Is dispersion spiking or sustained?_ — the gate fires on 3-bar
    sustained, but admin can't see the curve.
-8. *Are signal changes "trivial" (suppressed by `isTrivialChange`) or
-   real?* — ratio over time.
+8. _Are signal changes "trivial" (suppressed by `isTrivialChange`) or
+   real?_ — ratio over time.
 
 ## 4. Proposed additions
 

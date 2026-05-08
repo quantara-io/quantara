@@ -35,15 +35,13 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
 
   const symbol = getSymbol(exchangeId, pair);
   const now = Date.now();
-  const since = cursor
-    ? new Date(cursor.lastTimestamp).getTime()
-    : now - days * 86400 * 1000;
+  const since = cursor ? new Date(cursor.lastTimestamp).getTime() : now - days * 86400 * 1000;
 
   let fetchSince = since;
   let totalFetched = 0;
 
   console.log(
-    `[Backfill] Starting ${exchangeId} ${pair} ${timeframe} from ${new Date(fetchSince).toISOString()}`
+    `[Backfill] Starting ${exchangeId} ${pair} ${timeframe} from ${new Date(fetchSince).toISOString()}`,
   );
 
   while (fetchSince < now) {
@@ -92,7 +90,7 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
     });
 
     console.log(
-      `[Backfill] ${totalFetched} candles so far, up to ${new Date(fetchSince).toISOString()}`
+      `[Backfill] ${totalFetched} candles so far, up to ${new Date(fetchSince).toISOString()}`,
     );
   }
 
@@ -104,7 +102,9 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
     metadata: { totalFetched, pair, timeframe },
   });
 
-  console.log(`[Backfill] Complete: ${totalFetched} candles for ${exchangeId} ${pair} ${timeframe}`);
+  console.log(
+    `[Backfill] Complete: ${totalFetched} candles for ${exchangeId} ${pair} ${timeframe}`,
+  );
   return totalFetched;
 }
 

@@ -48,7 +48,7 @@ function makeState(overrides: Partial<IndicatorState> = {}): IndicatorState {
     ema200: 50000,
     macdLine: 0,
     macdSignal: 0,
-    macdHist: 0,        // current bar — must equal history.macdHist[0]
+    macdHist: 0, // current bar — must equal history.macdHist[0]
     atr14: 500,
     bbUpper: 51000,
     bbMid: 50000,
@@ -63,7 +63,7 @@ function makeState(overrides: Partial<IndicatorState> = {}): IndicatorState {
     dispersion: 0.001,
     history: {
       rsi14: [50, 50, 50, 50, 50],
-      macdHist: [0, 0, 0, 0, 0],   // [0] == state.macdHist (convention)
+      macdHist: [0, 0, 0, 0, 0], // [0] == state.macdHist (convention)
       ema20: [50000, 50000, 50000, 50000, 50000],
       ema50: [50000, 50000, 50000, 50000, 50000],
       close: [50000, 50000, 50000, 50000, 50000], // [0] == most recent close
@@ -364,7 +364,7 @@ describe("macd-cross-bull", () => {
   it("fires when macdHist (cur) > 0 AND history.macdHist[1] (prev) <= 0", () => {
     // Correct aggregator-convention fixture: history[0] == state.macdHist
     const state = makeState({
-      macdHist: 0.4,           // current bar is positive
+      macdHist: 0.4, // current bar is positive
       history: {
         rsi14: [50, 50, 50, 50, 50],
         macdHist: [0.4, -0.1, -0.2, -0.3, -0.4], // [0]=cur=0.4, [1]=prev=-0.1

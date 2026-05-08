@@ -22,7 +22,7 @@ export async function fetchFearGreedIndex(): Promise<FearGreedData | null> {
       return null;
     }
 
-    const json = await res.json() as {
+    const json = (await res.json()) as {
       data: Array<{ value: string; value_classification: string; timestamp: string }>;
     };
 
@@ -47,7 +47,7 @@ export async function fetchFearGreedIndex(): Promise<FearGreedData | null> {
           updatedAt: new Date().toISOString(),
           status: "active",
         },
-      })
+      }),
     );
 
     console.log(`[FearGreed] Index: ${data.value} (${data.classification})`);

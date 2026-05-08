@@ -12,12 +12,8 @@
  * Design: Fix 2 of issue #77 / §9.9 of docs/SIGNALS_AND_RISK.md
  */
 
-import type {
-  BlendedSignal,
-  IndicatorState,
-  RiskProfileMap,
-  KellyStats,
-} from "@quantara/shared";
+import type { BlendedSignal, IndicatorState, RiskProfileMap, KellyStats } from "@quantara/shared";
+
 import { computeRiskRecommendation } from "./recommend.js";
 
 /**

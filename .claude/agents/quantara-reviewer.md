@@ -53,6 +53,7 @@ gh pr review $PR --request-changes --body "<reasons + tripwires>"
 Use when the diff has fixable problems within agent scope. Cap iterations at 3 — on the 4th review of the same PR, escalate instead.
 
 Common reasons:
+
 - Missing tests for new logic in `backend/`
 - Unrelated changes mixed in
 - Obvious bug visible in the diff
@@ -66,6 +67,7 @@ gh pr review $PR --request-changes --body "<specific actionable feedback>"
 ### C. APPROVE
 
 Only when:
+
 - Diff fully addresses the issue's acceptance criteria
 - No unrelated changes
 - Tests exist for new behavior (or not applicable — pure refactor with existing coverage, doc change, etc.)
@@ -109,6 +111,7 @@ Read the diff like you're hunting bugs the worker is blind to. The implementer a
 ## Output format
 
 When you finish, output exactly:
+
 ```
 PR: <url>
 ISSUE: #<n>

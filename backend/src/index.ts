@@ -23,32 +23,42 @@ const app = new OpenAPIHono();
 app.use("*", async (c, next) => {
   const start = Date.now();
   await next();
-  logger.info({
-    method: c.req.method,
-    path: c.req.path,
-    status: c.res.status,
-    duration_ms: Date.now() - start,
-  }, "request");
+  logger.info(
+    {
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      duration_ms: Date.now() - start,
+    },
+    "request",
+  );
 });
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN;
 if (!CORS_ORIGIN) {
-  throw new Error("CORS_ORIGIN must be set (e.g. a specific https:// origin, comma-separated list, or '*' for local dev)");
+  throw new Error(
+    "CORS_ORIGIN must be set (e.g. a specific https:// origin, comma-separated list, or '*' for local dev)",
+  );
 }
-const CORS_ORIGINS = CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+const CORS_ORIGINS = CORS_ORIGIN.split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-app.use("*", cors({
-  origin: (origin) => {
-    if (CORS_ORIGINS.includes("*")) return origin || "*";
-    return CORS_ORIGINS.includes(origin) ? origin : null;
-  },
-  allowHeaders: ["Authorization", "Content-Type", "X-Api-Key"],
-  allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  maxAge: 86400,
-}));
+app.use(
+  "*",
+  cors({
+    origin: (origin) => {
+      if (CORS_ORIGINS.includes("*")) return origin || "*";
+      return CORS_ORIGINS.includes(origin) ? origin : null;
+    },
+    allowHeaders: ["Authorization", "Content-Type", "X-Api-Key"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    maxAge: 86400,
+  }),
+);
 
 // --- Routes ---
-app.route("/health", health);  // public — no API key
+app.route("/health", health); // public — no API key
 
 // Temporary: debug endpoint to see what IP Lambda receives
 app.get("/debug/ip", (c) => {
@@ -73,7 +83,12 @@ app.route("/api/docs/auth", authDocs);
 
 // API key required for all /api/* routes (except docs)
 app.use("/api/*", async (c, next) => {
-  if (c.req.path === "/api/docs" || c.req.path.startsWith("/api/docs/") || c.req.path === "/api/openapi.json" || c.req.path.startsWith("/api/auth/oauth/")) {
+  if (
+    c.req.path === "/api/docs" ||
+    c.req.path.startsWith("/api/docs/") ||
+    c.req.path === "/api/openapi.json" ||
+    c.req.path.startsWith("/api/auth/oauth/")
+  ) {
     return next();
   }
   return requireApiKey(c, next);
@@ -93,11 +108,17 @@ const ENV = process.env.ENVIRONMENT ?? "dev";
 const CLOUDFRONT_URL = process.env.CLOUDFRONT_URL ?? "";
 const API_SERVERS = [
   { url: "http://localhost:3001", description: "Local" },
-  ...(CLOUDFRONT_URL ? [{ url: CLOUDFRONT_URL, description: `${ENV === "prod" ? "Production" : "Dev"} (CDN)` }] : []),
+  ...(CLOUDFRONT_URL
+    ? [{ url: CLOUDFRONT_URL, description: `${ENV === "prod" ? "Production" : "Dev"} (CDN)` }]
+    : []),
   ...(ENV === "prod"
     ? [{ url: "https://api.quantara.io", description: "Production" }]
-    : [{ url: "https://69ybmfzl81.execute-api.us-west-2.amazonaws.com", description: "Dev (API Gateway)" }]
-  ),
+    : [
+        {
+          url: "https://69ybmfzl81.execute-api.us-west-2.amazonaws.com",
+          description: "Dev (API Gateway)",
+        },
+      ]),
 ];
 
 app.doc("/api/openapi.json", {
@@ -112,10 +133,13 @@ app.doc("/api/openapi.json", {
 });
 
 // --- Scalar API Reference (interactive docs) ---
-app.get("/api/docs", Scalar({
-  url: "/api/openapi.json",
-  pageTitle: "Quantara API Reference",
-}));
+app.get(
+  "/api/docs",
+  Scalar({
+    url: "/api/openapi.json",
+    pageTitle: "Quantara API Reference",
+  }),
+);
 
 // --- OpenAPI security scheme ---
 app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", {
@@ -135,22 +159,39 @@ app.openAPIRegistry.registerComponent("securitySchemes", "ApiKey", {
 // --- Error handling ---
 app.onError((err, c) => {
   if (err instanceof AppError) {
-    return c.json({ success: false, error: { code: err.code, message: err.message } }, err.statusCode as 500);
+    return c.json(
+      { success: false, error: { code: err.code, message: err.message } },
+      err.statusCode as 500,
+    );
   }
   if (err instanceof AlderoError) {
-    const code = err.statusCode === 401 ? "UNAUTHORIZED"
-      : err.statusCode === 403 ? "FORBIDDEN"
-      : err.statusCode === 409 ? "CONFLICT"
-      : err.statusCode === 429 ? "RATE_LIMITED"
-      : "REQUEST_FAILED";
+    const code =
+      err.statusCode === 401
+        ? "UNAUTHORIZED"
+        : err.statusCode === 403
+          ? "FORBIDDEN"
+          : err.statusCode === 409
+            ? "CONFLICT"
+            : err.statusCode === 429
+              ? "RATE_LIMITED"
+              : "REQUEST_FAILED";
     return c.json({ success: false, error: { code, message: err.message } }, err.statusCode as 500);
   }
   logger.error({ err, path: c.req.path, method: c.req.method }, "unhandled error");
-  return c.json({ success: false, error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred" } }, 500);
+  return c.json(
+    { success: false, error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred" } },
+    500,
+  );
 });
 
 app.notFound((c) =>
-  c.json({ success: false, error: { code: "NOT_FOUND", message: `Route not found: ${c.req.method} ${c.req.path}` } }, 404),
+  c.json(
+    {
+      success: false,
+      error: { code: "NOT_FOUND", message: `Route not found: ${c.req.method} ${c.req.path}` },
+    },
+    404,
+  ),
 );
 
 export default app;
