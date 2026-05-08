@@ -9,6 +9,7 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
   DynamoDBDocumentClient: { from: () => ({ send }) },
   PutCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Put", input })),
   QueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Query", input })),
+  UpdateCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Update", input })),
 }));
 
 beforeEach(() => {
@@ -285,5 +286,124 @@ describe("getRecentSignals", () => {
     send.mockResolvedValue({ Items: [] });
     const { getRecentSignals } = await import("./signal-store.js");
     expect(await getRecentSignals("BTC/USDT")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6b helpers
+// ---------------------------------------------------------------------------
+
+describe("findActiveSignalsForPair", () => {
+  it("returns only signals whose TTL is in the future and not yet invalidated", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    send.mockResolvedValue({
+      Items: [
+        // active, not invalidated
+        {
+          pair: "ETH",
+          emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-1",
+          signalId: "sig-1",
+          emittedAt: "2024-01-01T00:00:00.000Z",
+          ttl: nowSec + 86400,
+          invalidatedAt: null,
+        },
+        // expired TTL — should be filtered out
+        {
+          pair: "ETH",
+          emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-2",
+          signalId: "sig-2",
+          emittedAt: "2024-01-01T00:00:00.000Z",
+          ttl: nowSec - 1,
+          invalidatedAt: null,
+        },
+        // already invalidated — should be filtered out
+        {
+          pair: "ETH",
+          emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-3",
+          signalId: "sig-3",
+          emittedAt: "2024-01-01T00:00:00.000Z",
+          ttl: nowSec + 86400,
+          invalidatedAt: "2024-01-02T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const { findActiveSignalsForPair } = await import("./signal-store.js");
+    const results = await findActiveSignalsForPair("ETH");
+
+    expect(results).toHaveLength(1);
+    expect(results[0].signalId).toBe("sig-1");
+  });
+
+  it("returns empty array when no signals match", async () => {
+    send.mockResolvedValue({ Items: [] });
+    const { findActiveSignalsForPair } = await import("./signal-store.js");
+    expect(await findActiveSignalsForPair("BTC")).toEqual([]);
+  });
+
+  it("passes pair as KeyConditionExpression value and limits to 100", async () => {
+    send.mockResolvedValue({ Items: [] });
+    const { findActiveSignalsForPair } = await import("./signal-store.js");
+    await findActiveSignalsForPair("SOL");
+    const cmd = send.mock.calls[0][0];
+    expect(cmd.__cmd).toBe("Query");
+    expect(cmd.input.ExpressionAttributeValues[":pair"]).toBe("SOL");
+    expect(cmd.input.Limit).toBe(100);
+    expect(cmd.input.ScanIndexForward).toBe(false);
+  });
+});
+
+describe("markSignalInvalidated", () => {
+  it("sends an UpdateCommand with condition expression to the correct key", async () => {
+    send.mockResolvedValue({});
+    const { markSignalInvalidated } = await import("./signal-store.js");
+    await markSignalInvalidated(
+      "ETH",
+      "2024-01-01T00:00:00.000Z#sig-x",
+      "Breaking news: test headline",
+    );
+
+    expect(send).toHaveBeenCalledOnce();
+    const cmd = send.mock.calls[0][0];
+    expect(cmd.__cmd).toBe("Update");
+    expect(cmd.input.TableName).toBe("test-signals-v2");
+    expect(cmd.input.Key).toEqual({
+      pair: "ETH",
+      emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-x",
+    });
+    expect(cmd.input.UpdateExpression).toContain("invalidatedAt");
+    expect(cmd.input.UpdateExpression).toContain("invalidationReason");
+    expect(cmd.input.ConditionExpression).toContain("attribute_not_exists(invalidatedAt)");
+    expect(cmd.input.ExpressionAttributeValues[":reason"]).toBe("Breaking news: test headline");
+  });
+
+  it("uses the injected nowIso timestamp", async () => {
+    send.mockResolvedValue({});
+    const { markSignalInvalidated } = await import("./signal-store.js");
+    const fixedIso = "2024-06-01T12:00:00.000Z";
+    await markSignalInvalidated("ETH", "2024-01-01T00:00:00.000Z#sig-x", "reason", fixedIso);
+    const cmd = send.mock.calls[0][0];
+    expect(cmd.input.ExpressionAttributeValues[":ts"]).toBe(fixedIso);
+  });
+
+  it("is idempotent: swallows ConditionalCheckFailedException", async () => {
+    const conditionalError = Object.assign(new Error("conditional check failed"), {
+      name: "ConditionalCheckFailedException",
+    });
+    send.mockRejectedValueOnce(conditionalError);
+    const { markSignalInvalidated } = await import("./signal-store.js");
+    // Must not throw
+    await expect(
+      markSignalInvalidated("ETH", "2024-01-01T00:00:00.000Z#sig-x", "Breaking news: test"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("re-throws unexpected DDB errors", async () => {
+    const networkError = new Error("network failure");
+    send.mockRejectedValueOnce(networkError);
+    const { markSignalInvalidated } = await import("./signal-store.js");
+    await expect(
+      markSignalInvalidated("ETH", "2024-01-01T00:00:00.000Z#sig-x", "Breaking news: test"),
+    ).rejects.toThrow("network failure");
   });
 });

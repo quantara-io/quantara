@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  QueryCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal } from "@quantara/shared";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -66,6 +71,10 @@ export async function putSignal(signal: BlendedSignal): Promise<SignalRecord> {
         emittingTimeframe: signal.emittingTimeframe,
         // risk: null is persisted explicitly so reads can distinguish "no risk" from "old record"
         risk: signal.risk ?? null,
+        // Phase 6b: new signals always start with no invalidation; explicit null
+        // lets the read path distinguish "freshly emitted" from "old record without the field".
+        invalidatedAt: signal.invalidatedAt ?? null,
+        invalidationReason: signal.invalidationReason ?? null,
         ttl,
       },
     }),
@@ -115,7 +124,110 @@ export async function getRecentSignals(
     asOf: item.asOf as number,
     emittingTimeframe: item.emittingTimeframe as BlendedSignal["emittingTimeframe"],
     risk: (item.risk ?? null) as BlendedSignal["risk"],
+    invalidatedAt: (item.invalidatedAt ?? null) as string | null,
+    invalidationReason: (item.invalidationReason ?? null) as string | null,
     signalId: item.signalId as string,
     emittedAt: item.emittedAt as string,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6b — Breaking-news invalidation helpers
+// ---------------------------------------------------------------------------
+
+export interface ActiveSignalRef {
+  /** DDB PK */
+  pair: string;
+  /** DDB SK */
+  emittedAtSignalId: string;
+  signalId: string;
+  emittedAt: string;
+  /** DDB TTL epoch-seconds — used as a proxy for expiresAt. */
+  ttl: number;
+}
+
+/**
+ * Find all active, non-invalidated signals for a given pair.
+ *
+ * "Active" = DDB TTL has not expired (ttl > now in epoch seconds).
+ * Queries the most recent 100 signals and filters client-side; in practice
+ * a pair will never accumulate more than a handful of live signals.
+ */
+export async function findActiveSignalsForPair(pair: string): Promise<ActiveSignalRef[]> {
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const result = await client.send(
+    new QueryCommand({
+      TableName: SIGNALS_V2_TABLE,
+      KeyConditionExpression: "#pair = :pair",
+      ExpressionAttributeNames: { "#pair": "pair", "#ttl": "ttl" },
+      ExpressionAttributeValues: { ":pair": pair },
+      // Project only the key fields + ttl + invalidatedAt for efficiency
+      ProjectionExpression: "#pair, emittedAtSignalId, signalId, emittedAt, #ttl, invalidatedAt",
+      ScanIndexForward: false,
+      Limit: 100,
+    }),
+  );
+
+  return (result.Items ?? [])
+    .filter((item) => {
+      const ttl = item.ttl as number | undefined;
+      const invalidatedAt = item.invalidatedAt as string | undefined | null;
+      // Keep only live, not-yet-invalidated signals
+      return (
+        ttl !== undefined && ttl > nowSec && (invalidatedAt === undefined || invalidatedAt === null)
+      );
+    })
+    .map((item) => ({
+      pair: item.pair as string,
+      emittedAtSignalId: item.emittedAtSignalId as string,
+      signalId: item.signalId as string,
+      emittedAt: item.emittedAt as string,
+      ttl: item.ttl as number,
+    }));
+}
+
+/**
+ * Mark a single signal as invalidated by a breaking news event.
+ *
+ * Idempotent: if `invalidatedAt` is already set on the record the update is
+ * skipped via a condition expression so the original stamp is preserved.
+ *
+ * @param pair             DDB partition key
+ * @param emittedAtSignalId DDB sort key
+ * @param reason           User-facing reason string, e.g. "Breaking news: Coinbase delists ETH"
+ * @param nowIso           ISO-8601 timestamp to stamp (injectable for tests)
+ */
+export async function markSignalInvalidated(
+  pair: string,
+  emittedAtSignalId: string,
+  reason: string,
+  nowIso = new Date().toISOString(),
+): Promise<void> {
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: SIGNALS_V2_TABLE,
+        Key: { pair, emittedAtSignalId },
+        UpdateExpression: "SET invalidatedAt = :ts, invalidationReason = :reason",
+        // Idempotency guard: only write if the attribute does not yet exist
+        ConditionExpression: "attribute_not_exists(invalidatedAt)",
+        ExpressionAttributeValues: {
+          ":ts": nowIso,
+          ":reason": reason,
+        },
+      }),
+    );
+  } catch (err: unknown) {
+    // ConditionalCheckFailedException means the signal was already invalidated — that's fine.
+    if (
+      err instanceof Error &&
+      (err.name === "ConditionalCheckFailedException" ||
+        (err as { __type?: string }).__type ===
+          "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException")
+    ) {
+      return; // already invalidated; idempotent no-op
+    }
+    throw err;
+  }
 }
