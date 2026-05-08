@@ -26,6 +26,28 @@
 - Pair-to-pair relative strength signals (BTC vs ETH). Future work.
 - Order routing, slippage modeling, or trade execution. Out of scope by product definition.
 
+### Latency SLO
+
+> **v4 update (codex finding Fix #4 / PR #123):** Non-ratified p99 raised from 6s → 7s (Option B) to match the realistic per-segment sum. Ratified p99 stays at 10s.
+
+| Path                             | p50   | p99    |
+| -------------------------------- | ----- | ------ |
+| Non-ratified (algo only)         | < 2s  | **7s** |
+| Ratified (algo + LLM)            | < 5s  | 10s    |
+
+Per-segment budget (non-ratified):
+
+| Segment                               | Budget  |
+| ------------------------------------- | ------- |
+| Candle write → DDB Streams emit       | ≤ 2s    |
+| Streams → Lambda invoke (cold + warm) | ≤ 2s    |
+| Indicator compute + scoring           | ≤ 1.5s  |
+| Blended signal write to DDB           | ≤ 0.2s  |
+| Push channel (WebSocket emit)         | ≤ 1s    |
+| **Total**                             | **6.7s** |
+
+The sum is 6.7s, rounded up to 7s p99 to give realistic headroom. Raising to 7s is more honest than tightening individual segments to produce a contractual 6s target that real infrastructure will miss.
+
 ### Architectural commitment: Hybrid (Option C)
 
 Decision recorded: **algo proposes, LLM ratifies**.
@@ -554,6 +576,91 @@ Per-pair tuning (e.g. DOGE may benefit from a 15m-heavier vector since it lacks 
 | Any TF has `volatilityFlag: true`                   | Blend forces `type = "hold"`, `volatilityFlag: true`, `gateReason: "vol"`. Confidence = 0.5.                          |
 | Any TF has `gateReason = "dispersion"` or `"stale"` | Blend forces `type = "hold"`, propagates the gateReason. Confidence = 0.5.                                            |
 | Mixed gates (e.g. 4h `vol`-gated, 1h `stale`-gated) | Priority: `vol` > `dispersion` > `stale`. Blend's `gateReason` is the highest-priority one fired on any TF.           |
+
+### 5.9 Event-driven trigger — 2-phase collect-then-compute (v4 design)
+
+> **v4 design (supersedes v3). Fixes applied: Fix #1 (P1 — recoverable quorum), Fix #2 (P2 — FilterCriteria timeframe), Fix #3 (P2 — TTL epoch seconds). Traced to codex review of PR #123.**
+
+#### Trigger architecture
+
+The indicator handler is a Lambda subscribed to a DDB Streams event source mapping on the `quantara-{env}-candles` table. Each new candle write emits a stream event; the handler accumulates exchange writes into a `close-quorum` row, and any handler that observes full quorum computes and commits the blended signal.
+
+**Event source mapping FilterCriteria (Fix #2 — include timeframe allowlist):**
+
+```json
+{
+  "Filters": [
+    {
+      "Pattern": "{ \"dynamodb\": { \"NewImage\": { \"source\": { \"S\": [\"live\"] }, \"timeframe\": { \"S\": [\"15m\", \"1h\", \"4h\", \"1d\"] } } } }"
+    }
+  ]
+}
+```
+
+Why: `MarketStreamManager` writes 1m candles with `source: "live"` (not blended), and the higher-TF poller writes 5m with `source: "live"` (also not blended — only 15m/1h/4h/1d are). Without the `timeframe` filter, the handler is invoked for unsupported timeframes, creates quorum rows for slots that will never blend, and wastes compute. 1m and 5m candles still get written to DDB; they just don't trigger the indicator handler.
+
+#### Phase 1 — Collect exchanges (string set ADD)
+
+On each filtered stream event, the handler writes to `close-quorum`:
+
+```
+PK: pair#timeframe#closeTime  (e.g. "BTC/USDT#1h#1746576000000")
+exchange: string set ADD { exchange }   // atomic ADD — idempotent on retry
+ttl: Math.floor(closeTimeMs / 1000) + 86_400   // epoch SECONDS (Fix #3 — see note below)
+```
+
+**TTL conversion note (Fix #3):** DynamoDB TTL is interpreted as Unix epoch seconds. `Candle.closeTime` is epoch milliseconds. The conversion is:
+
+```ts
+// Option A — explicit:
+ttl: Math.floor((closeTimeMs + 86_400_000) / 1000)
+
+// Option B — equivalent, clearer intent:
+ttl: Math.floor(closeTimeMs / 1000) + 86_400
+```
+
+Both are correct. Do NOT write `closeTimeMs + 86_400_000` as the TTL value — that produces a value ~1000× too large (year ~57000) and the row will never expire.
+
+#### Phase 2 — Check + compute + commit (single conditional Put)
+
+After the ADD, the handler reads the current `close-quorum` item and checks:
+
+1. `item.exchanges.size >= REQUIRED_EXCHANGE_COUNT` (quorum reached — all 3 exchanges have written for this slot)
+2. `item.processedAt` is absent (signal not yet committed by a prior handler)
+
+If both conditions are true, the handler computes the indicators and blended signal, then writes the signal with a **conditional Put**:
+
+```
+ConditionExpression: attribute_not_exists(processedAt)
+```
+
+- **First handler to succeed** sets `processedAt` and writes the signal to `signals-v2`. Done.
+- **Other concurrent handlers** (rare race) complete their compute but find `processedAt` already set → their conditional Put fails with `ConditionalCheckFailedException` → they discard the result. No duplicate signal write ever reaches `signals-v2`.
+- **Handler that crashed before committing** never set `processedAt` → DDB Streams retries the event → a fresh handler invocation computes and commits. Crash recovery is automatic.
+
+#### No `claimedBy` field (Fix #1 — P1)
+
+v3 used a 3-phase `claimedBy` pattern: collect → claim → compute → mark-processed. If the handler set `claimedBy` but crashed before writing `processedAt`, the slot was permanently unrecoverable (retries skipped it because `claimedBy` was present).
+
+v4 **drops `claimedBy` entirely**. The conditional Put on `processedAt` is the single-winner mechanism:
+
+- No orphaned slots — crash recovery is automatic via stream retry
+- Race-window cost: in the rare case where 2+ handlers run concurrently for the same slot, both do the compute work, but only one succeeds at the Put. Wasted compute is bounded (compute is 500ms–2s; stream events are mostly serialized per slot via DDB Streams batching)
+- Correctness guarantee: `processedAt` is set exactly once per slot, by the first handler to commit
+
+#### Summary of 2-phase flow
+
+```
+Stream event (filtered: source=live, timeframe in [15m,1h,4h,1d])
+  │
+  ├─ Phase 1: ADD exchange to close-quorum row (idempotent)
+  │
+  └─ Phase 2: if quorum AND processedAt absent:
+                compute indicators + blended signal
+                conditional Put(processedAt)  ← single-winner
+                if Put succeeds: write to signals-v2
+                if Put fails (ConditionalCheckFailed): discard (another handler won)
+```
 
 ---
 
@@ -1463,6 +1570,60 @@ value: { avgScore, totalMagnitude, articleCount, computedAt }
 ttl: 600  // 10 min
 ```
 
+### 11.5 New: `quantara-{env}-close-quorum` (DDB Streams + event-driven trigger)
+
+> **v4 design. See §5.9 for the full event-driven trigger flow. Fixes applied: Fix #1 (drop claimedBy), Fix #3 (TTL epoch seconds), Fix #5 (close-quorum-monitor Lambda for TTL-expiry observability).**
+
+This table is the coordination point for the 2-phase collect-then-compute flow (§5.9). It is written to by the candle-stream Lambda and read by the same Lambda to check quorum.
+
+**Schema:**
+
+```
+PK: pair#timeframe#closeTime  (e.g. "BTC/USDT#1h#1746576000000")
+Attributes:
+  exchanges: String Set   // set of exchange names that have written for this slot
+                          // populated via DDB ADD (atomic, idempotent on retry)
+  processedAt: ISO8601    // set by the first handler to win the conditional Put
+                          // ABSENT until the slot is committed
+  ttl: number             // epoch SECONDS — closeTimeMs / 1000 + 86_400
+                          // NOTE: NOT milliseconds — see TTL conversion in §5.9
+```
+
+**No `claimedBy` or `claimedAt` fields (Fix #1).** The conditional Put on `processedAt` is the single-winner mechanism. See §5.9 for crash-recovery semantics.
+
+**DDB Streams:** enable DDB Streams on this table with `StreamViewType: NEW_IMAGE`. The event source mapping on the indicator handler Lambda reads from the candle table stream, not this table's stream. This table's stream is used by the optional `close-quorum-monitor` Lambda (see below).
+
+**Observability — `close-quorum-monitor` Lambda (Fix #5, Option A):**
+
+> **Chosen: Option A — enable streams on close-quorum, subscribe a monitor Lambda.**
+
+When a `close-quorum` row expires via DynamoDB TTL without having `processedAt` set, the TTL deletion emits a `REMOVE` event on the `close-quorum` stream. A dedicated `close-quorum-monitor` Lambda subscribed to this stream with `eventName = REMOVE` filter:
+
+1. Checks whether `processedAt` was absent (i.e. this was a missed close, not a normal cleanup)
+2. Emits a `CloseMissed` CloudWatch metric: `{ pair, timeframe, closeTime }`
+3. Logs the event for debugging ("why did this BTC/USDT 4h slot not produce a signal?")
+
+FilterCriteria for the monitor Lambda:
+
+```json
+{
+  "Filters": [
+    {
+      "Pattern": "{ \"eventName\": [\"REMOVE\"] }"
+    }
+  ]
+}
+```
+
+The monitor Lambda is a small, single-purpose function (~30 lines). It does not retry or re-trigger signal computation — missed closes are surfaced as an alarm signal, not auto-repaired. The downstream alarm in §15 ("lack-of-signal for pair/TF > N minutes") is the recovery indicator.
+
+**Alternative options considered and rejected:**
+
+| Option | Why rejected |
+|---|---|
+| **B — Scheduled scanner** | Scans for stale rows every 5 min — lossy (misses closes that expired between scans), adds a DDB scan on a table with no GSI-by-age |
+| **C — Drop the metric** | Unacceptable for debugging "why no signal?"; the missed-close case is exactly the failure mode Fix #1 was designed to prevent |
+
 ---
 
 ## 12. Compute architecture
@@ -1569,14 +1730,140 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 
 ## 15. Risks
 
-| Risk                                                           | Mitigation                                                                             |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Indicator off-by-one bugs propagate silently into bad signals. | Phase 1's TradingView-fixture acceptance bar; replay tests.                            |
-| LLM hallucinates a `buy` from a `hold`.                        | Server-side guardrail validates allowed transformations; logs breaches.                |
-| Sentiment classification misreads sarcasm/satire.              | Aggregated over many articles; single bad classification has bounded impact.           |
-| Volatility gate fires too often, suppressing all signals.      | Threshold tunable; backtested to balance suppression vs noise.                         |
-| User over-trusts confidence numbers.                           | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.   |
-| Cross-exchange price disagreement on flash events.             | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale. |
+> **v4 update (codex findings Fix #1, Fix #6 / PR #123):** Quorum non-recovery entry replaced with v4 race-window entry. WebSocket capacity entry corrected to reflect 500/sec rate quota, not 500 concurrent connections.
+
+| Risk                                                                          | Mitigation                                                                                                                                             |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Indicator off-by-one bugs propagate silently into bad signals.                | Phase 1's TradingView-fixture acceptance bar; replay tests.                                                                                            |
+| LLM hallucinates a `buy` from a `hold`.                                       | Server-side guardrail validates allowed transformations; logs breaches.                                                                                |
+| Sentiment classification misreads sarcasm/satire.                             | Aggregated over many articles; single bad classification has bounded impact.                                                                           |
+| Volatility gate fires too often, suppressing all signals.                     | Threshold tunable; backtested to balance suppression vs noise.                                                                                         |
+| User over-trusts confidence numbers.                                          | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.                                                                   |
+| Cross-exchange price disagreement on flash events.                            | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale.                                                                 |
+| **Quorum race window (v4) — 2+ handlers compute for same slot concurrently.** | **Rare: DDB Streams mostly serializes per-slot events. Wasted compute bounded to 500ms–2s. Conditional Put guarantees exactly-once signal write.**     |
+| **Close-quorum row expires (TTL) without a signal written (missed close).**   | **`close-quorum-monitor` Lambda emits `CloseMissed` metric on TTL REMOVE; downstream alarm fires when no signal for pair/TF > N minutes (§11.5).**  |
+| **WebSocket concurrent connection cap reached.**                              | **AWS API Gateway default is 500 new connections/second (rate), not 500 concurrent. Steady-state capacity ~600K concurrent per region. See §16.6.**  |
+
+---
+
+## 16. WebSocket architecture — real-time signal push
+
+> **v4 design (codex findings Fix #6 P2 — quota fact-check, Fix #7 P3 — inverted subscription table / PR #123).**
+
+### 16.1 Why WebSocket
+
+The current backend is Lambda-on-API-Gateway with no native WebSocket support (see §14 open question 3). For v1, polling is acceptable. For the production signal product, WebSocket push is required so users see new signals within 1–2 seconds of emission — not 30–60 seconds of polling lag.
+
+### 16.2 Architecture choice — API Gateway WebSocket API
+
+**v1 uses AWS API Gateway WebSocket API** (not IoT Core, not AppSync). Reasons:
+
+- Native integration with Lambda handlers (`$connect`, `$disconnect`, `$default`)
+- `postToConnection` API for fan-out
+- No additional infrastructure dependency
+- IAM-controlled, observable via CloudWatch
+
+IoT Core is the migration path at scale — but the scale threshold is much higher than 500 concurrent connections (see §16.6).
+
+### 16.3 Connection lifecycle
+
+```
+Client              API GW WebSocket       Lambda ($connect)       DDB (connection-registry)
+  │                       │                        │                          │
+  ├─ WS handshake ────────►                        │                          │
+  │   ?pairs=BTC,ETH      │                        │                          │
+  │                       ├─ invoke ───────────────►                          │
+  │                       │                        ├─ Put {connectionId,      │
+  │                       │                        │      userId, pairs,      │
+  │                       │                        │      ttl} ───────────────►
+  │                       │                        │                          │
+  │   ◄─ 101 connected ───│                        │                          │
+  │                       │                        │                          │
+[...signal emits...]       │                        │                          │
+  │                       │                        │                          │
+  │   ◄─ push: {signal} ──│◄── postToConnection ───│                          │
+  │                       │                        │                          │
+  ├─ WS close ────────────►                        │                          │
+  │                       ├─ invoke ───────────────►                          │
+  │                       │  ($disconnect)         ├─ Delete {connectionId} ──►
+```
+
+### 16.4 Connection registry schema
+
+```
+Table: quantara-{env}-connection-registry
+PK: connectionId  (from $connect event)
+Attributes:
+  userId: string           // from JWT, validated in $connect
+  subscribedPairs: String Set   // e.g. {"BTC/USDT", "ETH/USDT"}
+  connectedAt: ISO8601
+  ttl: number              // epoch SECONDS — connectedAt / 1000 + 7_200
+                           // (2h max session; matches API GW WebSocket max idle)
+                           // TTL conversion: same pattern as §5.9 — NOT milliseconds
+```
+
+### 16.5 Fan-out on signal emit
+
+When a new blended signal is written to `signals-v2` (via DDB Streams on the signals table), a `signals-fanout` Lambda:
+
+1. Reads the signal's `pair` from the stream event
+2. Scans `connection-registry` for all items where `subscribedPairs` contains the pair
+3. Calls `postToConnection` for each matching `connectionId`
+4. On `GoneException` (stale connection): deletes the registry row
+
+**v1 scan-and-filter is acceptable** for a few thousand connections. The inverted subscription table (§16.7) replaces the scan at scale.
+
+### 16.6 WebSocket scaling — corrected quota facts (Fix #6)
+
+> **v3 error corrected:** §16 previously stated "500 default WebSocket concurrent-connection quota." This was wrong. 500 is the **new connections per second** quota, not concurrent connections.
+
+Correct AWS API Gateway WebSocket quotas (as of 2026):
+
+- **500 new connections/second** per account per region (soft quota — raisable via AWS Support)
+- **200 concurrent frames/message per connection** (hard)
+- No explicit concurrent connection limit — bounded by `new_conn_rate × max_idle_duration`
+- Default idle timeout: 10 minutes; maximum connection duration: 2 hours
+- Steady-state concurrent capacity estimate: `500 conn/s × 600s idle → ~300,000 concurrent connections per region` (conservative; actual capacity higher with the 2h max duration)
+
+**IoT Core migration threshold:** not driven by concurrent connection count — driven by needing MQTT-level features (retained messages, QoS, device shadow, multi-region fan-out). Trigger: WebSocket connection rate approaches 500/sec sustained, or fan-out latency degrades beyond the 1s SLO at scale.
+
+For Quantara's expected user base (hundreds to low thousands of concurrent users), the default API Gateway WebSocket quota is not a constraint.
+
+### 16.7 Inverted subscription table — scale path (Fix #7)
+
+**v1:** fan-out uses a scan of `connection-registry` filtered on `subscribedPairs` set membership. This works for up to ~10K active connections (scan is bounded and fast at that volume).
+
+**Scale path (not implemented in v1):** an inverted `connection-subscriptions` table enables O(1) lookup by pair:
+
+```
+Table: quantara-{env}-connection-subscriptions
+PK: pair          (e.g. "BTC/USDT")
+SK: connectionId
+Attributes:
+  userId: string
+  subscribedAt: ISO8601
+  ttl: number  // epoch SECONDS — same TTL as connection-registry row
+```
+
+Write path — on `$connect` with `?pairs=BTC,ETH`:
+
+```
+Write { pair: "BTC/USDT", connectionId, userId, ttl } to connection-subscriptions
+Write { pair: "ETH/USDT", connectionId, userId, ttl } to connection-subscriptions
+Write { connectionId, userId, subscribedPairs: {"BTC/USDT", "ETH/USDT"}, ttl } to connection-registry
+```
+
+Fan-out path — for pair `BTC/USDT`:
+
+```
+Query connection-subscriptions where PK = "BTC/USDT"
+→ Returns [connectionId, connectionId, ...]
+→ postToConnection per id
+```
+
+No scan. Eliminates the `subscribedPairs` GSI plan from v3 (which was invalid — DynamoDB GSIs cannot index individual String Set members).
+
+**Trigger for v1 → scale path migration:** fan-out Lambda p99 latency > 500ms sustained, or connection count crosses 10K active. Ship when load data justifies the additional write amplification.
 
 ---
 
