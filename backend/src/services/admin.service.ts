@@ -173,8 +173,12 @@ async function getLatestPrices() {
 }
 
 async function getIndicatorState(pair: string, exchange: string, timeframe = "1m"): Promise<IndicatorState | null> {
+  // Indicator snapshots are always written with exchange="consensus" by the indicator handler.
+  // Per-exchange indicator state is not produced, so hard-code "consensus" here regardless of
+  // the requested exchange parameter.
+  void exchange; // intentionally ignored — consensus is the only valid key
   try {
-    const pk = `${pair}#${exchange}#${timeframe}`;
+    const pk = `${pair}#consensus#${timeframe}`;
     const result = await dynamo.send(new QueryCommand({
       TableName: INDICATOR_STATE_TABLE,
       KeyConditionExpression: "#pk = :pk",
@@ -219,14 +223,23 @@ async function getIndicatorState(pair: string, exchange: string, timeframe = "1m
 }
 
 function computeDispersion(prices: Array<Record<string, unknown>>, pair: string): number | null {
-  const freshPrices = prices
-    .filter((p) => p.pair === pair && p.stale !== true)
-    .map((p) => p.price as number)
-    .filter((v) => typeof v === "number" && !isNaN(v));
-  if (freshPrices.length < 2) return null;
-  const max = Math.max(...freshPrices);
-  const min = Math.min(...freshPrices);
-  const avg = freshPrices.reduce((a, b) => a + b, 0) / freshPrices.length;
+  // De-dupe by exchange: keep only the latest (first-seen) tick per exchange.
+  // getLatestPrices returns newest-first within each pair partition (ScanIndexForward: false),
+  // so the first entry per exchange in iteration order is the latest tick.
+  const latestByExchange = new Map<string, number>();
+  for (const p of prices) {
+    if (p.pair !== pair || p.stale === true) continue;
+    const ex = p.exchange as string | undefined;
+    const price = p.price as number | undefined;
+    if (!ex || typeof price !== "number" || !isFinite(price)) continue;
+    if (!latestByExchange.has(ex)) latestByExchange.set(ex, price);
+  }
+  // Require at least 2 distinct exchanges for a meaningful cross-exchange spread.
+  if (latestByExchange.size < 2) return null;
+  const values = Array.from(latestByExchange.values());
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
   if (avg === 0) return null;
   return (max - min) / avg;
 }
