@@ -255,19 +255,32 @@ resource "aws_iam_role_policy" "enrichment_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:GetItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:PutItem",
-        "dynamodb:Scan",
-      ]
-      Resource = [
-        aws_dynamodb_table.news_events.arn,
-        aws_dynamodb_table.embedding_cache.arn,
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:PutItem",
+          "dynamodb:Scan",
+        ]
+        Resource = [
+          aws_dynamodb_table.news_events.arn,
+          aws_dynamodb_table.embedding_cache.arn,
+        ]
+      },
+      {
+        # Phase 5b: fan-out one row per mentioned pair after enrichment
+        Effect = "Allow"
+        Action = [
+          "dynamodb:BatchWriteItem",
+          "dynamodb:PutItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.news_events_by_pair.arn,
+        ]
+      },
+    ]
   })
 }
 
@@ -327,10 +340,11 @@ resource "aws_lambda_function" "enrichment" {
 
   environment {
     variables = {
-      TABLE_NEWS_EVENTS    = aws_dynamodb_table.news_events.name
-      TABLE_EMBEDDING_CACHE = aws_dynamodb_table.embedding_cache.name
-      ENRICHED_NEWS_QUEUE  = aws_sqs_queue.enriched_news.url
-      ENVIRONMENT          = var.environment
+      TABLE_NEWS_EVENTS         = aws_dynamodb_table.news_events.name
+      TABLE_EMBEDDING_CACHE     = aws_dynamodb_table.embedding_cache.name
+      TABLE_NEWS_EVENTS_BY_PAIR = aws_dynamodb_table.news_events_by_pair.name
+      ENRICHED_NEWS_QUEUE       = aws_sqs_queue.enriched_news.url
+      ENVIRONMENT               = var.environment
     }
   }
 

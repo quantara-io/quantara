@@ -4,6 +4,7 @@ import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-
 import { enrichNewsItem } from "./bedrock.js";
 import { enrichArticle } from "../news/enrich.js";
 import { publish } from "../lib/sqs-publisher.js";
+import { writePairFanout } from "../lib/news-by-pair-store.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const NEWS_TABLE = process.env.TABLE_NEWS_EVENTS!;
@@ -76,6 +77,28 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
           },
         })
       );
+
+      // Phase 5b: fan-out one row per mentioned pair to news-events-by-pair table.
+      // These scalar-keyed rows are what the sentiment aggregator queries — they
+      // avoid the DynamoDB GSI limitation where array attributes don't index.
+      if (phase5a.mentionedPairs.length > 0) {
+        await writePairFanout(
+          phase5a.mentionedPairs.map((pair) => ({
+            pair,
+            articleId: newsId,
+            publishedAt,
+            title: newsRecord.title as string,
+            sentimentScore: phase5a.sentiment.score,
+            sentimentMagnitude: phase5a.sentiment.magnitude,
+            source: (newsRecord.source as string | undefined) ?? "unknown",
+            url: (newsRecord.url as string | undefined) ?? "",
+            duplicateOf: phase5a.duplicateOf ?? null,
+          }))
+        );
+        console.log(
+          `[Enrichment] Fan-out: wrote ${phase5a.mentionedPairs.length} pair rows for ${newsId}`
+        );
+      }
 
       // Publish enriched event for downstream analysis
       await publish(ENRICHED_QUEUE, "enriched_news", {

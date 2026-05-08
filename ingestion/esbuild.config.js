@@ -53,6 +53,13 @@ await build({
   outfile: "dist/indicator-handler.js",
 });
 
+// Lambda: SQS-triggered sentiment aggregation + EventBridge fallback (Phase 5b)
+await build({
+  ...shared,
+  entryPoints: ["src/aggregator-handler.ts"],
+  outfile: "dist/aggregator-handler.js",
+});
+
 // Fargate: long-running streaming service
 await build({
   ...shared,
@@ -60,4 +67,4 @@ await build({
   outfile: "dist/service.js",
 });
 
-console.log("Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/service.js");
+console.log("Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/service.js");
