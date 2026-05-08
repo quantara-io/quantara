@@ -63,10 +63,7 @@ export const FRESHNESS_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
  *   3. duplicateOf === null (not a duplicate)
  *   4. article is fresh (publishedAt within FRESHNESS_WINDOW_MS of nowMs)
  */
-export function shouldTriggerInvalidation(
-  event: EnrichedNewsEvent,
-  nowMs = Date.now(),
-): boolean {
+export function shouldTriggerInvalidation(event: EnrichedNewsEvent, nowMs = Date.now()): boolean {
   if (event.sentiment.magnitude <= MAGNITUDE_THRESHOLD) return false;
   if (event.mentionedPairs.length === 0) return false;
   if (event.duplicateOf !== null) return false;

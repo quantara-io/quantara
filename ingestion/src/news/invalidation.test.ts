@@ -60,7 +60,9 @@ describe("shouldTriggerInvalidation", () => {
   it("returns false when magnitude is exactly at threshold (not strictly above)", async () => {
     const { shouldTriggerInvalidation, MAGNITUDE_THRESHOLD } = await import("./invalidation.js");
     expect(
-      shouldTriggerInvalidation(makeEvent({ sentiment: { score: 0, magnitude: MAGNITUDE_THRESHOLD, model: "m" } })),
+      shouldTriggerInvalidation(
+        makeEvent({ sentiment: { score: 0, magnitude: MAGNITUDE_THRESHOLD, model: "m" } }),
+      ),
     ).toBe(false);
   });
 
@@ -120,18 +122,14 @@ describe("processNewsEventForInvalidation — no trigger", () => {
 
   it("returns triggered=false when event is a duplicate", async () => {
     const { processNewsEventForInvalidation } = await import("./invalidation.js");
-    const result = await processNewsEventForInvalidation(
-      makeEvent({ duplicateOf: "article-000" }),
-    );
+    const result = await processNewsEventForInvalidation(makeEvent({ duplicateOf: "article-000" }));
     expect(result.triggered).toBe(false);
     expect(findActiveSignalsForPairMock).not.toHaveBeenCalled();
   });
 
   it("returns triggered=false when no mentionedPairs", async () => {
     const { processNewsEventForInvalidation } = await import("./invalidation.js");
-    const result = await processNewsEventForInvalidation(
-      makeEvent({ mentionedPairs: [] }),
-    );
+    const result = await processNewsEventForInvalidation(makeEvent({ mentionedPairs: [] }));
     expect(result.triggered).toBe(false);
     expect(findActiveSignalsForPairMock).not.toHaveBeenCalled();
   });
@@ -139,9 +137,7 @@ describe("processNewsEventForInvalidation — no trigger", () => {
   it("returns triggered=false for stale news", async () => {
     const { processNewsEventForInvalidation } = await import("./invalidation.js");
     const staleDate = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
-    const result = await processNewsEventForInvalidation(
-      makeEvent({ publishedAt: staleDate }),
-    );
+    const result = await processNewsEventForInvalidation(makeEvent({ publishedAt: staleDate }));
     expect(result.triggered).toBe(false);
     expect(findActiveSignalsForPairMock).not.toHaveBeenCalled();
   });
@@ -179,9 +175,7 @@ describe("processNewsEventForInvalidation — triggered", () => {
     markSignalInvalidatedMock.mockResolvedValue(undefined);
 
     const { processNewsEventForInvalidation } = await import("./invalidation.js");
-    const result = await processNewsEventForInvalidation(
-      makeEvent({ mentionedPairs: ["BTC"] }),
-    );
+    const result = await processNewsEventForInvalidation(makeEvent({ mentionedPairs: ["BTC"] }));
 
     expect(result.triggered).toBe(true);
     expect(result.signalsInvalidated).toBe(2);
@@ -237,9 +231,7 @@ describe("processNewsEventForInvalidation — triggered", () => {
     markSignalInvalidatedMock.mockResolvedValue(undefined);
 
     const { processNewsEventForInvalidation } = await import("./invalidation.js");
-    await processNewsEventForInvalidation(
-      makeEvent({ mentionedPairs: ["BTC"], title: longTitle }),
-    );
+    await processNewsEventForInvalidation(makeEvent({ mentionedPairs: ["BTC"], title: longTitle }));
 
     const reasonArg = markSignalInvalidatedMock.mock.calls[0][2] as string;
     expect(reasonArg.length).toBeLessThanOrEqual(120);
@@ -263,4 +255,3 @@ describe("processNewsEventForInvalidation — triggered", () => {
     );
   });
 });
-

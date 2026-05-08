@@ -163,8 +163,7 @@ export async function findActiveSignalsForPair(pair: string): Promise<ActiveSign
       ExpressionAttributeNames: { "#pair": "pair", "#ttl": "ttl" },
       ExpressionAttributeValues: { ":pair": pair },
       // Project only the key fields + ttl + invalidatedAt for efficiency
-      ProjectionExpression:
-        "#pair, emittedAtSignalId, signalId, emittedAt, #ttl, invalidatedAt",
+      ProjectionExpression: "#pair, emittedAtSignalId, signalId, emittedAt, #ttl, invalidatedAt",
       ScanIndexForward: false,
       Limit: 100,
     }),
@@ -175,7 +174,9 @@ export async function findActiveSignalsForPair(pair: string): Promise<ActiveSign
       const ttl = item.ttl as number | undefined;
       const invalidatedAt = item.invalidatedAt as string | undefined | null;
       // Keep only live, not-yet-invalidated signals
-      return ttl !== undefined && ttl > nowSec && (invalidatedAt === undefined || invalidatedAt === null);
+      return (
+        ttl !== undefined && ttl > nowSec && (invalidatedAt === undefined || invalidatedAt === null)
+      );
     })
     .map((item) => ({
       pair: item.pair as string,
@@ -222,7 +223,8 @@ export async function markSignalInvalidated(
     if (
       err instanceof Error &&
       (err.name === "ConditionalCheckFailedException" ||
-        (err as { __type?: string }).__type === "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException")
+        (err as { __type?: string }).__type ===
+          "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException")
     ) {
       return; // already invalidated; idempotent no-op
     }
