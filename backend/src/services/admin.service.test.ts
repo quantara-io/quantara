@@ -192,6 +192,191 @@ describe("getMarket", () => {
   });
 });
 
+describe("getMarket — indicator key fix (Bug 1)", () => {
+  it("returns indicator state when the table has a consensus PK, regardless of exchange param", async () => {
+    const mockIndicatorItem = {
+      pair: "BTC/USDT",
+      exchange: "consensus",
+      timeframe: "1m",
+      asOfMs: 1700000000000,
+      barsSinceStart: 50,
+      rsi14: 55,
+      ema20: 42000,
+      ema50: 41000,
+      ema200: 38000,
+      macdLine: 100,
+      macdSignal: 90,
+      macdHist: 10,
+      atr14: 500,
+      bbUpper: 43000,
+      bbMid: 42000,
+      bbLower: 41000,
+      bbWidth: 0.047,
+      obv: 1000000,
+      obvSlope: 500,
+      vwap: 41800,
+      volZ: 1.2,
+      realizedVolAnnualized: 0.72,
+      fearGreed: 55,
+      dispersion: 0.0012,
+      history: { rsi14: [], macdHist: [], ema20: [], ema50: [], close: [], volume: [] },
+    };
+
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: {
+          KeyConditionExpression?: string;
+          ExpressionAttributeValues?: Record<string, unknown>;
+          Key?: { metaKey?: string };
+        };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: { value: 50, classification: "Neutral" } };
+        if (cmd.__cmd === "Query") {
+          const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
+          // Indicator query: pk contains #consensus#
+          if (ev?.[":pk"] && String(ev[":pk"]).includes("#consensus#")) {
+            return { Items: [mockIndicatorItem] };
+          }
+          // Other queries (prices, candles)
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    const { getMarket } = await importService();
+
+    // Called with exchange="binanceus" — but indicator key must still use "consensus"
+    const result = await getMarket("BTC/USDT", "binanceus");
+    expect(result.indicators).not.toBeNull();
+    expect(result.indicators?.exchange).toBe("consensus");
+    expect(result.indicators?.pair).toBe("BTC/USDT");
+    expect(result.indicators?.rsi14).toBe(55);
+
+    // Verify the query used "BTC/USDT#consensus#1m" as the PK
+    const indicatorQuery = (
+      dynamoSend.mock.calls as Array<
+        [{ __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown> } }]
+      >
+    )
+      .map(([cmd]) => cmd)
+      .find(
+        (cmd) =>
+          cmd.__cmd === "Query" &&
+          String(
+            (cmd.input?.ExpressionAttributeValues as Record<string, unknown>)?.[":pk"] ?? "",
+          ).includes("#consensus#"),
+      );
+    expect(indicatorQuery).toBeDefined();
+    expect(
+      (indicatorQuery!.input!.ExpressionAttributeValues as Record<string, unknown>)[":pk"],
+    ).toBe("BTC/USDT#consensus#1m");
+  });
+
+  it("returns indicators null when there is no consensus row (never binanceus key)", async () => {
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
+          // Simulate only having a binanceus row — consensus lookup returns empty
+          if (ev?.[":pk"] && String(ev[":pk"]).includes("#binanceus#")) {
+            return { Items: [{ pair: "BTC/USDT", exchange: "binanceus" }] };
+          }
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    const { getMarket } = await importService();
+    const result = await getMarket("BTC/USDT", "binanceus");
+    expect(result.indicators).toBeNull();
+  });
+});
+
+describe("computeDispersion via getMarket — dedupe fix (Bug 2)", () => {
+  // Helper to mock getMarket returning specific price rows, then inspect dispersion
+  async function dispersionFor(priceItems: Array<Record<string, unknown>>): Promise<number | null> {
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const ev = cmd.input?.ExpressionAttributeValues as Record<string, unknown>;
+          // Candles query has a :prefix key; prices query has :pair only
+          if (ev?.[":prefix"]) return { Items: [] };
+          // Indicator query has :pk
+          if (ev?.[":pk"]) return { Items: [] };
+          // Prices query: return priceItems filtered to the requested pair
+          const requestedPair = ev?.[":pair"] as string | undefined;
+          const items = requestedPair
+            ? priceItems.filter((p) => p.pair === requestedPair)
+            : priceItems;
+          return { Items: items };
+        }
+        return {};
+      },
+    );
+
+    const { getMarket } = await importService();
+    const result = await getMarket("BTC/USDT", "binanceus");
+    return result.dispersion as number | null;
+  }
+
+  it("returns null when all price rows are from the same exchange", async () => {
+    const prices = [
+      { pair: "BTC/USDT", exchange: "binanceus", price: 42000, stale: false },
+      { pair: "BTC/USDT", exchange: "binanceus", price: 42100, stale: false },
+      { pair: "BTC/USDT", exchange: "binanceus", price: 41900, stale: false },
+    ];
+    const result = await dispersionFor(prices);
+    expect(result).toBeNull();
+  });
+
+  it("uses only the latest (first) tick per exchange and computes cross-exchange spread", async () => {
+    // binanceus has two ticks (42100 is latest, 42000 is older); coinbase has one tick at 41000.
+    // Expected: (42100 - 41000) / ((42100 + 41000) / 2) = 1100 / 41550
+    const prices = [
+      { pair: "BTC/USDT", exchange: "binanceus", price: 42100, stale: false }, // latest binanceus
+      { pair: "BTC/USDT", exchange: "binanceus", price: 42000, stale: false }, // older binanceus — must be ignored
+      { pair: "BTC/USDT", exchange: "coinbase", price: 41000, stale: false },
+    ];
+    const result = await dispersionFor(prices);
+    const expectedDispersion = (42100 - 41000) / ((42100 + 41000) / 2);
+    expect(result).toBeCloseTo(expectedDispersion, 8);
+    // Confirm the older binanceus tick (42000) was not used — if it were, max would be 42100,
+    // min would be 41000, avg would be (42100+42000+41000)/3 which differs from the expected value.
+    const threeTickAvg = (42100 + 42000 + 41000) / 3;
+    expect(result).not.toBeCloseTo((42100 - 41000) / threeTickAvg, 8);
+  });
+
+  it("returns null when only stale rows exist across different exchanges", async () => {
+    const prices = [
+      { pair: "BTC/USDT", exchange: "binanceus", price: 42000, stale: true },
+      { pair: "BTC/USDT", exchange: "coinbase", price: 41000, stale: true },
+    ];
+    const result = await dispersionFor(prices);
+    expect(result).toBeNull();
+  });
+
+  it("returns a correct value when exactly two exchanges each have one fresh row", async () => {
+    const prices = [
+      { pair: "BTC/USDT", exchange: "binanceus", price: 43000, stale: false },
+      { pair: "BTC/USDT", exchange: "kraken", price: 41000, stale: false },
+    ];
+    const result = await dispersionFor(prices);
+    const expected = (43000 - 41000) / ((43000 + 41000) / 2);
+    expect(result).toBeCloseTo(expected, 8);
+  });
+});
+
 describe("getStatus", () => {
   it("returns aggregated AWS status with timestamp", async () => {
     dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
