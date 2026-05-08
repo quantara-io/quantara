@@ -35,13 +35,13 @@ vi.mock("@aws-sdk/client-ssm", () => ({
 }));
 
 beforeEach(() => {
-  vi.resetModules();              // ← critical when the SUT caches anything in module scope
+  vi.resetModules(); // ← critical when the SUT caches anything in module scope
   sendMock.mockReset();
   delete process.env.SKIP_API_KEY;
 });
 
 async function buildApp() {
-  const { requireApiKey } = await import("./api-key.js");   // ← dynamic import after resetModules
+  const { requireApiKey } = await import("./api-key.js"); // ← dynamic import after resetModules
   const app = new Hono();
   app.use(requireApiKey);
   app.get("/", (c) => c.json({ ok: true }));
@@ -74,7 +74,7 @@ app.get("/", (c) => c.text("ok"));
 
 const res = await app.request("/", { headers: { "x-api-key": "key1" } });
 expect(res.status).toBe(200);
-const body = await res.json() as any;
+const body = (await res.json()) as any;
 expect(body.error.code).toBe("INVALID_API_KEY");
 ```
 
@@ -83,6 +83,7 @@ Use `Hono` (not `OpenAPIHono`) for tests — fewer moving parts. Cast `await res
 ## Header injection helper
 
 For IP-based middleware, a small helper keeps tests readable:
+
 ```ts
 function withClientIp(ip: string) {
   return { headers: { "x-forwarded-for": ip } };
@@ -116,9 +117,13 @@ Same pattern: dynamic-import `authenticate` after the reset.
 `alderoPost` / `alderoGet` / `alderoDelete` use `fetch`. Two ways to mock:
 
 1. **Stub `globalThis.fetch`** for one or two tests:
+
    ```ts
    const fetchMock = vi.fn();
-   beforeEach(() => { vi.stubGlobal("fetch", fetchMock); fetchMock.mockReset(); });
+   beforeEach(() => {
+     vi.stubGlobal("fetch", fetchMock);
+     fetchMock.mockReset();
+   });
    afterEach(() => vi.unstubAllGlobals());
 
    fetchMock.mockResolvedValueOnce({
@@ -133,7 +138,12 @@ Same pattern: dynamic-import `authenticate` after the reset.
      alderoPost: vi.fn(),
      alderoGet: vi.fn(),
      AlderoError: class extends Error {
-       constructor(public statusCode: number, public body: unknown) { super("aldero"); }
+       constructor(
+         public statusCode: number,
+         public body: unknown,
+       ) {
+         super("aldero");
+       }
      },
    }));
    ```

@@ -1,4 +1,5 @@
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
+
 import type { CryptoPanicResponse, CryptoPanicPost } from "./types.js";
 
 const ssm = new SSMClient({});
@@ -20,7 +21,7 @@ async function getApiKey(): Promise<string> {
     new GetParameterCommand({
       Name: PARAM_NAME,
       WithDecryption: true,
-    })
+    }),
   );
 
   cachedApiKey = result.Parameter?.Value ?? "";

@@ -1,12 +1,7 @@
 import { describe, it, expect } from "vitest";
-import {
-  gateVolatility,
-  gateDispersion,
-  gateStale,
-  evaluateGates,
-  narrowPair,
-} from "./gates.js";
 import type { IndicatorState } from "@quantara/shared";
+
+import { gateVolatility, gateDispersion, gateStale, evaluateGates, narrowPair } from "./gates.js";
 
 // Minimal IndicatorState factory — only the fields the gate functions read
 function makeState(overrides: Partial<IndicatorState> = {}): IndicatorState {
@@ -81,7 +76,7 @@ describe("gateVolatility", () => {
   });
 
   it("does not fire when vol equals the threshold exactly", () => {
-    const state = makeState({ realizedVolAnnualized: 1.50 });
+    const state = makeState({ realizedVolAnnualized: 1.5 });
     expect(gateVolatility(state, "BTC/USDT").fired).toBe(false);
   });
 

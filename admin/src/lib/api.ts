@@ -1,6 +1,7 @@
 import { getAccessToken, getRefreshToken, saveTokens, clearTokens } from "./auth";
 
-const API_KEY = import.meta.env.VITE_API_KEY ?? "qk_6734f98158e9f1fcffa9f86d27d09f05ee37ad9e50c69eba";
+const API_KEY =
+  import.meta.env.VITE_API_KEY ?? "qk_6734f98158e9f1fcffa9f86d27d09f05ee37ad9e50c69eba";
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 interface Envelope<T> {
@@ -34,7 +35,9 @@ async function tryRefresh(): Promise<boolean> {
         saveTokens(json.data.accessToken, json.data.refreshToken ?? rt);
         return true;
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return false;
   })();
   const ok = await refreshing;

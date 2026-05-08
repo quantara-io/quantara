@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { startAuthentication } from "@simplewebauthn/browser";
+
 import { apiFetch } from "../lib/api";
 import { saveTokens } from "../lib/auth";
 
@@ -121,7 +122,8 @@ export function Login() {
   }
 
   async function submitMfa() {
-    if (mfaCode.length !== 6 && mfaMethod !== "recovery_code") return setError("Enter all 6 digits");
+    if (mfaCode.length !== 6 && mfaMethod !== "recovery_code")
+      return setError("Enter all 6 digits");
     setBusy(true);
     setError("");
     const res = await apiFetch<AuthResult>("/api/auth/mfa/verify", {
@@ -146,7 +148,9 @@ export function Login() {
       noAuth: true,
     });
     setBusy(false);
-    setInfo(res.success ? "Code sent to your email." : (res.error?.message ?? "Failed to send code"));
+    setInfo(
+      res.success ? "Code sent to your email." : (res.error?.message ?? "Failed to send code"),
+    );
   }
 
   async function sendReset() {
@@ -183,15 +187,20 @@ export function Login() {
     setError("");
     setBusy(true);
     try {
-      const optsRes = await apiFetch<Record<string, unknown> & { publicKey?: Record<string, unknown> }>(
-        "/api/auth/passkey/login/options",
-        { method: "POST", body: email ? { email } : {}, noAuth: true },
-      );
+      const optsRes = await apiFetch<
+        Record<string, unknown> & { publicKey?: Record<string, unknown> }
+      >("/api/auth/passkey/login/options", {
+        method: "POST",
+        body: email ? { email } : {},
+        noAuth: true,
+      });
       if (!optsRes.success || !optsRes.data) {
         return setError(optsRes.error?.message ?? "Failed to start passkey sign-in");
       }
       // Aldero may wrap the WebAuthn options under `publicKey` or return them flat — handle both.
-      const optionsJSON = (optsRes.data.publicKey ?? optsRes.data) as unknown as Parameters<typeof startAuthentication>[0]["optionsJSON"];
+      const optionsJSON = (optsRes.data.publicKey ?? optsRes.data) as unknown as Parameters<
+        typeof startAuthentication
+      >[0]["optionsJSON"];
 
       const assertion = await startAuthentication({ optionsJSON });
 
@@ -239,20 +248,48 @@ export function Login() {
           {step === "reset-password" && "Set a new password"}
         </p>
 
-        {info && <div className="mb-3 p-2 text-xs rounded bg-emerald-950/40 text-emerald-300 border border-emerald-900">{info}</div>}
-        {error && <div className="mb-3 p-2 text-xs rounded bg-red-950/40 text-red-300 border border-red-900">{error}</div>}
+        {info && (
+          <div className="mb-3 p-2 text-xs rounded bg-emerald-950/40 text-emerald-300 border border-emerald-900">
+            {info}
+          </div>
+        )}
+        {error && (
+          <div className="mb-3 p-2 text-xs rounded bg-red-950/40 text-red-300 border border-red-900">
+            {error}
+          </div>
+        )}
 
         {step === "email" && (
           <>
             <div className="space-y-2 mb-4">
-              <button onClick={() => oauth("google")} className="w-full rounded-md border border-slate-700 bg-white text-slate-900 px-3 py-2 text-sm font-medium hover:bg-slate-100 transition">
+              <button
+                onClick={() => oauth("google")}
+                className="w-full rounded-md border border-slate-700 bg-white text-slate-900 px-3 py-2 text-sm font-medium hover:bg-slate-100 transition"
+              >
                 Continue with Google
               </button>
-              <button onClick={() => oauth("apple")} className="w-full rounded-md border border-slate-700 bg-black text-white px-3 py-2 text-sm font-medium hover:bg-slate-900 transition">
+              <button
+                onClick={() => oauth("apple")}
+                className="w-full rounded-md border border-slate-700 bg-black text-white px-3 py-2 text-sm font-medium hover:bg-slate-900 transition"
+              >
                 Continue with Apple
               </button>
-              <button onClick={passkeyLogin} disabled={busy} className="w-full rounded-md border border-slate-700 bg-slate-800 text-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-700 transition disabled:opacity-50 flex items-center justify-center gap-2">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <button
+                onClick={passkeyLogin}
+                disabled={busy}
+                className="w-full rounded-md border border-slate-700 bg-slate-800 text-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
                   <circle cx="8" cy="12" r="4" />
                   <path d="M12 12h10" />
                   <path d="M18 12v3" />
@@ -262,15 +299,24 @@ export function Login() {
               </button>
             </div>
             <div className="flex items-center gap-3 my-4">
-              <div className="flex-1 h-px bg-slate-800" /><span className="text-xs text-slate-500">or</span><div className="flex-1 h-px bg-slate-800" />
+              <div className="flex-1 h-px bg-slate-800" />
+              <span className="text-xs text-slate-500">or</span>
+              <div className="flex-1 h-px bg-slate-800" />
             </div>
             <label className="block text-xs font-medium text-slate-300 mb-1">Email</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && startSignIn()}
               placeholder="you@example.com"
-              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
-            <button onClick={startSignIn} disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50">
+              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={startSignIn}
+              disabled={busy}
+              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+            >
               Continue
             </button>
           </>
@@ -278,36 +324,67 @@ export function Login() {
 
         {step === "password" && (
           <>
-            <button onClick={() => { setStep("email"); setError(""); setInfo(""); setForgot(false); }} className="text-xs text-slate-500 hover:text-slate-300 mb-3">← Back</button>
+            <button
+              onClick={() => {
+                setStep("email");
+                setError("");
+                setInfo("");
+                setForgot(false);
+              }}
+              className="text-xs text-slate-500 hover:text-slate-300 mb-3"
+            >
+              ← Back
+            </button>
             <p className="text-sm text-slate-300 mb-3">{email}</p>
             {isNewUser && (
-              <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Display name"
-                className="w-full mb-2 rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Display name"
+                className="w-full mb-2 rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+              />
             )}
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submitAuth()}
               placeholder={isNewUser ? "Create a password (8+ chars)" : "Enter your password"}
               autoComplete={isNewUser ? "new-password" : "current-password"}
-              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
-            <button onClick={submitAuth} disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50">
+              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={submitAuth}
+              disabled={busy}
+              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+            >
               {isNewUser ? "Create account" : "Sign in"}
             </button>
             <div className="mt-3 flex justify-between items-center text-xs text-slate-500">
               {!isNewUser ? (
-                <button onClick={() => setIsNewUser(true)} className="hover:text-slate-300">Create account</button>
+                <button onClick={() => setIsNewUser(true)} className="hover:text-slate-300">
+                  Create account
+                </button>
               ) : (
-                <button onClick={() => setIsNewUser(false)} className="hover:text-slate-300">Already have an account?</button>
+                <button onClick={() => setIsNewUser(false)} className="hover:text-slate-300">
+                  Already have an account?
+                </button>
               )}
               {!isNewUser && (
-                <button onClick={() => setForgot(!forgot)} className="hover:text-slate-300">Forgot password?</button>
+                <button onClick={() => setForgot(!forgot)} className="hover:text-slate-300">
+                  Forgot password?
+                </button>
               )}
             </div>
             {forgot && !isNewUser && (
               <div className="mt-3 pt-3 border-t border-slate-800">
                 <p className="text-xs text-slate-400 mb-2">Send a reset link to {email}</p>
-                <button onClick={sendReset} disabled={busy}
-                  className="w-full rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs text-slate-100 disabled:opacity-50">
+                <button
+                  onClick={sendReset}
+                  disabled={busy}
+                  className="w-full rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs text-slate-100 disabled:opacity-50"
+                >
                   Send reset link
                 </button>
               </div>
@@ -317,41 +394,70 @@ export function Login() {
 
         {step === "mfa" && (
           <>
-            <button onClick={() => setStep("password")} className="text-xs text-slate-500 hover:text-slate-300 mb-3">← Back</button>
+            <button
+              onClick={() => setStep("password")}
+              className="text-xs text-slate-500 hover:text-slate-300 mb-3"
+            >
+              ← Back
+            </button>
             {availableMethods.length > 1 && (
               <div className="flex border border-slate-700 rounded overflow-hidden mb-3">
                 {availableMethods.includes("totp") && (
-                  <button onClick={() => setMfaMethod("totp")}
-                    className={`flex-1 px-3 py-1.5 text-xs ${mfaMethod === "totp" ? "bg-indigo-600 text-white" : "text-slate-400"}`}>
+                  <button
+                    onClick={() => setMfaMethod("totp")}
+                    className={`flex-1 px-3 py-1.5 text-xs ${mfaMethod === "totp" ? "bg-indigo-600 text-white" : "text-slate-400"}`}
+                  >
                     Authenticator
                   </button>
                 )}
                 {availableMethods.includes("email") && (
-                  <button onClick={() => setMfaMethod("email")}
-                    className={`flex-1 px-3 py-1.5 text-xs border-l border-slate-700 ${mfaMethod === "email" ? "bg-indigo-600 text-white" : "text-slate-400"}`}>
+                  <button
+                    onClick={() => setMfaMethod("email")}
+                    className={`flex-1 px-3 py-1.5 text-xs border-l border-slate-700 ${mfaMethod === "email" ? "bg-indigo-600 text-white" : "text-slate-400"}`}
+                  >
                     Email
                   </button>
                 )}
               </div>
             )}
             <p className="text-xs text-slate-400 mb-2">
-              {mfaMethod === "email" ? "Enter the 6-digit code sent to your email" : "Enter the 6-digit code from your authenticator app"}
+              {mfaMethod === "email"
+                ? "Enter the 6-digit code sent to your email"
+                : "Enter the 6-digit code from your authenticator app"}
             </p>
             {mfaMethod === "email" && (
-              <button onClick={sendMfaEmail} disabled={busy} className="w-full mb-3 rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs text-slate-100 disabled:opacity-50">
+              <button
+                onClick={sendMfaEmail}
+                disabled={busy}
+                className="w-full mb-3 rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs text-slate-100 disabled:opacity-50"
+              >
                 Send code
               </button>
             )}
-            <input type="text" inputMode="numeric" maxLength={6} value={mfaCode}
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={mfaCode}
               onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ""))}
               onKeyDown={(e) => e.key === "Enter" && submitMfa()}
               placeholder="000000"
-              className="w-full text-center tracking-[0.5em] rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-lg text-slate-100 focus:outline-none focus:border-indigo-500" />
-            <button onClick={submitMfa} disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50">
+              className="w-full text-center tracking-[0.5em] rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-lg text-slate-100 focus:outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={submitMfa}
+              disabled={busy}
+              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+            >
               Verify
             </button>
-            <button onClick={() => { setMfaMethod("recovery_code"); setMfaCode(""); }} className="mt-2 w-full text-xs text-slate-500 hover:text-slate-300">
+            <button
+              onClick={() => {
+                setMfaMethod("recovery_code");
+                setMfaCode("");
+              }}
+              className="mt-2 w-full text-xs text-slate-500 hover:text-slate-300"
+            >
               Use recovery code
             </button>
           </>
@@ -359,11 +465,19 @@ export function Login() {
 
         {step === "reset-password" && (
           <>
-            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="New password (8+ chars)" autoComplete="new-password"
-              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
-            <button onClick={submitReset} disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50">
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="New password (8+ chars)"
+              autoComplete="new-password"
+              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={submitReset}
+              disabled={busy}
+              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+            >
               Reset password
             </button>
           </>

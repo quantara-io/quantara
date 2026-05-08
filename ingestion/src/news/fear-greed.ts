@@ -31,7 +31,7 @@ export async function fetchFearGreedIndex(): Promise<FearGreedData | null> {
       return null;
     }
 
-    const json = await res.json() as {
+    const json = (await res.json()) as {
       data: Array<{ value: string; value_classification: string; timestamp: string }>;
     };
 
@@ -79,7 +79,7 @@ export async function fetchFearGreedIndex(): Promise<FearGreedData | null> {
           ":empty": [],
           ":newEntry": [newEntry],
         },
-      })
+      }),
     );
 
     // Step 2: read back and prune to the last HISTORY_LIMIT entries.

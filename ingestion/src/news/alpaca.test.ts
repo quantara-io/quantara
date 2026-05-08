@@ -53,9 +53,17 @@ describe("alpacaToNewsRecord", () => {
   it("defaults currencies to [] when the upstream item omits symbols", async () => {
     const { alpacaToNewsRecord } = await import("./alpaca.js");
     const record = alpacaToNewsRecord({
-      id: 1, headline: "h", author: "", created_at: "2026-01-01T00:00:00Z",
-      updated_at: "2026-01-01T00:00:00Z", summary: "", content: "", url: "",
-      images: [], symbols: undefined as unknown as string[], source: "rss",
+      id: 1,
+      headline: "h",
+      author: "",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      summary: "",
+      content: "",
+      url: "",
+      images: [],
+      symbols: undefined as unknown as string[],
+      source: "rss",
     });
     expect(record.currencies).toEqual([]);
   });
@@ -64,9 +72,17 @@ describe("alpacaToNewsRecord", () => {
     const { alpacaToNewsRecord } = await import("./alpaca.js");
     const before = Math.floor(Date.now() / 1000);
     const record = alpacaToNewsRecord({
-      id: 1, headline: "h", author: "", created_at: "2026-01-01T00:00:00Z",
-      updated_at: "2026-01-01T00:00:00Z", summary: "", content: "", url: "",
-      images: [], symbols: [], source: "x",
+      id: 1,
+      headline: "h",
+      author: "",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      summary: "",
+      content: "",
+      url: "",
+      images: [],
+      symbols: [],
+      source: "x",
     });
     const thirtyDays = 86400 * 30;
     expect(record.ttl).toBeGreaterThanOrEqual(before + thirtyDays - 5);
@@ -80,14 +96,33 @@ describe("fetchAlpacaNews", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        news: [{ id: 1, headline: "h", author: "", created_at: "2026-01-01T00:00:00Z", updated_at: "", summary: "", content: "", url: "", images: [], symbols: [], source: "" }],
+        news: [
+          {
+            id: 1,
+            headline: "h",
+            author: "",
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "",
+            summary: "",
+            content: "",
+            url: "",
+            images: [],
+            symbols: [],
+            source: "",
+          },
+        ],
         next_page_token: "abc",
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const { fetchAlpacaNews } = await import("./alpaca.js");
-    const result = await fetchAlpacaNews({ symbols: "BTC", limit: 25, pageToken: "prev", start: "2026-04-01T00:00:00Z" });
+    const result = await fetchAlpacaNews({
+      symbols: "BTC",
+      limit: 25,
+      pageToken: "prev",
+      start: "2026-04-01T00:00:00Z",
+    });
     expect(result.articles).toHaveLength(1);
     expect(result.nextPageToken).toBe("abc");
 
@@ -115,7 +150,10 @@ describe("fetchAlpacaNews", () => {
 
   it("throws on non-2xx responses", async () => {
     mockCreds();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401, statusText: "Unauthorized" }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 401, statusText: "Unauthorized" }),
+    );
     const { fetchAlpacaNews } = await import("./alpaca.js");
     await expect(fetchAlpacaNews()).rejects.toThrow(/Alpaca News API error: 401/);
   });
@@ -130,10 +168,13 @@ describe("fetchAlpacaNews", () => {
 
   it("caches the SSM call across multiple fetches in a single module instance", async () => {
     mockCreds();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ news: [], next_page_token: null }),
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ news: [], next_page_token: null }),
+      }),
+    );
     const { fetchAlpacaNews } = await import("./alpaca.js");
     await fetchAlpacaNews();
     await fetchAlpacaNews();

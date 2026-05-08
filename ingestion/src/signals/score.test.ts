@@ -18,10 +18,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { scoreRules, scoreTimeframe } from "./score.js";
-import type { GateResult } from "./score.js";
 import type { Rule, TimeframeVote } from "@quantara/shared";
 import type { IndicatorState } from "@quantara/shared";
+
+import { scoreRules, scoreTimeframe } from "./score.js";
+import type { GateResult } from "./score.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -76,7 +77,6 @@ const bullishRule: Rule = {
   appliesTo: ["1h", "4h", "1d"],
   requiresPrior: 50,
 };
-
 
 // ---------------------------------------------------------------------------
 // §4.8 Golden fixture
@@ -185,11 +185,7 @@ describe("§4.8 golden worked example — BTC/USDT 1h", () => {
       when: (s) => {
         const prev = s.history.macdHist[1]; // index 1 = t-1 (most recent is index 0)
         return (
-          s.macdHist !== null &&
-          s.macdHist > 0 &&
-          prev !== null &&
-          prev !== undefined &&
-          prev <= 0
+          s.macdHist !== null && s.macdHist > 0 && prev !== null && prev !== undefined && prev <= 0
         );
       },
       appliesTo: ["1h", "4h", "1d"],

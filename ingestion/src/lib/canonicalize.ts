@@ -49,7 +49,7 @@ export function canonicalizeCandle(
   const eligible: Candle[] = [];
   for (const [exchange, candle] of Object.entries(perExchangeCandles)) {
     if (exchangeStaleness[exchange]) continue; // stale — skip
-    if (candle === null) continue;             // no candle for this slot — skip
+    if (candle === null) continue; // no candle for this slot — skip
     eligible.push(candle);
   }
 

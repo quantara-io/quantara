@@ -51,12 +51,7 @@ export interface MacdSeries {
  *          signal is null for an additional 8 bars after macdLine starts.
  * All series are aligned to close length.
  */
-export function macd(
-  close: number[],
-  fastN = 12,
-  slowN = 26,
-  signalN = 9,
-): MacdSeries {
+export function macd(close: number[], fastN = 12, slowN = 26, signalN = 9): MacdSeries {
   const len = close.length;
   const line: (number | null)[] = new Array(len).fill(null);
   const signal: (number | null)[] = new Array(len).fill(null);

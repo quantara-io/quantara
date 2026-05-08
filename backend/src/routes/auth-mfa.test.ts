@@ -5,9 +5,8 @@ const alderoGetMock = vi.fn();
 const alderoDeleteMock = vi.fn();
 
 vi.mock("../lib/aldero-client.js", async () => {
-  const actual = await vi.importActual<typeof import("../lib/aldero-client.js")>(
-    "../lib/aldero-client.js",
-  );
+  const actual =
+    await vi.importActual<typeof import("../lib/aldero-client.js")>("../lib/aldero-client.js");
   return {
     ...actual,
     alderoPost: alderoPostMock,
@@ -176,11 +175,7 @@ describe("POST /mfa/email/setup", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data.message).toMatch(/verification code sent/i);
-    expect(alderoPostMock).toHaveBeenCalledWith(
-      "/v1/auth/mfa/email/setup",
-      {},
-      "user-jwt",
-    );
+    expect(alderoPostMock).toHaveBeenCalledWith("/v1/auth/mfa/email/setup", {}, "user-jwt");
   });
 });
 

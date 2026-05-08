@@ -22,11 +22,11 @@ Alchemy WebSocket (ETH/Polygon)
 
 ## Data Sources (all free)
 
-| Source | What | Cost | Transport |
-|--------|------|------|-----------|
-| **Alchemy** | ETH + Polygon pending/confirmed txs | Free (30M compute units/mo) | WebSocket |
-| **Etherscan API** | Wallet tx history, token transfers | Free (5 req/sec) | REST polling |
-| **Public wallet lists** | Known exchange/fund addresses | Free | Static JSON |
+| Source                  | What                                | Cost                        | Transport    |
+| ----------------------- | ----------------------------------- | --------------------------- | ------------ |
+| **Alchemy**             | ETH + Polygon pending/confirmed txs | Free (30M compute units/mo) | WebSocket    |
+| **Etherscan API**       | Wallet tx history, token transfers  | Free (5 req/sec)            | REST polling |
+| **Public wallet lists** | Known exchange/fund addresses       | Free                        | Static JSON  |
 
 ## Whale Watchlist
 
@@ -54,23 +54,23 @@ Sources for addresses: Etherscan labels, Arkham (public), Dune dashboards, on-ch
 
 ## Signal Types
 
-| Signal | Pattern | Direction | Confidence |
-|--------|---------|-----------|------------|
-| **Exchange Deposit** | Whale → exchange hot wallet | Bearish (selling) | High |
-| **Exchange Withdrawal** | Exchange → cold wallet | Bullish (accumulating) | High |
-| **Stablecoin to Exchange** | Large USDT/USDC → exchange | Bullish (buying prep) | Medium |
-| **Large Transfer** | Unknown wallet → unknown wallet | Neutral (watch) | Low |
-| **Correlated Moves** | Multiple whales same direction in <1hr | Strong directional | Very High |
-| **Dormant Wallet Activation** | Wallet inactive >6mo suddenly moves | Alert | Medium |
+| Signal                        | Pattern                                | Direction              | Confidence |
+| ----------------------------- | -------------------------------------- | ---------------------- | ---------- |
+| **Exchange Deposit**          | Whale → exchange hot wallet            | Bearish (selling)      | High       |
+| **Exchange Withdrawal**       | Exchange → cold wallet                 | Bullish (accumulating) | High       |
+| **Stablecoin to Exchange**    | Large USDT/USDC → exchange             | Bullish (buying prep)  | Medium     |
+| **Large Transfer**            | Unknown wallet → unknown wallet        | Neutral (watch)        | Low        |
+| **Correlated Moves**          | Multiple whales same direction in <1hr | Strong directional     | Very High  |
+| **Dormant Wallet Activation** | Wallet inactive >6mo suddenly moves    | Alert                  | Medium     |
 
 ## Thresholds
 
-| Asset | Minimum tx value to track |
-|-------|--------------------------|
-| ETH | 100 ETH (~$230K) |
-| BTC (via wrapped) | 5 WBTC (~$380K) |
-| USDT/USDC | $500,000 |
-| Other ERC-20 | $250,000 |
+| Asset             | Minimum tx value to track |
+| ----------------- | ------------------------- |
+| ETH               | 100 ETH (~$230K)          |
+| BTC (via wrapped) | 5 WBTC (~$380K)           |
+| USDT/USDC         | $500,000                  |
+| Other ERC-20      | $250,000                  |
 
 Configurable via environment variable `WHALE_MIN_VALUE_USD`.
 
@@ -104,14 +104,14 @@ GSI: wallet-index
 
 All in `ingestion/src/whale/`:
 
-| File | Purpose |
-|------|---------|
-| `monitor.ts` | `WhaleMonitor` class — Alchemy WebSocket connection, tx filtering, signal classification |
-| `watchlist.ts` | Load and match addresses against known wallets |
-| `watchlist.json` | Curated address database |
-| `classifier.ts` | Classify tx into signal types (deposit/withdrawal/transfer/dormant) |
-| `whale-store.ts` | DynamoDB write for whale_events table |
-| `types.ts` | WhaleEvent, WhaleSignal, WatchlistEntry types |
+| File             | Purpose                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------- |
+| `monitor.ts`     | `WhaleMonitor` class — Alchemy WebSocket connection, tx filtering, signal classification |
+| `watchlist.ts`   | Load and match addresses against known wallets                                           |
+| `watchlist.json` | Curated address database                                                                 |
+| `classifier.ts`  | Classify tx into signal types (deposit/withdrawal/transfer/dormant)                      |
+| `whale-store.ts` | DynamoDB write for whale_events table                                                    |
+| `types.ts`       | WhaleEvent, WhaleSignal, WatchlistEntry types                                            |
 
 ## Integration into Fargate Service
 
@@ -124,7 +124,7 @@ const whaleMonitor = new WhaleMonitor();
 // Start alongside market and news
 await marketStream.start();
 newsPoller.start();
-whaleMonitor.start();  // connects Alchemy WebSocket
+whaleMonitor.start(); // connects Alchemy WebSocket
 
 // Health check includes whale status
 startHealthServer(HEALTH_PORT, {
@@ -163,13 +163,13 @@ const alchemy = new Alchemy({
 // Subscribe to pending transactions involving watched addresses
 alchemy.ws.on(
   { method: AlchemySubscription.PENDING_TRANSACTIONS, toAddress: EXCHANGE_ADDRESSES },
-  (tx) => processWhaleTransaction(tx)
+  (tx) => processWhaleTransaction(tx),
 );
 
 // Also subscribe to confirmed transactions for large values
 alchemy.ws.on(
   { method: AlchemySubscription.MINED_TRANSACTIONS, addresses: WHALE_ADDRESSES },
-  (tx) => processWhaleTransaction(tx)
+  (tx) => processWhaleTransaction(tx),
 );
 ```
 

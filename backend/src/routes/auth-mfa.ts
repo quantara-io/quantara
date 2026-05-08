@@ -1,9 +1,15 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
+
 import { alderoPost, alderoGet, alderoDelete, AlderoError } from "../lib/aldero-client.js";
 import {
-  MfaMethodsResponse, MfaTotpSetupResponse, MfaConfirmRequest, MfaConfirmResponse,
-  MfaVerifyRequest, AuthSuccessResponse, SuccessResponse,
+  MfaMethodsResponse,
+  MfaTotpSetupResponse,
+  MfaConfirmRequest,
+  MfaConfirmResponse,
+  MfaVerifyRequest,
+  AuthSuccessResponse,
+  SuccessResponse,
 } from "../lib/schemas/auth.js";
 import { ErrorResponse } from "../lib/schemas/common.js";
 import { requireAuth } from "../middleware/require-auth.js";
@@ -27,14 +33,19 @@ const methodsRoute = createRoute({
   description: "Returns which MFA methods the user can enroll in and which are already enrolled.",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: MfaMethodsResponse } }, description: "MFA methods" },
+    200: {
+      content: { "application/json": { schema: MfaMethodsResponse } },
+      description: "MFA methods",
+    },
   },
 });
 
 authMfa.openapi(methodsRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
   try {
-    const authenticators = await alderoGet("/v1/auth/mfa/authenticators", token) as Array<Record<string, unknown>>;
+    const authenticators = (await alderoGet("/v1/auth/mfa/authenticators", token)) as Array<
+      Record<string, unknown>
+    >;
     const enrolled = (Array.isArray(authenticators) ? authenticators : []).map((a) => ({
       id: String(a.id ?? ""),
       type: String(a.authenticator_type ?? a.authenticatorType ?? a.type ?? ""),
@@ -65,20 +76,29 @@ const totpSetupRoute = createRoute({
   description: "Returns a TOTP secret and QR code URL. User scans with an authenticator app.",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: MfaTotpSetupResponse } }, description: "TOTP setup data" },
+    200: {
+      content: { "application/json": { schema: MfaTotpSetupResponse } },
+      description: "TOTP setup data",
+    },
   },
 });
 
 authMfa.openapi(totpSetupRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
   try {
-    const result = await alderoPost("/v1/auth/mfa/totp/setup", {}, token) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/mfa/totp/setup", {}, token)) as Record<
+      string,
+      unknown
+    >;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     // 409 = pending setup exists — retry once (Aldero generates fresh secret)
     if (err instanceof AlderoError && err.statusCode === 409) {
       try {
-        const result = await alderoPost("/v1/auth/mfa/totp/setup", {}, token) as Record<string, unknown>;
+        const result = (await alderoPost("/v1/auth/mfa/totp/setup", {}, token)) as Record<
+          string,
+          unknown
+        >;
         return c.json({ success: true as const, data: result } as any);
       } catch {}
     }
@@ -96,8 +116,14 @@ const totpConfirmRoute = createRoute({
   security: [{ Bearer: [] }],
   request: { body: { content: { "application/json": { schema: MfaConfirmRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: MfaConfirmResponse } }, description: "Enrolled with recovery codes" },
-    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid code" },
+    200: {
+      content: { "application/json": { schema: MfaConfirmResponse } },
+      description: "Enrolled with recovery codes",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid code",
+    },
   },
 });
 
@@ -105,11 +131,17 @@ authMfa.openapi(totpConfirmRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
   const body = c.req.valid("json");
   try {
-    const result = await alderoPost("/v1/auth/mfa/totp/confirm", body, token) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/mfa/totp/confirm", body, token)) as Record<
+      string,
+      unknown
+    >;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "INVALID_CODE", message: err.message } }, 400);
+      return c.json(
+        { success: false as const, error: { code: "INVALID_CODE", message: err.message } },
+        400,
+      );
     }
     throw err;
   }
@@ -123,14 +155,20 @@ const emailSetupRoute = createRoute({
   summary: "Setup email OTP MFA",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Email OTP sent" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Email OTP sent",
+    },
   },
 });
 
 authMfa.openapi(emailSetupRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
   await alderoPost("/v1/auth/mfa/email/setup", {}, token);
-  return c.json({ success: true as const, data: { message: "Verification code sent to your email" } });
+  return c.json({
+    success: true as const,
+    data: { message: "Verification code sent to your email" },
+  });
 });
 
 // --- POST /mfa/email/confirm ---
@@ -142,8 +180,14 @@ const emailConfirmRoute = createRoute({
   security: [{ Bearer: [] }],
   request: { body: { content: { "application/json": { schema: MfaConfirmRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: MfaConfirmResponse } }, description: "Enrolled" },
-    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid code" },
+    200: {
+      content: { "application/json": { schema: MfaConfirmResponse } },
+      description: "Enrolled",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid code",
+    },
   },
 });
 
@@ -151,11 +195,17 @@ authMfa.openapi(emailConfirmRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
   const body = c.req.valid("json");
   try {
-    const result = await alderoPost("/v1/auth/mfa/email/confirm", body, token) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/mfa/email/confirm", body, token)) as Record<
+      string,
+      unknown
+    >;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "INVALID_CODE", message: err.message } }, 400);
+      return c.json(
+        { success: false as const, error: { code: "INVALID_CODE", message: err.message } },
+        400,
+      );
     }
     throw err;
   }
@@ -167,11 +217,18 @@ const verifyRoute = createRoute({
   path: "/mfa/verify",
   tags: ["MFA"],
   summary: "Verify MFA challenge",
-  description: "Complete the MFA step after login. Submit the mfaToken from login response with a verification code.",
+  description:
+    "Complete the MFA step after login. Submit the mfaToken from login response with a verification code.",
   request: { body: { content: { "application/json": { schema: MfaVerifyRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "MFA verified, tokens issued" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid code or token" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "MFA verified, tokens issued",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid code or token",
+    },
   },
 });
 
@@ -185,11 +242,14 @@ authMfa.openapi(verifyRoute, async (c) => {
     trustDevice: body.trustDevice,
   };
   try {
-    const result = await alderoPost("/v1/auth/mfa/verify", alderoBody) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/mfa/verify", alderoBody)) as Record<string, unknown>;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "MFA_FAILED", message: err.message } }, 401);
+      return c.json(
+        { success: false as const, error: { code: "MFA_FAILED", message: err.message } },
+        401,
+      );
     }
     throw err;
   }
@@ -201,13 +261,25 @@ const challengeRoute = createRoute({
   path: "/mfa/challenge",
   tags: ["MFA"],
   summary: "Send email OTP code for MFA login",
-  description: "Triggers an email code send during MFA login challenge. Use the mfaToken from the login response.",
-  request: { body: { content: { "application/json": { schema: z.object({
-    mfaToken: z.string().describe("MFA token from login response"),
-  }) } } } },
+  description:
+    "Triggers an email code send during MFA login challenge. Use the mfaToken from the login response.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            mfaToken: z.string().describe("MFA token from login response"),
+          }),
+        },
+      },
+    },
+  },
   responses: {
     200: { content: { "application/json": { schema: SuccessResponse } }, description: "Code sent" },
-    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Challenge failed" },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Challenge failed",
+    },
   },
 });
 
@@ -218,10 +290,16 @@ authMfa.openapi(challengeRoute, async (c) => {
       mfa_token: body.mfaToken,
       challenge_type: "oob",
     });
-    return c.json({ success: true as const, data: { message: "Verification code sent to your email" } }, 200);
+    return c.json(
+      { success: true as const, data: { message: "Verification code sent to your email" } },
+      200,
+    );
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "CHALLENGE_FAILED", message: err.message } }, 400);
+      return c.json(
+        { success: false as const, error: { code: "CHALLENGE_FAILED", message: err.message } },
+        400,
+      );
     }
     throw err;
   }
@@ -235,13 +313,19 @@ const regenRoute = createRoute({
   summary: "Regenerate recovery codes",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: MfaConfirmResponse } }, description: "New recovery codes" },
+    200: {
+      content: { "application/json": { schema: MfaConfirmResponse } },
+      description: "New recovery codes",
+    },
   },
 });
 
 authMfa.openapi(regenRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
-  const result = await alderoPost("/v1/auth/mfa/recovery-codes/regenerate", {}, token) as Record<string, unknown>;
+  const result = (await alderoPost("/v1/auth/mfa/recovery-codes/regenerate", {}, token)) as Record<
+    string,
+    unknown
+  >;
   return c.json({ success: true as const, data: result } as any);
 });
 
@@ -253,13 +337,16 @@ const listRoute = createRoute({
   summary: "List enrolled MFA authenticators",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: MfaMethodsResponse } }, description: "Enrolled authenticators" },
+    200: {
+      content: { "application/json": { schema: MfaMethodsResponse } },
+      description: "Enrolled authenticators",
+    },
   },
 });
 
 authMfa.openapi(listRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
-  const result = await alderoGet("/v1/auth/mfa/authenticators", token) as unknown[];
+  const result = (await alderoGet("/v1/auth/mfa/authenticators", token)) as unknown[];
   const enrolled = (Array.isArray(result) ? result : []).map((a: any) => ({
     id: String(a.id ?? a.authenticatorId ?? ""),
     type: String(a.type ?? a.authenticatorType ?? ""),

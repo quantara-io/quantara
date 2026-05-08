@@ -12,6 +12,7 @@ allowed-tools: Bash(open *) Bash(curl *)
 Open: $page (default: demo)
 
 ## Pages:
+
 - **demo** → `https://d3tavvh2o76dc5.cloudfront.net/api/docs/demo`
 - **docs** → `https://d3tavvh2o76dc5.cloudfront.net/api/docs`
 - **api** → `https://d3tavvh2o76dc5.cloudfront.net/api/openapi.json`

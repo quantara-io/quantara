@@ -4,12 +4,12 @@ How AI agents (Claude, Codex, others) work on `quantara-io/quantara`. Humans rea
 
 ## Roles
 
-| Role | Who | Job |
-|---|---|---|
-| **Dispatcher** | Human (Nate), or `/dispatch-next` under autonomy | Picks an `agent-ready` issue, spawns a worker. |
-| **Worker** | `quantara-worker` (Sonnet) or Codex | Implements one issue end-to-end in a worktree, opens a PR, enables auto-merge, stops. |
-| **Reviewer** | `quantara-reviewer` (always Opus) | Reviews diff against issue. Approves, requests changes, or escalates. Optionally invokes Codex for second opinion on tripwires. |
-| **Human gate** | Nate | Reviews any PR labeled `needs-human-review`. Approves or rejects. |
+| Role           | Who                                              | Job                                                                                                                             |
+| -------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Dispatcher** | Human (Nate), or `/dispatch-next` under autonomy | Picks an `agent-ready` issue, spawns a worker.                                                                                  |
+| **Worker**     | `quantara-worker` (Sonnet) or Codex              | Implements one issue end-to-end in a worktree, opens a PR, enables auto-merge, stops.                                           |
+| **Reviewer**   | `quantara-reviewer` (always Opus)                | Reviews diff against issue. Approves, requests changes, or escalates. Optionally invokes Codex for second opinion on tripwires. |
+| **Human gate** | Nate                                             | Reviews any PR labeled `needs-human-review`. Approves or rejects.                                                               |
 
 ## Issue lifecycle
 
@@ -35,17 +35,17 @@ agent-proposed ──[human triage]──→ agent-ready ──[claim]──→ 
 
 ## Labels (the source of truth)
 
-| Label | Meaning | Set by |
-|---|---|---|
-| `agent-proposed` | Agent suggested this; human triages before dispatch | Agent (via feature template) |
-| `agent-ready` | Dispatchable. Has acceptance criteria. | Human (or feature/bug templates) |
-| `agent-claimed` | A worker is currently on it | Worker, on claim |
-| `agent-blocked` | Worker gave up; needs human help | Worker |
-| `agent-forbidden` | Off-limits to agents | Human |
-| `needs-human-review` | Reviewer escalated; human is the gate | Reviewer agent |
-| `awaiting-review` | Auto-merge skipped (no branch protection); reviewer is the merge gate | Worker |
-| `agent-reviewed` | Reviewer approved; ready to merge | Reviewer agent |
-| `priority:high` | Dispatcher picks first | Human |
+| Label                | Meaning                                                               | Set by                           |
+| -------------------- | --------------------------------------------------------------------- | -------------------------------- |
+| `agent-proposed`     | Agent suggested this; human triages before dispatch                   | Agent (via feature template)     |
+| `agent-ready`        | Dispatchable. Has acceptance criteria.                                | Human (or feature/bug templates) |
+| `agent-claimed`      | A worker is currently on it                                           | Worker, on claim                 |
+| `agent-blocked`      | Worker gave up; needs human help                                      | Worker                           |
+| `agent-forbidden`    | Off-limits to agents                                                  | Human                            |
+| `needs-human-review` | Reviewer escalated; human is the gate                                 | Reviewer agent                   |
+| `awaiting-review`    | Auto-merge skipped (no branch protection); reviewer is the merge gate | Worker                           |
+| `agent-reviewed`     | Reviewer approved; ready to merge                                     | Reviewer agent                   |
+| `priority:high`      | Dispatcher picks first                                                | Human                            |
 
 ## Branches
 
@@ -81,12 +81,12 @@ Tune the list over time. Loosen as confidence grows.
 
 ## Slash commands
 
-| Command | Purpose |
-|---|---|
-| `/dispatch <issue#>` | Spawn worker on a specific issue |
-| `/dispatch-next` | Spawn worker on the next eligible issue (one at a time) |
-| `/agent-status` | Inspect in-flight workers, PRs, worktrees, escalations |
-| `/review <pr#>` | Manually trigger reviewer on any PR (human-authored or agent-authored) |
+| Command              | Purpose                                                                |
+| -------------------- | ---------------------------------------------------------------------- |
+| `/dispatch <issue#>` | Spawn worker on a specific issue                                       |
+| `/dispatch-next`     | Spawn worker on the next eligible issue (one at a time)                |
+| `/agent-status`      | Inspect in-flight workers, PRs, worktrees, escalations                 |
+| `/review <pr#>`      | Manually trigger reviewer on any PR (human-authored or agent-authored) |
 
 For unattended runs: `/loop 10m /dispatch-next` or `/schedule` (see those skills).
 
@@ -109,6 +109,7 @@ For unattended runs: `/loop 10m /dispatch-next` or `/schedule` (see those skills
 > If you are on the Free plan and using a private repo, skip steps 2 and 4 of this checklist. The reviewer will still run and can merge manually, but there will be no CI gate.
 
 ### 1. Create labels
+
 ```bash
 cd /Users/nate/aldero.io/quantara
 # Uses '|' as the separator so names containing ':' (e.g. priority:high) parse correctly.
@@ -133,7 +134,9 @@ done
 ```
 
 ### 2. Branch protection on `main`
+
 Via UI (Settings → Branches → main) or CLI:
+
 - Require a pull request before merging
 - Require **1 approving review** (the reviewer agent's APPROVE counts)
 - Require status checks: whatever your `ci.yml` workflow runs (typecheck, tests)
@@ -141,17 +144,19 @@ Via UI (Settings → Branches → main) or CLI:
 - **Allow auto-merge** must be enabled on the repo (Settings → General → Pull Requests)
 
 ### 3. Trust your reviewer agent's identity
+
 The reviewer uses the **`quantara-reviewer-bot` GitHub App** (App ID `3502236`, Installation ID `127048091`) so its `--approve` calls register as a real `APPROVED`-state review rather than a `COMMENTED` review (GitHub blocks self-review on personal accounts, which would silently downgrade the state).
 
 The reviewer mints a short-lived installation token at review time via `tools/github-app-token.sh`. Set three env vars in your shell or CI environment:
 
-| Variable | Value |
-|---|---|
-| `REVIEWER_APP_ID` | `3502236` |
-| `REVIEWER_INSTALLATION_ID` | `127048091` |
-| `REVIEWER_APP_KEY_PATH` | Path to the App private key (`.pem`) |
+| Variable                   | Value                                |
+| -------------------------- | ------------------------------------ |
+| `REVIEWER_APP_ID`          | `3502236`                            |
+| `REVIEWER_INSTALLATION_ID` | `127048091`                          |
+| `REVIEWER_APP_KEY_PATH`    | Path to the App private key (`.pem`) |
 
 Store the private key locally — never commit it:
+
 ```bash
 mkdir -p "$HOME/.config/quantara"
 cp /path/to/downloaded/quantara-reviewer-bot.pem "$HOME/.config/quantara/reviewer-bot.pem"
@@ -165,6 +170,7 @@ If these env vars are absent, the reviewer falls back to the default `GH_TOKEN` 
 Branch protection must also **add `quantara-reviewer-bot` as an allowed reviewer** (Settings → Branches → main → required reviews) for the App approval to count toward the required count.
 
 ### 4. Disable Codex/agent push to `main`
+
 Branch protection should already cover this, but double-check that no automation has bypass permission.
 
 ## Cleanup
@@ -172,6 +178,7 @@ Branch protection should already cover this, but double-check that no automation
 The cleanup script is `tools/agent-sweep.sh` (committed to the repo). It walks `~/.quantara-worktrees/`, checks each branch's PR state on GitHub, and removes worktrees whose PR has closed (merged or rejected). Safe to run repeatedly.
 
 Run manually:
+
 ```bash
 ./tools/agent-sweep.sh
 ```
@@ -179,6 +186,7 @@ Run manually:
 For automatic cleanup on macOS, register a LaunchAgent (one-time, per-machine — **not** committed because the plist contains user-specific paths).
 
 Create `~/Library/LaunchAgents/com.quantara.agent-sweep.plist`:
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -199,6 +207,7 @@ Create `~/Library/LaunchAgents/com.quantara.agent-sweep.plist`:
 ```
 
 Activate:
+
 ```bash
 launchctl load ~/Library/LaunchAgents/com.quantara.agent-sweep.plist
 ```
@@ -206,23 +215,24 @@ launchctl load ~/Library/LaunchAgents/com.quantara.agent-sweep.plist
 Sweeps every 30 min, runs on login, survives reboots. Logs to `/tmp/quantara-agent-sweep.log`.
 
 To remove:
+
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.quantara.agent-sweep.plist
 rm ~/Library/LaunchAgents/com.quantara.agent-sweep.plist
 ```
 
-If you need cleanup to fire on PR close *immediately* rather than within 30 min, that requires either a webhook receiver (public endpoint on your machine) or a self-hosted GitHub Actions runner — both significantly more infra than the 30-min poll is worth.
+If you need cleanup to fire on PR close _immediately_ rather than within 30 min, that requires either a webhook receiver (public endpoint on your machine) or a self-hosted GitHub Actions runner — both significantly more infra than the 30-min poll is worth.
 
 ## Failure modes (and what happens)
 
-| Failure | Result |
-|---|---|
-| Two agents claim same issue simultaneously | `gh issue develop` fails for the second (branch collision). It stops. |
-| Worker can't make tests pass | Labels issue `agent-blocked`, comments failure, unassigns. |
-| Reviewer rejects 4 times | Auto-escalate to `needs-human-review`. |
-| CI flakes after auto-merge enabled | GitHub re-runs; if it stays red, auto-merge cancels. |
-| Worker crashes mid-task | Worktree stays. `/agent-status` flags as stale. Human kills or resumes. |
-| Merged PR breaks main | Manual `gh pr revert <n>` for now. (See "Rollback" below.) |
+| Failure                                    | Result                                                                  |
+| ------------------------------------------ | ----------------------------------------------------------------------- |
+| Two agents claim same issue simultaneously | `gh issue develop` fails for the second (branch collision). It stops.   |
+| Worker can't make tests pass               | Labels issue `agent-blocked`, comments failure, unassigns.              |
+| Reviewer rejects 4 times                   | Auto-escalate to `needs-human-review`.                                  |
+| CI flakes after auto-merge enabled         | GitHub re-runs; if it stays red, auto-merge cancels.                    |
+| Worker crashes mid-task                    | Worktree stays. `/agent-status` flags as stale. Human kills or resumes. |
+| Merged PR breaks main                      | Manual `gh pr revert <n>` for now. (See "Rollback" below.)              |
 
 ## Rollback
 
@@ -230,7 +240,7 @@ Day 1: manual revert via `gh pr revert <n>`. If you find yourself reverting more
 
 ## What this protocol is NOT
 
-- Not a way for agents to do *anything* unsupervised. Tripwires + diff budget + reviewer gating is the whole point.
+- Not a way for agents to do _anything_ unsupervised. Tripwires + diff budget + reviewer gating is the whole point.
 - Not a CI replacement. CI still runs and still gates merges.
 - Not a substitute for code review on architectural changes. Anything touching tripwires goes to a human.
 

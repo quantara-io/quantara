@@ -1,4 +1,5 @@
 import type { ScheduledEvent, Context } from "aws-lambda";
+
 import { fetchAllPrices } from "./exchanges/fetcher.js";
 import { storePriceSnapshots } from "./lib/store.js";
 

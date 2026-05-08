@@ -53,17 +53,18 @@ Note the `.js` extension on relative imports — this is an ESM TS project, the 
 
 ## Where things go
 
-| Thing | Path | Notes |
-|---|---|---|
-| Route handlers | `backend/src/routes/<domain>.ts` | One `OpenAPIHono` per domain, exported by name |
-| Zod schemas | `backend/src/lib/schemas/<domain>.ts` | Use `z.object({...}).openapi("Name")` so they appear named in the OpenAPI doc |
-| Shared schemas | `backend/src/lib/schemas/common.ts` | `ErrorResponse`, `PaginationMeta` |
-| Domain logic / external calls | `backend/src/lib/<helper>.ts` | Don't put business logic in route handlers |
-| Vitest test | Colocated next to route or middleware (e.g. `auth.test.ts`) | See `backend/src/middleware/api-key.test.ts` for the canonical pattern |
+| Thing                         | Path                                                        | Notes                                                                         |
+| ----------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Route handlers                | `backend/src/routes/<domain>.ts`                            | One `OpenAPIHono` per domain, exported by name                                |
+| Zod schemas                   | `backend/src/lib/schemas/<domain>.ts`                       | Use `z.object({...}).openapi("Name")` so they appear named in the OpenAPI doc |
+| Shared schemas                | `backend/src/lib/schemas/common.ts`                         | `ErrorResponse`, `PaginationMeta`                                             |
+| Domain logic / external calls | `backend/src/lib/<helper>.ts`                               | Don't put business logic in route handlers                                    |
+| Vitest test                   | Colocated next to route or middleware (e.g. `auth.test.ts`) | See `backend/src/middleware/api-key.test.ts` for the canonical pattern        |
 
 ## Response envelope
 
 Always return either:
+
 - Success: `{ success: true, data: <payload> }` — use `success: true as const` so the literal type narrows for TypeScript
 - Error: `{ success: false, error: { code: string, message: string } }`
 
@@ -84,15 +85,16 @@ Throw these and the `app.onError` handler turns them into the response envelope.
 
 Three are wired in `index.ts`:
 
-| Middleware | What it does | Where it's applied |
-|---|---|---|
-| `requireApiKey` | Validates `x-api-key` against SSM-cached keys | All `/api/*` except docs and OAuth callbacks |
-| `ipWhitelist` | CIDR-matches client IP against SSM list | `/api/docs*`, `/api/openapi.json` |
-| `requireAuth` | Verifies Bearer JWT via Aldero JWKS, sets `c.get("auth")` | Per-route or per-group, not global |
+| Middleware      | What it does                                              | Where it's applied                           |
+| --------------- | --------------------------------------------------------- | -------------------------------------------- |
+| `requireApiKey` | Validates `x-api-key` against SSM-cached keys             | All `/api/*` except docs and OAuth callbacks |
+| `ipWhitelist`   | CIDR-matches client IP against SSM list                   | `/api/docs*`, `/api/openapi.json`            |
+| `requireAuth`   | Verifies Bearer JWT via Aldero JWKS, sets `c.get("auth")` | Per-route or per-group, not global           |
 
 `requireAuth` populates `c.get("auth")` with `AuthContext` (`userId`, `email`, `emailVerified`, `authMethod`, `sessionId`, `role`). The augmentation is declared in `middleware/require-auth.ts` so `c.get("auth")` is typed.
 
 For mixed public/protected routes inside one group, mount per-path:
+
 ```ts
 auth.use("/me", requireAuth);
 auth.use("/me/*", requireAuth);

@@ -24,7 +24,7 @@ async function loadApiKeys(): Promise<Map<string, string>> {
       new GetParametersByPathCommand({
         Path: `/quantara/${ENVIRONMENT}/api-keys/`,
         WithDecryption: true,
-      })
+      }),
     );
 
     const keys = new Map<string, string>();
@@ -50,7 +50,7 @@ export const requireApiKey: MiddlewareHandler = async (c, next) => {
   if (!apiKey) {
     return c.json(
       { success: false, error: { code: "API_KEY_REQUIRED", message: "Missing x-api-key header" } },
-      401
+      401,
     );
   }
 
@@ -60,7 +60,7 @@ export const requireApiKey: MiddlewareHandler = async (c, next) => {
   if (!client) {
     return c.json(
       { success: false, error: { code: "INVALID_API_KEY", message: "Invalid API key" } },
-      403
+      403,
     );
   }
 

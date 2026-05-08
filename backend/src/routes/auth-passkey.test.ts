@@ -5,9 +5,8 @@ const alderoGetMock = vi.fn();
 const alderoDeleteMock = vi.fn();
 
 vi.mock("../lib/aldero-client.js", async () => {
-  const actual = await vi.importActual<typeof import("../lib/aldero-client.js")>(
-    "../lib/aldero-client.js",
-  );
+  const actual =
+    await vi.importActual<typeof import("../lib/aldero-client.js")>("../lib/aldero-client.js");
   return {
     ...actual,
     alderoPost: alderoPostMock,
@@ -85,7 +84,9 @@ describe("POST /passkey/register/verify", () => {
 
   it("translates AlderoError into 400 PASSKEY_FAILED", async () => {
     const { AlderoError } = await import("../lib/aldero-client.js");
-    alderoPostMock.mockRejectedValue(new AlderoError(400, { error: { message: "bad attestation" } }));
+    alderoPostMock.mockRejectedValue(
+      new AlderoError(400, { error: { message: "bad attestation" } }),
+    );
     const app = await loadApp();
     const res = await app.request("/passkey/register/verify", {
       method: "POST",
@@ -113,10 +114,9 @@ describe("POST /passkey/login/options", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data.challenge).toBe("abc");
-    expect(alderoPostMock).toHaveBeenCalledWith(
-      "/v1/auth/passkey/authenticate/options",
-      { email: "a@b.com" },
-    );
+    expect(alderoPostMock).toHaveBeenCalledWith("/v1/auth/passkey/authenticate/options", {
+      email: "a@b.com",
+    });
   });
 
   it("works with no email in the body (discovery flow)", async () => {
@@ -128,10 +128,7 @@ describe("POST /passkey/login/options", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(200);
-    expect(alderoPostMock).toHaveBeenCalledWith(
-      "/v1/auth/passkey/authenticate/options",
-      {},
-    );
+    expect(alderoPostMock).toHaveBeenCalledWith("/v1/auth/passkey/authenticate/options", {});
   });
 });
 
@@ -190,7 +187,14 @@ describe("GET /passkey/list", () => {
 
   it("returns the array directly when upstream returns a bare array", async () => {
     alderoGetMock.mockResolvedValue([
-      { credentialId: "c1", name: "Mac", deviceType: "platform", backedUp: true, enrolledAt: "x", lastUsedAt: null },
+      {
+        credentialId: "c1",
+        name: "Mac",
+        deviceType: "platform",
+        backedUp: true,
+        enrolledAt: "x",
+        lastUsedAt: null,
+      },
     ]);
     const app = await loadApp();
     const res = await app.request("/passkey/list", {

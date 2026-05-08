@@ -15,8 +15,7 @@ import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const METADATA_TABLE =
-  process.env.TABLE_METADATA ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
+  process.env.TABLE_METADATA ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
 
 const MARKER_TTL_SECONDS = 24 * 3600;
 

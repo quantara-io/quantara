@@ -17,13 +17,13 @@ external API / WS  →  fetcher / stream  →  store (DynamoDB)  →  SQS publis
                                      metadata-store (cursor)
 ```
 
-| Stage | Module | Purpose |
-|---|---|---|
-| Fetch | `<source>.ts` (e.g. `news/cryptopanic.ts`, `exchanges/fetcher.ts`) | Wrap the third-party API. Handle pagination, dedupe in store, not here. |
-| Store | `lib/<thing>-store.ts` (e.g. `candle-store`, `news/news-store`, `lib/store.ts`) | DynamoDB BatchWrite (max 25/batch), set TTL, return count of new rows. |
-| Publish | `lib/sqs-publisher.ts` → `publish(queueUrl, type, payload)` | Send a `{type, data, timestamp}` envelope to downstream consumers. |
-| Cursor | `lib/metadata-store.ts` → `getCursor` / `saveCursor` | Persist last-seen ID/timestamp keyed on `metaKey` (e.g. `news:cryptopanic`). |
-| Archive | `lib/s3-archive.ts` | Optional — bulk archive raw payloads for replay. |
+| Stage   | Module                                                                          | Purpose                                                                      |
+| ------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Fetch   | `<source>.ts` (e.g. `news/cryptopanic.ts`, `exchanges/fetcher.ts`)              | Wrap the third-party API. Handle pagination, dedupe in store, not here.      |
+| Store   | `lib/<thing>-store.ts` (e.g. `candle-store`, `news/news-store`, `lib/store.ts`) | DynamoDB BatchWrite (max 25/batch), set TTL, return count of new rows.       |
+| Publish | `lib/sqs-publisher.ts` → `publish(queueUrl, type, payload)`                     | Send a `{type, data, timestamp}` envelope to downstream consumers.           |
+| Cursor  | `lib/metadata-store.ts` → `getCursor` / `saveCursor`                            | Persist last-seen ID/timestamp keyed on `metaKey` (e.g. `news:cryptopanic`). |
+| Archive | `lib/s3-archive.ts`                                                             | Optional — bulk archive raw payloads for replay.                             |
 
 ## Adding a new source
 
@@ -40,16 +40,24 @@ external API / WS  →  fetcher / stream  →  store (DynamoDB)  →  SQS publis
 4. **SQS publish** to fan out into downstream analysis. The two main queues today:
    - `ENRICHMENT_QUEUE_URL` — raw news → Bedrock enrichment Lambda.
    - `MARKET_EVENTS_QUEUE_URL` — candle close / ticker events → analysis.
-   `enriched_news` queue is downstream of enrichment.
+     `enriched_news` queue is downstream of enrichment.
 
 5. **Wire into the service.** Two shapes:
 
    **Sub-service (continuous):** make a class with `start() / stop() / getStatus()` (see `MarketStreamManager`, `NewsPoller`). Then in `ingestion/src/service.ts`:
+
    ```ts
    const myService = new MyService();
-   startHealthServer(HEALTH_PORT, { getStatus: () => ({ ...marketStream.getStatus(), news: newsPoller.getStatus(), my: myService.getStatus() }) });
+   startHealthServer(HEALTH_PORT, {
+     getStatus: () => ({
+       ...marketStream.getStatus(),
+       news: newsPoller.getStatus(),
+       my: myService.getStatus(),
+     }),
+   });
    await myService.start();
    ```
+
    Hook the SIGTERM/SIGINT shutdown sequence too.
 
    **Backfill (one-shot):** copy `news-backfill-handler.ts` — a Lambda handler invoked on demand or by schedule.
@@ -76,15 +84,15 @@ Ingestion still uses `console.log/warn/error` with `[Tag]` prefixes (e.g. `[News
 
 ## TTLs
 
-| Data | TTL |
-|---|---|
-| `prices` | 7 days |
-| `candles` 1m | 7 days |
-| `candles` 5m / 15m | 30 days |
-| `candles` 1h / 4h | 90 days |
-| `candles` 1d | 365 days |
-| `news-events` | TTL attribute set by source (varies) |
-| `signals` | `expiresAt` attribute |
+| Data               | TTL                                  |
+| ------------------ | ------------------------------------ |
+| `prices`           | 7 days                               |
+| `candles` 1m       | 7 days                               |
+| `candles` 5m / 15m | 30 days                              |
+| `candles` 1h / 4h  | 90 days                              |
+| `candles` 1d       | 365 days                             |
+| `news-events`      | TTL attribute set by source (varies) |
+| `signals`          | `expiresAt` attribute                |
 
 If your new source produces high-volume rows, set a TTL. If it's reference data (curated lists, etc.), don't.
 

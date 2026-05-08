@@ -1,5 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, BatchWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+
 import type { NewsRecord } from "./types.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -16,7 +17,7 @@ export async function storeNewsRecords(records: NewsRecord[]): Promise<number> {
         TableName: NEWS_TABLE,
         Key: { newsId: record.newsId, publishedAt: record.publishedAt },
         ProjectionExpression: "newsId",
-      })
+      }),
     );
     if (!existing.Item) {
       newRecords.push(record);
@@ -38,10 +39,12 @@ export async function storeNewsRecords(records: NewsRecord[]): Promise<number> {
             PutRequest: { Item: r },
           })),
         },
-      })
+      }),
     );
   }
 
-  console.log(`[NewsStore] Wrote ${newRecords.length} news records (${records.length - newRecords.length} duplicates skipped)`);
+  console.log(
+    `[NewsStore] Wrote ${newRecords.length} news records (${records.length - newRecords.length} duplicates skipped)`,
+  );
   return newRecords.length;
 }

@@ -11,11 +11,7 @@
 
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DynamoDBDocumentClient,
-  PutCommand,
-  ScanCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 
 // ---------------------------------------------------------------------------
@@ -59,7 +55,7 @@ async function getOpenAiKey(): Promise<string> {
     new GetParameterCommand({
       Name: `/quantara/${ENVIRONMENT}/openai-api-key`,
       WithDecryption: true,
-    })
+    }),
   );
   _openAiKey = param.Parameter?.Value ?? "";
   if (!_openAiKey) throw new Error("SSM /quantara/<env>/openai-api-key is empty");
@@ -113,7 +109,7 @@ async function invokeHaiku<T>(systemPrompt: string, userContent: string): Promis
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
       }),
-    })
+    }),
   );
   const body = JSON.parse(new TextDecoder().decode(response.body));
   const text: string = body.content?.[0]?.text ?? "{}";
@@ -148,7 +144,7 @@ Valid symbols: BTC, ETH, SOL, XRP, DOGE.
 Include only pairs the article would influence — not just mentioned. Example:
 "Coinbase delists ETH staking" affects ETH (Coinbase is the staking host) even
 though "ETH" may not appear in the title.`,
-    `Title: ${title}\n\nBody: ${body.slice(0, 2000)}`
+    `Title: ${title}\n\nBody: ${body.slice(0, 2000)}`,
   );
   const valid = new Set(Object.keys(PAIR_PATTERNS));
   return (result.affectedPairs ?? []).filter((s: string) => valid.has(s));
@@ -185,7 +181,7 @@ export async function classifySentiment(title: string, body: string): Promise<Se
 - score: -1 = strongly bearish; +1 = strongly bullish; 0 = neutral
 - magnitude: how confidently positive/negative the article is (0 = unclear, 1 = strong claim)
 - topic: 2-4 word category (e.g. "regulation", "ETF approval", "exchange hack")`,
-    `Title: ${title}\n\nBody: ${body.slice(0, 2000)}`
+    `Title: ${title}\n\nBody: ${body.slice(0, 2000)}`,
   );
   return {
     score: Math.max(-1, Math.min(1, result.score ?? 0)),
@@ -212,7 +208,7 @@ async function putEmbeddingCache(item: EmbeddingCacheItem): Promise<void> {
     new PutCommand({
       TableName: EMBEDDING_CACHE_TABLE,
       Item: item,
-    })
+    }),
   );
 }
 
@@ -225,7 +221,7 @@ async function scanEmbeddingCache(sinceEpochSeconds: number): Promise<EmbeddingC
       FilterExpression: "#ttl >= :since",
       ExpressionAttributeNames: { "#ttl": "ttl" },
       ExpressionAttributeValues: { ":since": sinceEpochSeconds },
-    })
+    }),
   );
   return (result.Items ?? []) as EmbeddingCacheItem[];
 }

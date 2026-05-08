@@ -1,4 +1,5 @@
 import type { TradingPair } from "../constants/pairs.js";
+
 import type { Timeframe } from "./ingestion.js";
 
 // ---------------------------------------------------------------------------

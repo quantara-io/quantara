@@ -13,7 +13,10 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "eslint . && npm run lint --workspace=web",
+    "lint:fix": "eslint . --fix && npm run lint --workspace=web -- --fix",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write ."
   },
   "engines": {
     "node": ">=24.0.0"
@@ -21,6 +24,12 @@
   "devDependencies": {
     "@aws-sdk/client-cloudwatch-logs": "^3.1032.0",
     "@aws-sdk/client-ecs": "^3.1032.0",
-    "@aws-sdk/client-lambda": "^3.1032.0"
+    "@aws-sdk/client-lambda": "^3.1032.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-import": "^2.31.0",
+    "prettier": "^3.0.0"
   }
 }

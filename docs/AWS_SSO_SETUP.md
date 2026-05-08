@@ -55,6 +55,7 @@ aws sso login
 This opens a browser window. Sign in with your Identity Center credentials. The default profile is **dev**.
 
 To login with a specific profile:
+
 ```bash
 aws sso login --profile quantara-management
 ```
@@ -107,8 +108,8 @@ terraform apply -auto-approve
 
 No `-var-file` is required. Secrets (Alpaca API keys, etc.) live in SSM Parameter Store as `SecureString`:
 
-| Parameter | Purpose |
-|-----------|---------|
+| Parameter                           | Purpose           |
+| ----------------------------------- | ----------------- |
 | `/quantara/<env>/alpaca/key-id`     | Alpaca API key ID |
 | `/quantara/<env>/alpaca/secret-key` | Alpaca API secret |
 
@@ -145,11 +146,11 @@ If SSM is unreachable the middleware fails closed (serves a stale cache if one e
 
 ## Account IDs
 
-| Account | ID | Purpose |
-|---------|-----|---------|
+| Account    | ID           | Purpose                                              |
+| ---------- | ------------ | ---------------------------------------------------- |
 | Management | 489922707011 | Org management, Terraform state, IAM Identity Center |
-| Dev | 442725244722 | Development environment |
-| Prod | 351666231984 | Production environment |
+| Dev        | 442725244722 | Development environment                              |
+| Prod       | 351666231984 | Production environment                               |
 
 ## SSO Start URL
 

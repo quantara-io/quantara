@@ -10,7 +10,7 @@ async function main() {
   for (const s of snapshots) {
     const staleFlag = s.stale ? " [STALE]" : "";
     console.log(
-      `${s.pair.padEnd(10)} ${s.exchange.padEnd(10)} $${s.price.toFixed(2).padStart(12)}  bid:${s.bid.toFixed(2)} ask:${s.ask.toFixed(2)}  vol:${s.volume24h.toFixed(0)}${staleFlag}`
+      `${s.pair.padEnd(10)} ${s.exchange.padEnd(10)} $${s.price.toFixed(2).padStart(12)}  bid:${s.bid.toFixed(2)} ask:${s.ask.toFixed(2)}  vol:${s.volume24h.toFixed(0)}${staleFlag}`,
     );
   }
 

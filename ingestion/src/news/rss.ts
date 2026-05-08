@@ -59,7 +59,9 @@ function parseRssXml(xml: string): RssItem[] {
 
 function extractTag(xml: string, tag: string): string {
   // Handle CDATA
-  const cdataMatch = xml.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`));
+  const cdataMatch = xml.match(
+    new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`),
+  );
   if (cdataMatch) return cdataMatch[1].trim();
 
   const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`));
@@ -88,7 +90,9 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
           source: feed.name,
           title: item.title,
           url: item.link,
-          publishedAt: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
+          publishedAt: item.pubDate
+            ? new Date(item.pubDate).toISOString()
+            : new Date().toISOString(),
           currencies,
           rawSentiment: "neutral",
           status: "raw",

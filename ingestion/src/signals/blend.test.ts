@@ -15,9 +15,15 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { blendTimeframeVotes, isTrivialChange, DEFAULT_TIMEFRAME_WEIGHTS, BLEND_THRESHOLD_T } from "./blend.js";
 import type { BlendedSignal } from "@quantara/shared";
 import type { TimeframeVote } from "@quantara/shared";
+
+import {
+  blendTimeframeVotes,
+  isTrivialChange,
+  DEFAULT_TIMEFRAME_WEIGHTS,
+  BLEND_THRESHOLD_T,
+} from "./blend.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -44,9 +50,17 @@ function makeGoldenVotes(): Record<"15m" | "1h" | "4h" | "1d" | "1m" | "5m", Tim
     "1m": null,
     "5m": null,
     "15m": makeVote({ type: "hold", confidence: 0.55, rulesFired: ["hold-rule-15m"] }),
-    "1h": makeVote({ type: "buy", confidence: 0.68, rulesFired: ["rsi-oversold", "macd-cross-bull"] }),
-    "4h": makeVote({ type: "buy", confidence: 0.72, rulesFired: ["ema-stack-bull", "fng-extreme-fear"] }),
-    "1d": makeVote({ type: "hold", confidence: 0.50, rulesFired: ["hold-rule-1d"] }),
+    "1h": makeVote({
+      type: "buy",
+      confidence: 0.68,
+      rulesFired: ["rsi-oversold", "macd-cross-bull"],
+    }),
+    "4h": makeVote({
+      type: "buy",
+      confidence: 0.72,
+      rulesFired: ["ema-stack-bull", "fng-extreme-fear"],
+    }),
+    "1d": makeVote({ type: "hold", confidence: 0.5, rulesFired: ["hold-rule-1d"] }),
   };
 }
 
@@ -121,8 +135,8 @@ describe("§5 golden worked example — (15m: hold, 1h: buy 0.68, 4h: buy 0.72, 
     const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
     // Since 15m+1h+4h+1d = 0.15+0.20+0.30+0.35 = 1.0, renormalized = raw
     expect(result.weightsUsed["15m"]).toBeCloseTo(0.15, 10);
-    expect(result.weightsUsed["1h"]).toBeCloseTo(0.20, 10);
-    expect(result.weightsUsed["4h"]).toBeCloseTo(0.30, 10);
+    expect(result.weightsUsed["1h"]).toBeCloseTo(0.2, 10);
+    expect(result.weightsUsed["4h"]).toBeCloseTo(0.3, 10);
     expect(result.weightsUsed["1d"]).toBeCloseTo(0.35, 10);
   });
 
@@ -226,7 +240,7 @@ describe("single-source case — 3 of 4 TFs null, 0.7 damping applied", () => {
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1h": makeVote({ type: "buy", confidence: 0.8 }),
       "4h": null,
       "1d": null,
     };
@@ -239,7 +253,7 @@ describe("single-source case — 3 of 4 TFs null, 0.7 damping applied", () => {
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1h": makeVote({ type: "buy", confidence: 0.8 }),
       "4h": null,
       "1d": null,
     };
@@ -257,7 +271,7 @@ describe("single-source case — 3 of 4 TFs null, 0.7 damping applied", () => {
       "5m": null,
       "15m": null,
       "1h": null,
-      "4h": makeVote({ type: "sell", confidence: 0.80 }),
+      "4h": makeVote({ type: "sell", confidence: 0.8 }),
       "1d": null,
     };
     // blended = 1.0 * (-0.80) = -0.80 (< -T → sell)
@@ -279,7 +293,7 @@ describe("single-source case — 3 of 4 TFs null, 0.7 damping applied", () => {
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "hold", confidence: 0.60 }),
+      "1h": makeVote({ type: "hold", confidence: 0.6 }),
       "4h": null,
       "1d": null,
     };
@@ -300,9 +314,9 @@ describe("gate cascade — any gated TF forces blended hold", () => {
       "1m": null,
       "5m": null,
       "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "vol" }),
-      "1h": makeVote({ type: "buy", confidence: 0.90 }),
-      "4h": makeVote({ type: "buy", confidence: 0.90 }),
-      "1d": makeVote({ type: "buy", confidence: 0.90 }),
+      "1h": makeVote({ type: "buy", confidence: 0.9 }),
+      "4h": makeVote({ type: "buy", confidence: 0.9 }),
+      "1d": makeVote({ type: "buy", confidence: 0.9 }),
     };
     const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
     expect(result.type).toBe("hold");
@@ -316,8 +330,13 @@ describe("gate cascade — any gated TF forces blended hold", () => {
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "dispersion" }),
-      "4h": makeVote({ type: "buy", confidence: 0.90 }),
+      "1h": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "dispersion",
+      }),
+      "4h": makeVote({ type: "buy", confidence: 0.9 }),
       "1d": null,
     };
     const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
@@ -331,7 +350,7 @@ describe("gate cascade — any gated TF forces blended hold", () => {
       "5m": null,
       "15m": null,
       "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" }),
-      "4h": makeVote({ type: "buy", confidence: 0.90 }),
+      "4h": makeVote({ type: "buy", confidence: 0.9 }),
       "1d": null,
     };
     const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
@@ -358,7 +377,12 @@ describe("gate cascade — any gated TF forces blended hold", () => {
       "5m": null,
       "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" }),
       "1h": null,
-      "4h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "dispersion" }),
+      "4h": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "dispersion",
+      }),
       "1d": null,
     };
     const result = blendTimeframeVotes("BTC/USDT", votes, "4h") as BlendedSignal;
@@ -388,7 +412,7 @@ describe("gate cascade — any gated TF forces blended hold", () => {
         gateReason: "vol",
         rulesFired: ["vol-gate-15m"],
       }),
-      "1h": makeVote({ type: "buy", confidence: 0.90, rulesFired: ["rsi-oversold"] }),
+      "1h": makeVote({ type: "buy", confidence: 0.9, rulesFired: ["rsi-oversold"] }),
       "4h": null,
       "1d": null,
     };
@@ -416,8 +440,8 @@ describe("weightsUsed post-renormalization", () => {
     // raw weights: 1h=0.20, 4h=0.30 → sum=0.50 → renorm: 1h=0.40, 4h=0.60
     const sum = (Object.values(result.weightsUsed) as number[]).reduce((a, b) => a + b, 0);
     expect(sum).toBeCloseTo(1.0, 10);
-    expect(result.weightsUsed["1h"]).toBeCloseTo(0.40, 10);
-    expect(result.weightsUsed["4h"]).toBeCloseTo(0.60, 10);
+    expect(result.weightsUsed["1h"]).toBeCloseTo(0.4, 10);
+    expect(result.weightsUsed["4h"]).toBeCloseTo(0.6, 10);
   });
 
   it("weightsUsed for null TFs is 0", () => {
@@ -460,7 +484,7 @@ describe("sell path", () => {
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "sell", confidence: 0.70 }),
+      "1h": makeVote({ type: "sell", confidence: 0.7 }),
       "4h": makeVote({ type: "sell", confidence: 0.75 }),
       "1d": null,
     };
@@ -473,8 +497,8 @@ describe("sell path", () => {
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "sell", confidence: 0.70 }),
-      "4h": makeVote({ type: "sell", confidence: 0.70 }),
+      "1h": makeVote({ type: "sell", confidence: 0.7 }),
+      "4h": makeVote({ type: "sell", confidence: 0.7 }),
       "1d": null,
     };
     // raw weights: 1h=0.20, 4h=0.30 → renorm: 1h=0.40, 4h=0.60
@@ -553,7 +577,7 @@ describe("no mutation of inputs — purity (structuredClone + toEqual)", () => {
 
   it("blendTimeframeVotes does not mutate rulesFired arrays inside votes", () => {
     const votes = makeGoldenVotes();
-    const originalRules1h = [...(votes["1h"]!.rulesFired)];
+    const originalRules1h = [...votes["1h"]!.rulesFired];
     blendTimeframeVotes("BTC/USDT", votes, "1h");
     expect(votes["1h"]!.rulesFired).toEqual(originalRules1h);
   });
@@ -577,7 +601,7 @@ describe("no mutation of inputs — purity (structuredClone + toEqual)", () => {
       "1m": null,
       "5m": null,
       "15m": makeVote({ type: "hold", volatilityFlag: true, gateReason: "vol" }),
-      "1h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1h": makeVote({ type: "buy", confidence: 0.8 }),
       "4h": null,
       "1d": null,
     };
@@ -596,7 +620,7 @@ describe("isTrivialChange", () => {
     return {
       pair: "BTC/USDT",
       type: "buy",
-      confidence: 0.60,
+      confidence: 0.6,
       volatilityFlag: false,
       gateReason: null,
       rulesFired: [],
@@ -622,26 +646,26 @@ describe("isTrivialChange", () => {
   });
 
   it("returns true when same type, same vol/gate, confidence delta < 0.05", () => {
-    const prev = makeSignal({ confidence: 0.60 });
+    const prev = makeSignal({ confidence: 0.6 });
     const curr = makeSignal({ confidence: 0.62 });
     expect(isTrivialChange(prev, curr)).toBe(true);
   });
 
   it("returns true when confidence delta is exactly 0.049 (< 0.05)", () => {
-    const prev = makeSignal({ confidence: 0.60 });
+    const prev = makeSignal({ confidence: 0.6 });
     const curr = makeSignal({ confidence: 0.649 });
     expect(isTrivialChange(prev, curr)).toBe(true);
   });
 
   it("returns false when confidence delta is exactly 0.05", () => {
-    const prev = makeSignal({ confidence: 0.60 });
+    const prev = makeSignal({ confidence: 0.6 });
     const curr = makeSignal({ confidence: 0.65 });
     expect(isTrivialChange(prev, curr)).toBe(false);
   });
 
   it("returns false when confidence delta > 0.05", () => {
-    const prev = makeSignal({ confidence: 0.60 });
-    const curr = makeSignal({ confidence: 0.70 });
+    const prev = makeSignal({ confidence: 0.6 });
+    const curr = makeSignal({ confidence: 0.7 });
     expect(isTrivialChange(prev, curr)).toBe(false);
   });
 
@@ -698,16 +722,16 @@ describe("custom weights override", () => {
       "1m": 0,
       "5m": 0,
       "15m": 0,
-      "1h": 0.50,
-      "4h": 0.50,
+      "1h": 0.5,
+      "4h": 0.5,
       "1d": 0,
     } as const;
     const votes = {
       "1m": null,
       "5m": null,
-      "15m": makeVote({ type: "buy", confidence: 0.80 }), // weight=0, excluded
-      "1h": makeVote({ type: "buy", confidence: 0.60 }),
-      "4h": makeVote({ type: "sell", confidence: 0.60 }),
+      "15m": makeVote({ type: "buy", confidence: 0.8 }), // weight=0, excluded
+      "1h": makeVote({ type: "buy", confidence: 0.6 }),
+      "4h": makeVote({ type: "sell", confidence: 0.6 }),
       "1d": null,
     };
     // 15m has custom weight 0 → renorm: 1h=0.50/1.0=0.50, 4h=0.50/1.0=0.50
@@ -745,7 +769,7 @@ describe("perTimeframe shallow-copy — caller mutation cannot corrupt the retur
       "1m": null,
       "5m": null,
       "15m": makeVote({ type: "hold", volatilityFlag: true, gateReason: "vol" as const }),
-      "1h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1h": makeVote({ type: "buy", confidence: 0.8 }),
       "4h": null,
       "1d": null,
     };
@@ -770,8 +794,13 @@ describe("volatilityFlag semantics — true only for vol gate, false for dispers
     const votes = {
       "1m": null,
       "5m": null,
-      "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "vol" as const }),
-      "1h": makeVote({ type: "buy", confidence: 0.90 }),
+      "15m": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "vol" as const,
+      }),
+      "1h": makeVote({ type: "buy", confidence: 0.9 }),
       "4h": null,
       "1d": null,
     };
@@ -785,8 +814,13 @@ describe("volatilityFlag semantics — true only for vol gate, false for dispers
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "dispersion" as const }),
-      "4h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1h": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "dispersion" as const,
+      }),
+      "4h": makeVote({ type: "buy", confidence: 0.8 }),
       "1d": null,
     };
     const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
@@ -799,8 +833,13 @@ describe("volatilityFlag semantics — true only for vol gate, false for dispers
       "1m": null,
       "5m": null,
       "15m": null,
-      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" as const }),
-      "4h": makeVote({ type: "buy", confidence: 0.80 }),
+      "1h": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "stale" as const,
+      }),
+      "4h": makeVote({ type: "buy", confidence: 0.8 }),
       "1d": null,
     };
     const result = blendTimeframeVotes("BTC/USDT", votes, "1h") as BlendedSignal;
@@ -812,8 +851,18 @@ describe("volatilityFlag semantics — true only for vol gate, false for dispers
     const votes = {
       "1m": null,
       "5m": null,
-      "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" as const }),
-      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "vol" as const }),
+      "15m": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "stale" as const,
+      }),
+      "1h": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "vol" as const,
+      }),
       "4h": null,
       "1d": null,
     };
@@ -826,8 +875,18 @@ describe("volatilityFlag semantics — true only for vol gate, false for dispers
     const votes = {
       "1m": null,
       "5m": null,
-      "15m": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "stale" as const }),
-      "1h": makeVote({ type: "hold", confidence: 0.5, volatilityFlag: true, gateReason: "dispersion" as const }),
+      "15m": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "stale" as const,
+      }),
+      "1h": makeVote({
+        type: "hold",
+        confidence: 0.5,
+        volatilityFlag: true,
+        gateReason: "dispersion" as const,
+      }),
       "4h": null,
       "1d": null,
     };
@@ -847,7 +906,8 @@ describe("exported constants", () => {
   });
 
   it("DEFAULT_TIMEFRAME_WEIGHTS sums to 1.0 for the blender TFs (15m+1h+4h+1d)", () => {
-    const sum = DEFAULT_TIMEFRAME_WEIGHTS["15m"] +
+    const sum =
+      DEFAULT_TIMEFRAME_WEIGHTS["15m"] +
       DEFAULT_TIMEFRAME_WEIGHTS["1h"] +
       DEFAULT_TIMEFRAME_WEIGHTS["4h"] +
       DEFAULT_TIMEFRAME_WEIGHTS["1d"];

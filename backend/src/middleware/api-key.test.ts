@@ -27,7 +27,7 @@ describe("requireApiKey", () => {
     const app = await buildApp();
     const res = await app.request("/");
     expect(res.status).toBe(401);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body.error.code).toBe("API_KEY_REQUIRED");
   });
 
@@ -36,7 +36,7 @@ describe("requireApiKey", () => {
     const app = await buildApp();
     const res = await app.request("/", { headers: { "x-api-key": "dev-local" } });
     expect(res.status).toBe(200);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body.client).toBe("local");
   });
 
@@ -45,7 +45,7 @@ describe("requireApiKey", () => {
     const app = await buildApp();
     const res = await app.request("/", { headers: { "x-api-key": "unknown" } });
     expect(res.status).toBe(403);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body.error.code).toBe("INVALID_API_KEY");
   });
 
@@ -56,7 +56,7 @@ describe("requireApiKey", () => {
     const app = await buildApp();
     const res = await app.request("/", { headers: { "x-api-key": "secret-key-1" } });
     expect(res.status).toBe(200);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body.client).toBe("dashboard");
   });
 
@@ -65,7 +65,7 @@ describe("requireApiKey", () => {
     const app = await buildApp();
     const res = await app.request("/", { headers: { "x-api-key": "any-key" } });
     expect(res.status).toBe(403);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body.error.code).toBe("INVALID_API_KEY");
   });
 });

@@ -39,16 +39,16 @@ Decision recorded: **algo proposes, LLM ratifies**.
 
 ## 2. Inputs available today
 
-| Input | Source | Frequency | Storage |
-|---|---|---|---|
-| 1m closed OHLCV candles | Fargate `MarketStreamManager` (CCXT Pro WebSocket) | Per minute, per `(exchange, pair)` | DDB `quantara-dev-candles`, 7d TTL |
-| 5m / 15m / 1h / 4h / 1d candles | `quantara-dev-backfill` Lambda (REST `fetchOHLCV`) | On-demand backfill, archived to S3 | DDB + S3 archive, TTL 30d / 30d / 90d / 90d / 365d |
-| Real-time tickers | Fargate `watchTicker` | Multi-tick / second | DDB `quantara-dev-prices`, 7d TTL |
-| 5-min ticker snapshots | `quantara-dev-ingestion` Lambda (EventBridge schedule) | 5 min | Same prices table |
-| Fear & Greed Index | `alternative.me/fng` REST poll | 1 hour | DDB metadata `market:fear-greed` |
-| News articles | Alpaca News API + RSS (CoinTelegraph, Decrypt, CoinDesk) | 2 min | DDB `news-events`, 30d TTL |
-| Sentiment-classified news | News enrichment Lambda (SQS-driven) | Per article | DDB `news-events` (enriched fields) |
-| Whale flows | **Not yet wired** | — | See `docs/WHALE_MONITORING.md` |
+| Input                           | Source                                                   | Frequency                          | Storage                                            |
+| ------------------------------- | -------------------------------------------------------- | ---------------------------------- | -------------------------------------------------- |
+| 1m closed OHLCV candles         | Fargate `MarketStreamManager` (CCXT Pro WebSocket)       | Per minute, per `(exchange, pair)` | DDB `quantara-dev-candles`, 7d TTL                 |
+| 5m / 15m / 1h / 4h / 1d candles | `quantara-dev-backfill` Lambda (REST `fetchOHLCV`)       | On-demand backfill, archived to S3 | DDB + S3 archive, TTL 30d / 30d / 90d / 90d / 365d |
+| Real-time tickers               | Fargate `watchTicker`                                    | Multi-tick / second                | DDB `quantara-dev-prices`, 7d TTL                  |
+| 5-min ticker snapshots          | `quantara-dev-ingestion` Lambda (EventBridge schedule)   | 5 min                              | Same prices table                                  |
+| Fear & Greed Index              | `alternative.me/fng` REST poll                           | 1 hour                             | DDB metadata `market:fear-greed`                   |
+| News articles                   | Alpaca News API + RSS (CoinTelegraph, Decrypt, CoinDesk) | 2 min                              | DDB `news-events`, 30d TTL                         |
+| Sentiment-classified news       | News enrichment Lambda (SQS-driven)                      | Per article                        | DDB `news-events` (enriched fields)                |
+| Whale flows                     | **Not yet wired**                                        | —                                  | See `docs/WHALE_MONITORING.md`                     |
 
 ### Data-quality gaps to fix before this lands
 
@@ -75,11 +75,11 @@ Decided: skip Twitter/X sentiment for v1. Revisit after Phase 8 outcome tracking
 
 > **NOT IN ANY PHASE.** Recorded for context only. Do not file issues against these.
 
-| Option | Behavior | Why rejected for v1 |
-|---|---|---|
-| **WebSocket `watchOHLCV` per timeframe (Option B)** | Subscribe to 5m/15m/1h/4h on the Fargate streamer | Doesn't solve Coinbase (no `watchOHLCV` support); 4× more WS connections per pair; harder to monitor than Lambda |
-| **Aggregate from the 1m stream (Option A)** | Roll up 1m candles into higher TFs | Depends on 1m stream being unbroken (gaps → bad aggregations); doesn't help Coinbase since we have no 1m there |
-| **Chosen: scheduled REST poll (Option C)** | EventBridge → Lambda calls `fetchOHLCV` on each close boundary | All three exchanges, Lambda monitoring, ~1200 calls/hour, reuses backfill code |
+| Option                                              | Behavior                                                       | Why rejected for v1                                                                                              |
+| --------------------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **WebSocket `watchOHLCV` per timeframe (Option B)** | Subscribe to 5m/15m/1h/4h on the Fargate streamer              | Doesn't solve Coinbase (no `watchOHLCV` support); 4× more WS connections per pair; harder to monitor than Lambda |
+| **Aggregate from the 1m stream (Option A)**         | Roll up 1m candles into higher TFs                             | Depends on 1m stream being unbroken (gaps → bad aggregations); doesn't help Coinbase since we have no 1m there   |
+| **Chosen: scheduled REST poll (Option C)**          | EventBridge → Lambda calls `fetchOHLCV` on each close boundary | All three exchanges, Lambda monitoring, ~1200 calls/hour, reuses backfill code                                   |
 
 WebSocket per-TF subscription remains a **future option** for hot pairs (e.g. BTC) once production load is observed. Track in §14 Open Questions, not as a v1 phase.
 
@@ -91,35 +91,35 @@ Indicators are computed per `(exchange, pair, timeframe)` combination, then redu
 
 ### 3.1 Trend indicators
 
-| Indicator | Formula | Use |
-|---|---|---|
-| **EMA(N)** | `EMA[t] = α·close[t] + (1-α)·EMA[t-1]`, `α = 2/(N+1)` | Trend direction at multiple speeds |
-| **MACD(12, 26, 9)** | `MACD = EMA(12) − EMA(26)`; `signal = EMA(MACD, 9)`; `hist = MACD − signal` | Trend reversals via histogram zero-cross |
-| **EMA-stack (20/50/200)** | Bullish if `EMA(20) > EMA(50) > EMA(200)`; bearish inverse | Trend regime classification |
+| Indicator                 | Formula                                                                     | Use                                      |
+| ------------------------- | --------------------------------------------------------------------------- | ---------------------------------------- |
+| **EMA(N)**                | `EMA[t] = α·close[t] + (1-α)·EMA[t-1]`, `α = 2/(N+1)`                       | Trend direction at multiple speeds       |
+| **MACD(12, 26, 9)**       | `MACD = EMA(12) − EMA(26)`; `signal = EMA(MACD, 9)`; `hist = MACD − signal` | Trend reversals via histogram zero-cross |
+| **EMA-stack (20/50/200)** | Bullish if `EMA(20) > EMA(50) > EMA(200)`; bearish inverse                  | Trend regime classification              |
 
 ### 3.2 Momentum indicators
 
-| Indicator | Formula | Use |
-|---|---|---|
-| **RSI(14)** | `RSI = 100 − 100/(1 + RS)`, `RS = avg_gain(14) / avg_loss(14)` | Overbought (>70), oversold (<30) |
-| **Stochastic(14, 3, 3)** | `%K = 100·(close − low_N) / (high_N − low_N)`; `%D = SMA(%K, 3)` | Oscillator — sharper than RSI |
-| **ROC(N)** | `(close[t] − close[t-N]) / close[t-N]` | Raw momentum strength |
+| Indicator                | Formula                                                          | Use                              |
+| ------------------------ | ---------------------------------------------------------------- | -------------------------------- |
+| **RSI(14)**              | `RSI = 100 − 100/(1 + RS)`, `RS = avg_gain(14) / avg_loss(14)`   | Overbought (>70), oversold (<30) |
+| **Stochastic(14, 3, 3)** | `%K = 100·(close − low_N) / (high_N − low_N)`; `%D = SMA(%K, 3)` | Oscillator — sharper than RSI    |
+| **ROC(N)**               | `(close[t] − close[t-N]) / close[t-N]`                           | Raw momentum strength            |
 
 ### 3.3 Volatility indicators
 
-| Indicator | Formula | Use |
-|---|---|---|
-| **ATR(14)** | `TR = max(high − low, abs(high − close[-1]), abs(low − close[-1]))`; `ATR = SMA(TR, 14)` | **Stop-loss sizing.** ATR defines "normal" volatility. |
-| **Bollinger(20, 2σ)** | `mid = SMA(20)`, `upper/lower = mid ± 2·stdev(20)` | Bandwidth = squeeze detection; price-touching = mean-reversion candidate |
-| **Realized vol (24h)** | `stdev(returns_1m, last 1440 bars) · sqrt(525600)` (annualized) | Trigger the `volatilityFlag` if > threshold (forces all signals to `hold`) |
+| Indicator              | Formula                                                                                  | Use                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **ATR(14)**            | `TR = max(high − low, abs(high − close[-1]), abs(low − close[-1]))`; `ATR = SMA(TR, 14)` | **Stop-loss sizing.** ATR defines "normal" volatility.                     |
+| **Bollinger(20, 2σ)**  | `mid = SMA(20)`, `upper/lower = mid ± 2·stdev(20)`                                       | Bandwidth = squeeze detection; price-touching = mean-reversion candidate   |
+| **Realized vol (24h)** | `stdev(returns_1m, last 1440 bars) · sqrt(525600)` (annualized)                          | Trigger the `volatilityFlag` if > threshold (forces all signals to `hold`) |
 
 ### 3.4 Volume indicators
 
-| Indicator | Formula | Use |
-|---|---|---|
-| **OBV** | `OBV[t] = OBV[t-1] + sign(close[t] − close[t-1]) · volume[t]` | Confirms or contradicts price moves |
+| Indicator                | Formula                                                           | Use                                                     |
+| ------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------- |
+| **OBV**                  | `OBV[t] = OBV[t-1] + sign(close[t] − close[t-1]) · volume[t]`     | Confirms or contradicts price moves                     |
 | **VWAP** (intraday only) | `Σ(typical_price · volume) / Σ(volume)` reset at session boundary | Reference for intraday signals; institutional benchmark |
-| **Volume z-score** | `(volume[t] − SMA(volume, 20)) / stdev(volume, 20)` | Spot abnormal volume; gates breakouts |
+| **Volume z-score**       | `(volume[t] − SMA(volume, 20)) / stdev(volume, 20)`               | Spot abnormal volume; gates breakouts                   |
 
 ### 3.5 Structural indicators — deferred to v2
 
@@ -174,23 +174,23 @@ Implement formulas in TypeScript directly in `ingestion/src/indicators/` rather 
 
 For Phase 1 implementers — concrete traps to handle, with the right answer.
 
-| Indicator | Hazard | Handling |
-|---|---|---|
-| **EMA** | Naive recursion `EMA[0] = close[0]` is biased low for ~3·N bars | Seed `EMA[N-1] = SMA(close, N)`, then recurse from bar `N`. Ignore first 3·N bars in backtests. |
-| **RSI** | Two valid avg-gain/loss methods (Wilder's RMA vs SMA) produce different numbers | Use **Wilder's RMA** to match TradingView. Document explicitly in code. |
-| **RSI** | First N values undefined | Return `null` (not 50) for warm-up bars; treat as no-signal |
-| **Stochastic** | When `high_N == low_N` (perfectly flat bar), formula divides by zero | If range is zero, return `%K = 50` |
-| **ATR** | Bar 0 has no previous close → True Range undefined | Use `high − low` for bar 0 only |
-| **ATR** | Mixing Wilder's smoothing for ATR with SMA elsewhere causes silent number drift | Use **Wilder's RMA** explicitly; name helpers `wilderSmooth(...)` vs `sma(...)` |
-| **Bollinger** | Standard deviation: divide by N or N-1? | Divide by N (population stdev — Bollinger's original spec, TradingView default) |
-| **Bollinger** | During calm periods, BB width approaches zero, "touch" rule fires constantly | Rules using band touches must also check `bbWidth > Yth percentile` over a window |
-| **OBV** | Cumulative and unbounded — comparing OBV value across pairs is invalid | Use OBV **slope** (linear regression over last 10 bars) as the actual signal |
-| **VWAP** | Crypto trades 24/7 — no natural session boundary | Reset at **00:00 UTC** daily. Compute only for 15m / 1h timeframes. |
-| **Volume z-score** | Volume has strong time-of-day pattern; flat z-score over 20 bars compares 03:00 UTC to 14:00 UTC | Acceptable noise for v1. Time-of-day-bucketed z-score is **deferred to v2**. |
-| **Volume z-score** | If `stdev(volume, N) == 0`, division explodes | Guard: return 0 |
-| **Realized vol** | Annualization factor depends on timeframe | `bars_per_year = {1m: 525600, 5m: 105120, 15m: 35040, 1h: 8760, 4h: 2190, 1d: 365}` |
-| **Realized vol** | First N log-returns include NaN if any candle has zero close | Skip bars with zero or null close; require ≥N valid returns before emitting |
-| **All** | Single-bar-update path may diverge from full-recomputation path | Phase 1 acceptance: unit test asserts `update(state, candle) ≡ recompute(allCandles)` for every indicator |
+| Indicator          | Hazard                                                                                           | Handling                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| **EMA**            | Naive recursion `EMA[0] = close[0]` is biased low for ~3·N bars                                  | Seed `EMA[N-1] = SMA(close, N)`, then recurse from bar `N`. Ignore first 3·N bars in backtests.           |
+| **RSI**            | Two valid avg-gain/loss methods (Wilder's RMA vs SMA) produce different numbers                  | Use **Wilder's RMA** to match TradingView. Document explicitly in code.                                   |
+| **RSI**            | First N values undefined                                                                         | Return `null` (not 50) for warm-up bars; treat as no-signal                                               |
+| **Stochastic**     | When `high_N == low_N` (perfectly flat bar), formula divides by zero                             | If range is zero, return `%K = 50`                                                                        |
+| **ATR**            | Bar 0 has no previous close → True Range undefined                                               | Use `high − low` for bar 0 only                                                                           |
+| **ATR**            | Mixing Wilder's smoothing for ATR with SMA elsewhere causes silent number drift                  | Use **Wilder's RMA** explicitly; name helpers `wilderSmooth(...)` vs `sma(...)`                           |
+| **Bollinger**      | Standard deviation: divide by N or N-1?                                                          | Divide by N (population stdev — Bollinger's original spec, TradingView default)                           |
+| **Bollinger**      | During calm periods, BB width approaches zero, "touch" rule fires constantly                     | Rules using band touches must also check `bbWidth > Yth percentile` over a window                         |
+| **OBV**            | Cumulative and unbounded — comparing OBV value across pairs is invalid                           | Use OBV **slope** (linear regression over last 10 bars) as the actual signal                              |
+| **VWAP**           | Crypto trades 24/7 — no natural session boundary                                                 | Reset at **00:00 UTC** daily. Compute only for 15m / 1h timeframes.                                       |
+| **Volume z-score** | Volume has strong time-of-day pattern; flat z-score over 20 bars compares 03:00 UTC to 14:00 UTC | Acceptable noise for v1. Time-of-day-bucketed z-score is **deferred to v2**.                              |
+| **Volume z-score** | If `stdev(volume, N) == 0`, division explodes                                                    | Guard: return 0                                                                                           |
+| **Realized vol**   | Annualization factor depends on timeframe                                                        | `bars_per_year = {1m: 525600, 5m: 105120, 15m: 35040, 1h: 8760, 4h: 2190, 1d: 365}`                       |
+| **Realized vol**   | First N log-returns include NaN if any candle has zero close                                     | Skip bars with zero or null close; require ≥N valid returns before emitting                               |
+| **All**            | Single-bar-update path may diverge from full-recomputation path                                  | Phase 1 acceptance: unit test asserts `update(state, candle) ≡ recompute(allCandles)` for every indicator |
 
 ---
 
@@ -202,12 +202,12 @@ Each timeframe produces an independent vote `{type, confidence, evidence}` using
 
 > **NOT IN ANY PHASE.** Recorded for context only.
 
-| Approach | Why rejected for v1 |
-|---|---|
-| **Decision tree** (hand-coded if/else nesting) | Brittle — one rule change reshapes outputs; hard to maintain |
+| Approach                                        | Why rejected for v1                                                                                |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| **Decision tree** (hand-coded if/else nesting)  | Brittle — one rule change reshapes outputs; hard to maintain                                       |
 | **Logistic regression on indicators → outcome** | Needs ~6 months of labeled outcomes per pair × TF before fitting; can't ship without training data |
-| **Random forest / gradient-boosted trees** | Same data dependency; opaque attribution; harder to audit |
-| **Fuzzy logic (membership functions, T-norms)** | More expressive but harder to debug; team needs to build fuzzy-logic literacy first |
+| **Random forest / gradient-boosted trees**      | Same data dependency; opaque attribution; harder to audit                                          |
+| **Fuzzy logic (membership functions, T-norms)** | More expressive but harder to debug; team needs to build fuzzy-logic literacy first                |
 
 **Forward path:** rule confluence today, logistic regression replaces hand-tuned strengths in a future phase once Phase 8 attribution data is rich enough. The rule structure stays; only the strengths become learned. Track as a future-phase candidate, not a v1 issue.
 
@@ -217,13 +217,13 @@ Each timeframe produces an independent vote `{type, confidence, evidence}` using
 interface Rule {
   name: string;
   direction: "bullish" | "bearish" | "gate";
-  strength: number;                          // contribution to score on fire
+  strength: number; // contribution to score on fire
   when: (state: IndicatorState) => boolean;
 
-  appliesTo: Timeframe[];                    // TFs the rule runs on
-  group?: string;                            // mutually-exclusive group
-  cooldownBars?: number;                     // suppress re-fire for N bars
-  requiresPrior: number;                     // bars of warm-up before eligible
+  appliesTo: Timeframe[]; // TFs the rule runs on
+  group?: string; // mutually-exclusive group
+  cooldownBars?: number; // suppress re-fire for N bars
+  requiresPrior: number; // bars of warm-up before eligible
 }
 ```
 
@@ -238,15 +238,16 @@ Selection logic:
 
 ```ts
 function scoreRules(state: IndicatorState, rules: Rule[]): FiredRule[] {
-  const fired = rules.filter(r =>
-    r.when(state) &&
-    r.appliesTo.includes(state.tf) &&
-    state.barsSinceStart >= r.requiresPrior &&
-    state.barsSinceLastFire(r) >= (r.cooldownBars ?? 0)
+  const fired = rules.filter(
+    (r) =>
+      r.when(state) &&
+      r.appliesTo.includes(state.tf) &&
+      state.barsSinceStart >= r.requiresPrior &&
+      state.barsSinceLastFire(r) >= (r.cooldownBars ?? 0),
   );
-  const byGroup = groupBy(fired, r => r.group ?? r.name);
-  return Object.values(byGroup).map(group =>
-    group.reduce((max, r) => (r.strength > max.strength ? r : max))
+  const byGroup = groupBy(fired, (r) => r.group ?? r.name);
+  return Object.values(byGroup).map((group) =>
+    group.reduce((max, r) => (r.strength > max.strength ? r : max)),
   );
 }
 ```
@@ -260,29 +261,40 @@ State carries current indicator values plus a 5-bar history ring buffer for cros
 ```ts
 interface IndicatorState {
   pair: string;
-  exchange: string;        // or "consensus" for canonicalized
+  exchange: string; // or "consensus" for canonicalized
   timeframe: Timeframe;
-  asOf: number;            // unix ms of latest closed candle
-  barsSinceStart: number;  // for requiresPrior gating
+  asOf: number; // unix ms of latest closed candle
+  barsSinceStart: number; // for requiresPrior gating
 
   // current bar
   rsi14: number;
-  ema20: number; ema50: number; ema200: number;
-  macdLine: number; macdSignal: number; macdHist: number;
+  ema20: number;
+  ema50: number;
+  ema200: number;
+  macdLine: number;
+  macdSignal: number;
+  macdHist: number;
   atr14: number;
-  bbUpper: number; bbMid: number; bbLower: number; bbWidth: number;
-  obv: number; obvSlope: number;          // slope over last 10 bars
-  vwap: number | null;                    // null on TFs other than 15m/1h
+  bbUpper: number;
+  bbMid: number;
+  bbLower: number;
+  bbWidth: number;
+  obv: number;
+  obvSlope: number; // slope over last 10 bars
+  vwap: number | null; // null on TFs other than 15m/1h
   volZ: number;
   realizedVolAnnualized: number;
-  fearGreed: number;                      // overlay, refreshed hourly
-  dispersion: number;                     // cross-exchange spread / median
+  fearGreed: number; // overlay, refreshed hourly
+  dispersion: number; // cross-exchange spread / median
 
   // 5-bar history (most recent first)
   history: {
-    rsi14: number[]; macdHist: number[];
-    ema20: number[]; ema50: number[];
-    close: number[]; volume: number[];
+    rsi14: number[];
+    macdHist: number[];
+    ema20: number[];
+    ema50: number[];
+    close: number[];
+    volume: number[];
   };
 }
 ```
@@ -327,11 +339,11 @@ where `(a, b)` are fit by minimizing log loss on the actual outcome history. Pro
 
 ### 4.5 Three terminal states (not two)
 
-| State | Meaning | When |
-|---|---|---|
-| `signal: {type, confidence, ...}` | Normal output | Rules fire above threshold, no gates |
-| `signal: {type: "hold", volatilityFlag: true, gateReason}` | Gated hold | Vol / dispersion / stale-data gate fired |
-| `null` | No opinion | Warm-up, missing required indicators, exchange data unavailable |
+| State                                                      | Meaning       | When                                                            |
+| ---------------------------------------------------------- | ------------- | --------------------------------------------------------------- |
+| `signal: {type, confidence, ...}`                          | Normal output | Rules fire above threshold, no gates                            |
+| `signal: {type: "hold", volatilityFlag: true, gateReason}` | Gated hold    | Vol / dispersion / stale-data gate fired                        |
+| `null`                                                     | No opinion    | Warm-up, missing required indicators, exchange data unavailable |
 
 `null` is distinct from `hold`. `hold` means "I have an opinion: stay out." `null` means "I don't have an opinion." UIs must surface the distinction (e.g. greyed-out vs. yellow `hold` chip).
 
@@ -341,19 +353,21 @@ Three independent gates, any of which forces `type = "hold"`:
 
 **Volatility gate** — per-pair absolute annualized-vol thresholds for v1. Migrate to 30-day z-score in v2 once history exists.
 
-| Pair | Vol gate threshold (annualized) |
-|---|---|
-| BTC/USDT | 150% |
-| ETH/USDT | 200% |
-| SOL/USDT | 300% |
-| XRP/USDT | 250% |
-| DOGE/USDT | 350% |
+| Pair      | Vol gate threshold (annualized) |
+| --------- | ------------------------------- |
+| BTC/USDT  | 150%                            |
+| ETH/USDT  | 200%                            |
+| SOL/USDT  | 300%                            |
+| XRP/USDT  | 250%                            |
+| DOGE/USDT | 350%                            |
 
 Computed from log returns of the timeframe in question:
+
 ```
 log_returns = ln(close[t] / close[t-1])  // last N bars
 realized_vol = stdev(log_returns) · sqrt(bars_per_year)
 ```
+
 `bars_per_year = {1m: 525600, 5m: 105120, 15m: 35040, 1h: 8760, 4h: 2190, 1d: 365}`
 
 **Dispersion gate** — cross-exchange agreement check. Decided in §2: drop stale exchanges, take median, compute `dispersion = (max − min) / median` across remainder. Gate when `dispersion > 0.01` (1%) sustained for 3 consecutive bars on the timeframe in question. Catches single-venue flash crashes and exchange-specific glitches.
@@ -361,6 +375,7 @@ realized_vol = stdev(log_returns) · sqrt(bars_per_year)
 **Stale gate** — if ≥2 of 3 exchanges flag `stale: true` on their latest tick, gate `hold` until ≥2 are fresh again.
 
 Existing constant:
+
 ```ts
 // packages/shared/src/constants/signals.ts (already shipped)
 export const VOLATILITY_BANNER =
@@ -373,16 +388,16 @@ The banner copy may need expansion when the gate reason is dispersion or stale, 
 
 Direct input to Appendix A. Each rule declares `appliesTo: Timeframe[]`.
 
-| Rule (from Appendix A) | 15m | 1h | 4h | 1d |
-|---|---|---|---|---|
-| `rsi-oversold-strong` / `rsi-oversold` | ✅ | ✅ | ✅ | ✅ |
-| `rsi-overbought-strong` / `rsi-overbought` | ✅ | ✅ | ✅ | ✅ |
-| `ema-stack-bull` / `ema-stack-bear` | ❌ | ❌ | ✅ | ✅ |
-| `macd-cross-bull` / `macd-cross-bear` | ❌ | ✅ | ✅ | ✅ |
-| `bollinger-touch-lower` / `-upper` | ❌ | ❌ | ✅ | ✅ |
-| `volume-spike-bull` / `-bear` | ✅ | ✅ | ✅ | ✅ |
-| `fng-extreme-greed` / `-extreme-fear` | ✅ | ✅ | ✅ | ✅ |
-| `vwap-cross-bull` / `-bear` (future) | ✅ | ✅ | ❌ | ❌ |
+| Rule (from Appendix A)                     | 15m | 1h  | 4h  | 1d  |
+| ------------------------------------------ | --- | --- | --- | --- |
+| `rsi-oversold-strong` / `rsi-oversold`     | ✅  | ✅  | ✅  | ✅  |
+| `rsi-overbought-strong` / `rsi-overbought` | ✅  | ✅  | ✅  | ✅  |
+| `ema-stack-bull` / `ema-stack-bear`        | ❌  | ❌  | ✅  | ✅  |
+| `macd-cross-bull` / `macd-cross-bear`      | ❌  | ✅  | ✅  | ✅  |
+| `bollinger-touch-lower` / `-upper`         | ❌  | ❌  | ✅  | ✅  |
+| `volume-spike-bull` / `-bear`              | ✅  | ✅  | ✅  | ✅  |
+| `fng-extreme-greed` / `-extreme-fear`      | ✅  | ✅  | ✅  | ✅  |
+| `vwap-cross-bull` / `-bear` (future)       | ✅  | ✅  | ❌  | ❌  |
 
 Rationale for the `❌` cells: `ema-stack` and `bollinger-touch` rules fire too frequently on shorter timeframes during quiet periods, producing false-positive signals that the user has to filter out. `macd-cross-bull` on 15m bars is similarly noisy. VWAP is intraday-only by definition (§3.8).
 
@@ -406,15 +421,16 @@ state = {
 
 Rules fired (after group-max selection, after `appliesTo` filter):
 
-| Rule | Direction | Strength |
-|---|---|---|
-| `rsi-oversold` (group: rsi-oversold-tier) | bullish | +1.0 |
-| `macd-cross-bull` | bullish | +1.0 |
-| `fng-extreme-fear` | bullish | +0.3 |
-| `ema-stack-bear` | bearish | +0.8 |
-| `volume-spike-bull` | — (close < open, condition fails) | — |
+| Rule                                      | Direction                         | Strength |
+| ----------------------------------------- | --------------------------------- | -------- |
+| `rsi-oversold` (group: rsi-oversold-tier) | bullish                           | +1.0     |
+| `macd-cross-bull`                         | bullish                           | +1.0     |
+| `fng-extreme-fear`                        | bullish                           | +0.3     |
+| `ema-stack-bear`                          | bearish                           | +0.8     |
+| `volume-spike-bull`                       | — (close < open, condition fails) | —        |
 
 Score:
+
 ```
 bullish = 1.0 + 1.0 + 0.3 = 2.3
 bearish = 0.8
@@ -427,7 +443,8 @@ volatilityFlag = false (no gate fired)
 ```
 
 Reasoning string the algo emits (LLM ratification then refines):
-> *"Oversold RSI plus fresh MACD bullish cross on the 1h, with extreme fear sentiment supporting a contrarian bounce. Daily-style EMA stack remains bearish — keeps confidence moderate. Bounce candidate, not a trend reversal."*
+
+> _"Oversold RSI plus fresh MACD bullish cross on the 1h, with extreme fear sentiment supporting a contrarian bounce. Daily-style EMA stack remains bearish — keeps confidence moderate. Bounce candidate, not a trend reversal."_
 
 This is the kind of signal the algo emits cleanly. Mean-reversion buy against the longer-term trend is a valid setup at lower confidence — precisely what the formula expresses.
 
@@ -441,24 +458,25 @@ The user picked multi-horizon: compute on 15m / 1h / 4h / 1d, blend into one sig
 
 - 1d catches regime; 4h catches trend; 1h catches setup; 15m catches entry timing.
 - Disagreement between horizons is itself informative — "bullish on 1d, bearish on 1h" is a "hold for now, watch the 1h reversal" signal, not a buy or a sell.
-- Makes confidence better calibrated: when *all* horizons agree, confidence is high; when they conflict, confidence drops.
+- Makes confidence better calibrated: when _all_ horizons agree, confidence is high; when they conflict, confidence drops.
 
 ### 5.2 Weighting
 
 Default weights (tunable per-pair after calibration):
 
-| Timeframe | Weight | Rationale |
-|---|---|---|
-| 1d | 0.35 | Regime — most predictive over multi-day windows |
-| 4h | 0.30 | Trend |
-| 1h | 0.20 | Setup |
-| 15m | 0.15 | Entry timing |
+| Timeframe | Weight | Rationale                                       |
+| --------- | ------ | ----------------------------------------------- |
+| 1d        | 0.35   | Regime — most predictive over multi-day windows |
+| 4h        | 0.30   | Trend                                           |
+| 1h        | 0.20   | Setup                                           |
+| 15m       | 0.15   | Entry timing                                    |
 
 5m and 1m are **not used for the headline signal**. They drive the streaming UI, not Genie's recommendation, because the noise-to-signal ratio is brutal at those timeframes for an advisory product.
 
 ### 5.3 Blending formula
 
 Map each per-timeframe vote to a scalar in `[-1, +1]`:
+
 - `buy` → `+confidence`
 - `sell` → `-confidence`
 - `hold` → `0`
@@ -479,7 +497,7 @@ volatilityFlag = OR of per-tf volatility gates
 
 ### 5.4 Disagreement handling
 
-If `1d` says `buy` and `1h` says `sell`, the blended scalar might still be bullish but with low magnitude — naturally resolves to `hold` via the threshold `T`. The reasoning string should call this out explicitly: *"Daily trend is up but the 1h is rolling over. Wait for confirmation."*
+If `1d` says `buy` and `1h` says `sell`, the blended scalar might still be bullish but with low magnitude — naturally resolves to `hold` via the threshold `T`. The reasoning string should call this out explicitly: _"Daily trend is up but the 1h is rolling over. Wait for confirmation."_
 
 **Decision: keep the 3-type schema (`buy / sell / hold`). Do not add a `conflict` type in v1.** The reasoning string is the right surface for inter-TF disagreement. Adding a 4th type would touch the `Signal.type` enum, signal history, accuracy scoring, and the UI chip set — too much change for nuance the LLM can express in prose. Revisit if user research shows the distinction matters.
 
@@ -528,14 +546,14 @@ Per-pair tuning (e.g. DOGE may benefit from a 15m-heavier vector since it lacks 
 
 ### 5.8 Edge cases — explicit table
 
-| Case | Recommended behavior |
-|---|---|
-| All 4 TFs vote `null` | Blend returns `null`. UI: "warming up — no signal yet." |
-| All 4 TFs vote `hold` (no gates) | Blend returns `hold` at confidence 0.5. |
-| 3 TFs `null`, 1 TF votes | Re-normalized weight = 1.0 on the voting TF. Blend confidence multiplied by 0.7 to reflect single-source uncertainty. |
-| Any TF has `volatilityFlag: true` | Blend forces `type = "hold"`, `volatilityFlag: true`, `gateReason: "vol"`. Confidence = 0.5. |
-| Any TF has `gateReason = "dispersion"` or `"stale"` | Blend forces `type = "hold"`, propagates the gateReason. Confidence = 0.5. |
-| Mixed gates (e.g. 4h `vol`-gated, 1h `stale`-gated) | Priority: `vol` > `dispersion` > `stale`. Blend's `gateReason` is the highest-priority one fired on any TF. |
+| Case                                                | Recommended behavior                                                                                                  |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| All 4 TFs vote `null`                               | Blend returns `null`. UI: "warming up — no signal yet."                                                               |
+| All 4 TFs vote `hold` (no gates)                    | Blend returns `hold` at confidence 0.5.                                                                               |
+| 3 TFs `null`, 1 TF votes                            | Re-normalized weight = 1.0 on the voting TF. Blend confidence multiplied by 0.7 to reflect single-source uncertainty. |
+| Any TF has `volatilityFlag: true`                   | Blend forces `type = "hold"`, `volatilityFlag: true`, `gateReason: "vol"`. Confidence = 0.5.                          |
+| Any TF has `gateReason = "dispersion"` or `"stale"` | Blend forces `type = "hold"`, propagates the gateReason. Confidence = 0.5.                                            |
+| Mixed gates (e.g. 4h `vol`-gated, 1h `stale`-gated) | Priority: `vol` > `dispersion` > `stale`. Blend's `gateReason` is the highest-priority one fired on any TF.           |
 
 ---
 
@@ -560,10 +578,10 @@ Per-pair tuning (e.g. DOGE may benefit from a 15m-heavier vector since it lacks 
 Sentiment is **not** treated as an algo rule. It enters at the LLM ratification step (§7). Why:
 
 - Sentiment is qualitative. Trying to express "Coinbase delisting rumor" as `+0.8` on a fixed rule is a brittle hack.
-- The LLM is already good at reading a 200-word headline and deciding *"this materially changes my view of the next 4h."*
+- The LLM is already good at reading a 200-word headline and deciding _"this materially changes my view of the next 4h."_
 - Keeping sentiment out of the algo preserves backtestability — algo signals are deterministic from candles alone. Sentiment overlays are tracked separately for attribution.
 
-The Fear & Greed Index *is* a hard rule (it's a single number, well-defined): when the index is in `extreme greed` (>75), apply a small bearish bias; in `extreme fear` (<25), apply a small bullish bias (contrarian, well-supported empirically). Magnitude: ±0.3 confidence shift, never enough to flip direction.
+The Fear & Greed Index _is_ a hard rule (it's a single number, well-defined): when the index is in `extreme greed` (>75), apply a small bearish bias; in `extreme fear` (<25), apply a small bullish bias (contrarian, well-supported empirically). Magnitude: ±0.3 confidence shift, never enough to flip direction.
 
 ### 6.4 Sentiment classifier — Haiku in JSON mode
 
@@ -576,11 +594,12 @@ const result = await anthropic.messages.create({
   max_tokens: 200,
   system: `Classify the sentiment of a crypto news article. Return JSON only.
   Schema: { score: -1..+1, magnitude: 0..1, topic: string, mentionedPairs: string[] }`,
-  messages: [{ role: "user", content: `Title: ${title}\n\nBody: ${body.slice(0, 2000)}` }]
+  messages: [{ role: "user", content: `Title: ${title}\n\nBody: ${body.slice(0, 2000)}` }],
 });
 ```
 
 Reasons over self-hosted FinBERT-style classifier:
+
 - Zero model hosting / dependency overhead
 - Updatable without redeploying (system prompt change → behavior change)
 - Crypto vocab stays current (FinBERT was trained pre-2023; vocabulary lags)
@@ -621,6 +640,7 @@ for each new article:
 Provider: OpenAI `text-embedding-3-small` or equivalent. Cost ~$0.0001/article × 50/day = ~$0.15/mo.
 
 **Caveat — backtest determinism:** embedding models version (e.g. `text-embedding-3-small` ≠ `-3-large` ≠ `ada-002`). Backtests against historical news will produce different dedup decisions if rerun on a different embedding model version. **Mitigation:**
+
 - Pin the embedding model version in code (e.g. `text-embedding-3-small` exactly), and require a deliberate migration when bumping
 - Persist the embedding model version alongside each cached vector in DDB (`{vector, model: "text-embedding-3-small", articleId, expiresAt}`)
 - For backtests, reuse the persisted vectors rather than re-embedding (the historical articles already have their decision baked in)
@@ -643,34 +663,34 @@ The breaking-news invalidation mechanism (high-magnitude article → mark active
 type SentimentBundle = {
   pair: string;
   windows: {
-    "4h":  { score: number; magnitude: number; articleCount: number };
+    "4h": { score: number; magnitude: number; articleCount: number };
     "24h": { score: number; magnitude: number; articleCount: number };
   };
   recentArticles: Array<{
-    title: string;             // for the LLM to read and quote
-    sentiment: number;         // -1..+1
-    magnitude: number;         // 0..1
-    source: string;            // "alpaca" | "coindesk" | "cointelegraph" | "decrypt"
-    publishedAt: string;       // ISO8601
-    url: string;               // for citation in reasoning string
-  }>;  // top 5 most recent + most magnitude-weighted, deduped, last 24h
+    title: string; // for the LLM to read and quote
+    sentiment: number; // -1..+1
+    magnitude: number; // 0..1
+    source: string; // "alpaca" | "coindesk" | "cointelegraph" | "decrypt"
+    publishedAt: string; // ISO8601
+    url: string; // for citation in reasoning string
+  }>; // top 5 most recent + most magnitude-weighted, deduped, last 24h
   fearGreed: { value: number; trend24h: number };
 };
 ```
 
-The LLM gets aggregated numbers (windows) plus the **top 5 specific articles** so it can quote one in the reasoning string. Quoting matters for product trust: *"the Coinbase staking news at 14:12 keeps confidence below 0.6"* is much better UX than *"sentiment-adjusted hold."*
+The LLM gets aggregated numbers (windows) plus the **top 5 specific articles** so it can quote one in the reasoning string. Quoting matters for product trust: _"the Coinbase staking news at 14:12 keeps confidence below 0.6"_ is much better UX than _"sentiment-adjusted hold."_
 
 5 articles × ~200 chars each = ~1KB of additional prompt — cheap.
 
 ### 6.9 What §6 explicitly defers
 
-| Topic | Phase |
-|---|---|
-| Per-source weighting (Alpaca vs RSS reliability) | Phase 8 (need attribution data) |
-| Recency decay / magnitude weighting in aggregation | Phase 8 |
+| Topic                                                   | Phase                                              |
+| ------------------------------------------------------- | -------------------------------------------------- |
+| Per-source weighting (Alpaca vs RSS reliability)        | Phase 8 (need attribution data)                    |
+| Recency decay / magnitude weighting in aggregation      | Phase 8                                            |
 | Migration off Haiku JSON mode to self-hosted classifier | Phase 9+ (only if scale or backtest needs justify) |
-| Real-time news invalidation banner | Phase 6 (LLM ratification's natural feature) |
-| X/Twitter sentiment | Post-Phase-8 (already non-goal in §2) |
+| Real-time news invalidation banner                      | Phase 6 (LLM ratification's natural feature)       |
+| X/Twitter sentiment                                     | Post-Phase-8 (already non-goal in §2)              |
 
 ---
 
@@ -679,6 +699,7 @@ The LLM gets aggregated numbers (windows) plus the **top 5 specific articles** s
 ### 7.1 When to invoke
 
 Only when **all** of:
+
 - Algo confidence ≥ 0.6 (we don't ratify weak signals; they stay weak)
 - One of the following is true:
   - There has been ≥1 article tagged for this pair in the last 30 minutes (sentiment context exists)
@@ -732,6 +753,7 @@ Validate the response server-side: if `type` violates the allowed-transformation
 Trade-off: Haiku 4.5 (~$0.001/call) vs Sonnet 4.6 (~$0.012/call). Sonnet picked because **reasoning quality is a stated v1 goal (§1)** and the unit cost difference is small in absolute terms. The `reasoning` string is product UX; better narrative quality directly improves user trust.
 
 **Cost envelope:**
+
 - Per-pair daily cap (§7.5): 100/pair × 5 pairs = **500/day maximum**
 - Realistic average given §7.5 gating: 300–800/day
 - Sonnet 4.6: **$3.60–9.60/day average; ~$6/day at the per-pair cap ceiling**
@@ -741,25 +763,26 @@ Migrate to Haiku-only or per-slice routing only if Phase 8 attribution shows the
 
 ### 7.4 Allowed transformations — full table
 
-| From | To | Allowed? | Reason |
-|---|---|---|---|
-| `buy` | `hold` | ✅ | Downgrade — bearish context cancels |
-| `buy` | `sell` | ❌ | Sign flip bypasses algo's deterministic rules |
-| `buy` | `buy` (lower conf) | ✅ | Confidence reduction |
-| `buy` | `buy` (higher conf) | ❌ | LLM can't be more bullish than algo |
-| `sell` | `hold` | ✅ | Downgrade |
-| `sell` | `buy` | ❌ | Sign flip |
-| `sell` | `sell` (lower conf) | ✅ | Confidence reduction |
-| `sell` | `sell` (higher conf) | ❌ | LLM can't be more bearish than algo |
-| `hold` | `buy` | ❌ | LLM can't invent direction |
-| `hold` | `sell` | ❌ | Same |
-| `hold` | `hold` (any conf) | ✅ | |
+| From   | To                   | Allowed? | Reason                                        |
+| ------ | -------------------- | -------- | --------------------------------------------- |
+| `buy`  | `hold`               | ✅       | Downgrade — bearish context cancels           |
+| `buy`  | `sell`               | ❌       | Sign flip bypasses algo's deterministic rules |
+| `buy`  | `buy` (lower conf)   | ✅       | Confidence reduction                          |
+| `buy`  | `buy` (higher conf)  | ❌       | LLM can't be more bullish than algo           |
+| `sell` | `hold`               | ✅       | Downgrade                                     |
+| `sell` | `buy`                | ❌       | Sign flip                                     |
+| `sell` | `sell` (lower conf)  | ✅       | Confidence reduction                          |
+| `sell` | `sell` (higher conf) | ❌       | LLM can't be more bearish than algo           |
+| `hold` | `buy`                | ❌       | LLM can't invent direction                    |
+| `hold` | `sell`               | ❌       | Same                                          |
+| `hold` | `hold` (any conf)    | ✅       |                                               |
 
 **Confidence increases are forbidden.** Calibration consistency outweighs catching the rare confirming-news case (e.g. "BTC ETF approved" landing during an algo `buy 0.7` — LLM cannot push it to 0.9). Revisit only if Phase 8 attribution shows the algo systematically under-weights confirming news.
 
 ### 7.5 Cost gating — when NOT to invoke
 
 Gating conditions (must satisfy all):
+
 - Algo confidence ≥ 0.6 (don't ratify weak signals — let them stay weak)
 - AT LEAST ONE OF:
   - ≥1 article tagged for this pair in the last 30 minutes (sentiment context exists)
@@ -767,6 +790,7 @@ Gating conditions (must satisfy all):
   - Fear & Greed shifted ≥10 points in 24h (regime indicator)
 
 Plus rate limits:
+
 - **Per-(pair, TF) rate limit:** max 1 ratification per `(pair, TF)` per 5 minutes
 - **Per-pair daily cap:** 100 ratification calls per pair per day. Above the cap, only ratify when ALL gating conditions fire simultaneously (rare extreme cases).
 
@@ -800,7 +824,7 @@ Validate every LLM response server-side before applying. Code shape:
 ```ts
 function validateRatification(
   candidate: TimeframeVote,
-  llmResponse: { type, confidence, reasoning, downgraded, downgradeReason }
+  llmResponse: { type; confidence; reasoning; downgraded; downgradeReason },
 ): { ok: boolean; reason?: string; ratified?: TimeframeVote } {
   // 1. Type transformation rules (§7.4 table)
   if (candidate.type === "hold" && llmResponse.type !== "hold") {
@@ -824,13 +848,22 @@ function validateRatification(
   }
 
   // 4. Reasoning sanity
-  if (!llmResponse.reasoning || llmResponse.reasoning.length < 20 || llmResponse.reasoning.length > 600) {
+  if (
+    !llmResponse.reasoning ||
+    llmResponse.reasoning.length < 20 ||
+    llmResponse.reasoning.length > 600
+  ) {
     return { ok: false, reason: "reasoning length out of bounds" };
   }
 
   return {
     ok: true,
-    ratified: { ...candidate, type: llmResponse.type, confidence: llmResponse.confidence, reasoning: llmResponse.reasoning },
+    ratified: {
+      ...candidate,
+      type: llmResponse.type,
+      confidence: llmResponse.confidence,
+      reasoning: llmResponse.reasoning,
+    },
   };
 }
 ```
@@ -841,15 +874,15 @@ On validation failure: **fall back to the algo signal unchanged** and log the fa
 
 All map to fallback ("use algo signal verbatim"); only the log action differs.
 
-| Failure | Action |
-|---|---|
-| LLM call times out (> 3s p99) | Fallback. Log latency. |
-| LLM returns invalid JSON | Fallback. Log raw. |
-| LLM violates type transform (hold→buy etc.) | Fallback. Log + alert if rate > 1%/day. |
-| LLM increases confidence | Fallback. Log raw. |
-| Reasoning < 20 or > 600 chars | Fallback. Log raw. |
-| LLM provider outage | Fallback. Algo signals continue to flow. |
-| Daily cap exceeded for pair | Skip ratification (cost gating, not failure). |
+| Failure                                     | Action                                        |
+| ------------------------------------------- | --------------------------------------------- |
+| LLM call times out (> 3s p99)               | Fallback. Log latency.                        |
+| LLM returns invalid JSON                    | Fallback. Log raw.                            |
+| LLM violates type transform (hold→buy etc.) | Fallback. Log + alert if rate > 1%/day.       |
+| LLM increases confidence                    | Fallback. Log raw.                            |
+| Reasoning < 20 or > 600 chars               | Fallback. Log raw.                            |
+| LLM provider outage                         | Fallback. Algo signals continue to flow.      |
+| Daily cap exceeded for pair                 | Skip ratification (cost gating, not failure). |
 
 The system never depends on the LLM being up. Algo is the source of truth; LLM is an opt-in refinement.
 
@@ -861,15 +894,15 @@ Persist every ratification call (success, failure, cache hit) to a `ratification
 type RatificationRecord = {
   pair: string;
   timeframe: Timeframe;
-  algoCandidate: TimeframeVote;             // input
-  llmRequest: { model, systemHash, userJsonHash };  // for replay
-  llmRawResponse: object | null;             // before validation; null on cache hit
+  algoCandidate: TimeframeVote; // input
+  llmRequest: { model; systemHash; userJsonHash }; // for replay
+  llmRawResponse: object | null; // before validation; null on cache hit
   cacheHit: boolean;
   validation: { ok: boolean; reason?: string };
-  ratified: TimeframeVote | null;            // post-validation; null if fellback
+  ratified: TimeframeVote | null; // post-validation; null if fellback
   fellBackToAlgo: boolean;
   latencyMs: number;
-  costUsd: number;                           // 0 on cache hit
+  costUsd: number; // 0 on cache hit
   invokedReason: "news" | "vol" | "fng-shift" | "all";
   invokedAt: string;
 };
@@ -885,16 +918,16 @@ This section is the **consumer-side** spec — how `whale_events` produced by th
 
 ### 8.1 Source-of-truth ownership
 
-| Concern | Owner |
-|---|---|
-| Architecture (Alchemy, Fargate `WhaleMonitor`, classifier, DDB schema) | `WHALE_MONITORING.md` |
-| Watchlist sourcing and curation | `WHALE_MONITORING.md` |
-| Per-asset detection thresholds (ETH 100, WBTC 5, USDT $500K, other $250K) | `WHALE_MONITORING.md` |
+| Concern                                                                      | Owner                 |
+| ---------------------------------------------------------------------------- | --------------------- |
+| Architecture (Alchemy, Fargate `WhaleMonitor`, classifier, DDB schema)       | `WHALE_MONITORING.md` |
+| Watchlist sourcing and curation                                              | `WHALE_MONITORING.md` |
+| Per-asset detection thresholds (ETH 100, WBTC 5, USDT $500K, other $250K)    | `WHALE_MONITORING.md` |
 | Raw signal-type taxonomy (deposit/withdrawal/stablecoin-inflow/dormant/etc.) | `WHALE_MONITORING.md` |
-| Aggregation shape consumed by the signal engine (this `WhaleSummary`) | **§8** |
-| LLM ratification prompt shape for whale context | **§8** |
-| When/whether whale flow becomes an algo hard rule | **§8** |
-| Cross-chain coverage policy and graceful degradation | **§8** |
+| Aggregation shape consumed by the signal engine (this `WhaleSummary`)        | **§8**                |
+| LLM ratification prompt shape for whale context                              | **§8**                |
+| When/whether whale flow becomes an algo hard rule                            | **§8**                |
+| Cross-chain coverage policy and graceful degradation                         | **§8**                |
 
 The two docs reference each other but do not contradict. Per-asset thresholds were duplicated/conflicting in earlier drafts (§8 said `>$1M`, WHALE_MONITORING.md had per-asset values). **Per-asset thresholds in WHALE_MONITORING.md are authoritative.**
 
@@ -902,13 +935,13 @@ The two docs reference each other but do not contradict. Per-asset thresholds we
 
 `WHALE_MONITORING.md` targets ETH + Polygon via Alchemy. Coverage map for our 5 tracked pairs:
 
-| Pair | Native chain | v1 whale coverage |
-|---|---|---|
-| BTC/USDT | Bitcoin | **Partial** — WBTC on ETH only (~5% of BTC supply moves through wrapped) |
-| ETH/USDT | Ethereum | **Full** |
-| SOL/USDT | Solana | **None** — Solana not monitored in v1 |
-| XRP/USDT | XRPL | **None** |
-| DOGE/USDT | Dogecoin | **None** |
+| Pair      | Native chain | v1 whale coverage                                                        |
+| --------- | ------------ | ------------------------------------------------------------------------ |
+| BTC/USDT  | Bitcoin      | **Partial** — WBTC on ETH only (~5% of BTC supply moves through wrapped) |
+| ETH/USDT  | Ethereum     | **Full**                                                                 |
+| SOL/USDT  | Solana       | **None** — Solana not monitored in v1                                    |
+| XRP/USDT  | XRPL         | **None**                                                                 |
+| DOGE/USDT | Dogecoin     | **None**                                                                 |
 
 For SOL / XRP / DOGE, the LLM ratification prompt receives an explicit "whale data unavailable for this pair" marker (rather than `null` that the LLM might silently misinterpret). Reasoning strings for those pairs cannot speculate about whale flow.
 
@@ -923,31 +956,36 @@ type WhaleSummary = {
   pair: string;
   coverage: "full" | "partial" | "none"; // per §8.2 coverage map
   windows: {
-    "1h":  WhaleWindow;
-    "4h":  WhaleWindow;
+    "1h": WhaleWindow;
+    "4h": WhaleWindow;
     "24h": WhaleWindow;
   };
   recentEvents: Array<{
     txHash: string;
     valueUsd: number;
-    signalType: "exchange_deposit" | "exchange_withdrawal" | "stablecoin_inflow" | "large_transfer" | "dormant_activation";
+    signalType:
+      | "exchange_deposit"
+      | "exchange_withdrawal"
+      | "stablecoin_inflow"
+      | "large_transfer"
+      | "dormant_activation";
     direction: "bullish" | "bearish" | "neutral";
-    fromLabel: string | null;       // e.g. "binance", "jump_trading", "dormant_2y"
+    fromLabel: string | null; // e.g. "binance", "jump_trading", "dormant_2y"
     toLabel: string | null;
     timestamp: string;
-  }>;  // top 5 by valueUsd within last 24h, deduped by txHash
+  }>; // top 5 by valueUsd within last 24h, deduped by txHash
   computedAt: string;
 };
 
 type WhaleWindow = {
-  netFlowUsd: number;          // bullish-positive: outflows − inflows
+  netFlowUsd: number; // bullish-positive: outflows − inflows
   exchangeInflowUsd: number;
   exchangeOutflowUsd: number;
   eventCount: number;
   bullishEventCount: number;
   bearishEventCount: number;
   dormantActivations: number;
-  correlatedMoves: number;     // ≥3 whales same direction in 30min
+  correlatedMoves: number; // ≥3 whales same direction in 30min
 };
 ```
 
@@ -969,6 +1007,7 @@ whaleSummary: {
 - `unavailable`: no `WhaleSummary` exists for this pair, or `coverage === "none"`
 
 The LLM is instructed to:
+
 - Ignore whale flow when `coverage === "none"` (no speculation)
 - Note staleness in `reasoning` if `staleness !== "fresh"` ("whale flow data is stale by 18 minutes")
 - Quote a specific event from `recentEvents` when one is materially relevant ("100 ETH moved from a dormant 2-year wallet to Coinbase 12 minutes ago")
@@ -978,6 +1017,7 @@ The LLM is instructed to:
 Same backtestability rationale as sentiment (§6): whale data does not enter the algo's deterministic rule confluence in v1. It enters only the LLM ratification step.
 
 This preserves:
+
 - Backtestability — algo signals reproducible from candles alone
 - Attribution clarity — whale-derived value can be measured separately by toggling LLM ratification on/off in offline replays
 - Compliance defensibility — "the algorithm fired on RSI + MACD; the LLM downgraded based on whale flow context"
@@ -991,11 +1031,11 @@ A whale-derived hard rule earns its slot in the algo only when, over **≥30 res
 
 Concrete candidate hard rules to evaluate post-Phase-8:
 
-| Candidate | Condition | Effect |
-|---|---|---|
-| `whale-net-inflow-extreme` | `exchangeInflowUsd / 24h_average > 5` | Force `hold` (overrides bullish algo signal) |
-| `whale-net-outflow-confirming` | `exchangeOutflowUsd > $5M in 4h` AND algo signal is bullish | +0.4 strength bullish (confluence boost) |
-| `whale-dormant-activation` | dormant wallet activation in last 1h | Force `hold` (uncertainty pre-news) |
+| Candidate                      | Condition                                                   | Effect                                       |
+| ------------------------------ | ----------------------------------------------------------- | -------------------------------------------- |
+| `whale-net-inflow-extreme`     | `exchangeInflowUsd / 24h_average > 5`                       | Force `hold` (overrides bullish algo signal) |
+| `whale-net-outflow-confirming` | `exchangeOutflowUsd > $5M in 4h` AND algo signal is bullish | +0.4 strength bullish (confluence boost)     |
+| `whale-dormant-activation`     | dormant wallet activation in last 1h                        | Force `hold` (uncertainty pre-news)          |
 
 None of these ship in v1. Track the data; let attribution decide.
 
@@ -1012,19 +1052,19 @@ This matches the LLM/sentiment pattern: advisory inputs gracefully degrade; the 
 ### 8.8 Privacy / compliance
 
 - Don't store user wallet addresses (we have no on-chain user identity to begin with)
-- Don't surface specific wallet addresses in user-facing reasoning strings — use labels (e.g. *"a known Coinbase wallet"*) rather than `0xabc...`
+- Don't surface specific wallet addresses in user-facing reasoning strings — use labels (e.g. _"a known Coinbase wallet"_) rather than `0xabc...`
 - Don't republish the watchlist externally (it's a derivative work of public attribution sources; safer to keep internal)
 - Internal storage of wallet addresses with labels is fine — only the user-facing reasoning string is sanitized
 
 ### 8.9 What §8 explicitly defers
 
-| Topic | Phase |
-|---|---|
-| SOL / XRP / DOGE whale monitoring | Phase 9 (Solana first if ETH proves predictive) |
-| Native BTC node monitoring (vs WBTC proxy) | Phase 9+ |
-| Hard-rule promotion of any whale signal | Phase 8 attribution (≥30 resolved signals) |
-| Multi-chain DEX swap detection (vs CEX-flow only) | Phase 10+ |
-| Real-time correlated-whale-move detection | Phase 9 (correlated-moves field exists in summary; detector lives in producer) |
+| Topic                                             | Phase                                                                          |
+| ------------------------------------------------- | ------------------------------------------------------------------------------ |
+| SOL / XRP / DOGE whale monitoring                 | Phase 9 (Solana first if ETH proves predictive)                                |
+| Native BTC node monitoring (vs WBTC proxy)        | Phase 9+                                                                       |
+| Hard-rule promotion of any whale signal           | Phase 8 attribution (≥30 resolved signals)                                     |
+| Multi-chain DEX swap detection (vs CEX-flow only) | Phase 10+                                                                      |
+| Real-time correlated-whale-move detection         | Phase 9 (correlated-moves field exists in summary; detector lives in producer) |
 
 ---
 
@@ -1057,13 +1097,14 @@ Per-pair (rather than single global) because crypto pairs behave very differentl
 
 ### 9.3 Position sizing — three models
 
-| Model | Formula | Default for |
-|---|---|---|
-| **Fixed-fractional** | `sizePct = risk_pct[profile]` (e.g. 0.5% / 1% / 2% per profile) | Conservative profile, all users; everyone pre-Kelly-unlock |
-| **Volatility-targeted** | `sizePct = risk_pct[profile] / (ATR_pct · multiplier)` | Moderate / aggressive profiles where ATR makes raw-pct unstable |
-| **Kelly-fractional** | `sizePct = 0.25 · kelly_f`, where `kelly_f = (p·b − q) / b` | Aggressive profile (only) once Kelly unlock conditions met |
+| Model                   | Formula                                                         | Default for                                                     |
+| ----------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Fixed-fractional**    | `sizePct = risk_pct[profile]` (e.g. 0.5% / 1% / 2% per profile) | Conservative profile, all users; everyone pre-Kelly-unlock      |
+| **Volatility-targeted** | `sizePct = risk_pct[profile] / (ATR_pct · multiplier)`          | Moderate / aggressive profiles where ATR makes raw-pct unstable |
+| **Kelly-fractional**    | `sizePct = 0.25 · kelly_f`, where `kelly_f = (p·b − q) / b`     | Aggressive profile (only) once Kelly unlock conditions met      |
 
 Per-profile risk-pct defaults:
+
 - Conservative: 0.5% per trade
 - Moderate: 1.0% per trade
 - Aggressive: 2.0% per trade
@@ -1071,6 +1112,7 @@ Per-profile risk-pct defaults:
 #### 9.3.1 Kelly unlock — bounded plausible regime
 
 Kelly only unlocks for a `(pair, timeframe)` slice when **all** of:
+
 - `n ≥ 50` resolved signals for that slice
 - `p ∈ [0.45, 0.65]` (sane accuracy band — outside this, the slice is mis-classified or the rule library mis-fires)
 - `b ∈ [0.5, 3.0]` (sane win/loss-ratio band — outside this, the resolution math is suspect)
@@ -1088,6 +1130,7 @@ sell_stop = entry_price + stop_distance
 ```
 
 `stop_multiplier` per profile:
+
 - Conservative: 1.5× ATR
 - Moderate: 2.0× ATR
 - Aggressive: 3.0× ATR
@@ -1098,11 +1141,11 @@ ATR-based stops adapt to the current volatility regime — wider in chaos, tight
 
 R = stop distance in price units. Profile-specific TP targets, capturing crypto's fat-tail asymmetry:
 
-| Profile | TP1 (50% close) | TP2 (25% close) | TP3 (25% close, trailing) |
-|---|---|---|---|
-| Conservative | 1R | 2R | 3R |
-| Moderate | 1R | 2R | **5R** |
-| Aggressive | 1R | 3R | **8R** |
+| Profile      | TP1 (50% close) | TP2 (25% close) | TP3 (25% close, trailing) |
+| ------------ | --------------- | --------------- | ------------------------- |
+| Conservative | 1R              | 2R              | 3R                        |
+| Moderate     | 1R              | 2R              | **5R**                    |
+| Aggressive   | 1R              | 3R              | **8R**                    |
 
 Conservative books profits early (canonical asymmetric-payoff structure). Moderate and aggressive let the runner stretch further to capture extended crypto trends. The 50/25/25 close percentages stay constant across profiles — only the R-multiples change.
 
@@ -1120,11 +1163,11 @@ Updated on every blender run for the pair (which the user knows happens on TF cl
 
 When a vol / dispersion / stale gate fires for a pair, **new signals force `hold`** (already locked in §4.6). For users with **existing** open positions on that pair, surface a **generic banner**:
 
-| Gate reason | Banner copy |
-|---|---|
-| `vol` | "BTC volatility elevated — monitor your positions." |
+| Gate reason  | Banner copy                                                         |
+| ------------ | ------------------------------------------------------------------- |
+| `vol`        | "BTC volatility elevated — monitor your positions."                 |
 | `dispersion` | "BTC price disagreement across exchanges — monitor your positions." |
-| `stale` | "BTC exchange data unavailable — monitor your positions." |
+| `stale`      | "BTC exchange data unavailable — monitor your positions."           |
 
 No per-position advice (we don't track positions). The banner sits on the pair's signal card; UI work is downstream.
 
@@ -1132,17 +1175,17 @@ No per-position advice (we don't track positions). The banner sits on the pair's
 
 Each signal's recommended `sizePct` is **per-signal** — assumes the user isn't already taking other concurrent signals. The 7% weekly drawdown cap (§9.8) is the global guardrail.
 
-**UI affordance:** when ≥2 active buy/sell signals exist for the user, surface aggregated risk: *"You'd be at 3% concurrent risk if you took all three signals."* The user reconciles. Quantara doesn't track real positions, only the signals it has issued.
+**UI affordance:** when ≥2 active buy/sell signals exist for the user, surface aggregated risk: _"You'd be at 3% concurrent risk if you took all three signals."_ The user reconciles. Quantara doesn't track real positions, only the signals it has issued.
 
 ### 9.8 Drawdown limits
 
 Per-profile defaults (overridable in user settings):
 
-| Profile | Daily cap | Weekly cap | Per-pair concurrent cap |
-|---|---|---|---|
-| Conservative | 2% | 5% | 1 |
-| Moderate | 3% | 7% | 1 |
-| Aggressive | 5% | 12% | 2 |
+| Profile      | Daily cap | Weekly cap | Per-pair concurrent cap |
+| ------------ | --------- | ---------- | ----------------------- |
+| Conservative | 2%        | 5%         | 1                       |
+| Moderate     | 3%        | 7%         | 1                       |
+| Aggressive   | 5%        | 12%        | 2                       |
 
 Once the daily cap is breached, the API suppresses all new non-`hold` signals (returns the latest signal but with a banner state) for the rest of the trading day (UTC). Weekly cap suppresses for the rest of the week.
 
@@ -1154,20 +1197,20 @@ Extend the `Signal` (or rather, the persisted `BlendedSignal`) type:
 
 ```ts
 export interface RiskRecommendation {
-  pair: string;                                          // for cross-ref
-  profile: "conservative" | "moderate" | "aggressive";    // looked up from user.riskProfiles[pair]
-  positionSizePct: number;                                // % of account
+  pair: string; // for cross-ref
+  profile: "conservative" | "moderate" | "aggressive"; // looked up from user.riskProfiles[pair]
+  positionSizePct: number; // % of account
   positionSizeModel: "fixed" | "vol-targeted" | "kelly";
-  stopLoss: number;                                       // price
-  stopDistanceR: number;                                  // ATR × multiplier
+  stopLoss: number; // price
+  stopDistanceR: number; // ATR × multiplier
   takeProfit: { price: number; closePct: number; rMultiple: number }[];
-  invalidationCondition: string;                          // human-readable, mobile UX
+  invalidationCondition: string; // human-readable, mobile UX
   trailingStopAfterTP2: { multiplier: number; reference: "ATR" };
 }
 
 export interface Signal {
   // ...existing BlendedSignal fields
-  risk: RiskRecommendation | null;                       // null when type === "hold"
+  risk: RiskRecommendation | null; // null when type === "hold"
 }
 
 export type RiskProfileMap = Record<TradingPair, "conservative" | "moderate" | "aggressive">;
@@ -1175,11 +1218,11 @@ export type RiskProfileMap = Record<TradingPair, "conservative" | "moderate" | "
 // On the user record:
 export interface User {
   // ...existing fields
-  riskProfiles: RiskProfileMap;                           // per-pair; default by tier
+  riskProfiles: RiskProfileMap; // per-pair; default by tier
   drawdownState: {
-    dailyPnLPct: number;                                  // tracked from signals user marked as "took it"
+    dailyPnLPct: number; // tracked from signals user marked as "took it"
     weeklyPnLPct: number;
-    suppressUntil: string | null;                         // ISO8601 if in drawdown lockout
+    suppressUntil: string | null; // ISO8601 if in drawdown lockout
   };
 }
 ```
@@ -1188,13 +1231,13 @@ Note: `drawdownState` requires the user to mark which signals they actually took
 
 ### 9.10 What §9 explicitly defers
 
-| Topic | Phase |
-|---|---|
-| User-self-reported account balance ($ display) | Phase 9+ UI work |
-| Exchange API integration (live balance) | Never (compliance) |
-| Position management agent (closing existing trades) | Out of scope |
+| Topic                                               | Phase                                    |
+| --------------------------------------------------- | ---------------------------------------- |
+| User-self-reported account balance ($ display)      | Phase 9+ UI work                         |
+| Exchange API integration (live balance)             | Never (compliance)                       |
+| Position management agent (closing existing trades) | Out of scope                             |
 | Drawdown enforcement based on actual trade outcomes | Phase 9+ once "marked-as-taken" UI ships |
-| Per-rule risk weighting | Phase 8 attribution |
+| Per-rule risk weighting                             | Phase 8 attribution                      |
 
 ---
 
@@ -1218,11 +1261,11 @@ Plus an **invalidated** state (per §6.7): a fresh high-magnitude article can ma
 ### 10.2 Expiry windows — crypto-tuned (8× source TF)
 
 | Source timeframe | Expiry window |
-|---|---|
-| 15m | 2 hours |
-| 1h | 8 hours |
-| 4h | 1 day |
-| 1d | 3 days |
+| ---------------- | ------------- |
+| 15m              | 2 hours       |
+| 1h               | 8 hours       |
+| 4h               | 1 day         |
+| 1d               | 3 days        |
 
 For multi-horizon blended signals, use the `1d` window (longest source horizon, here 3 days).
 
@@ -1283,7 +1326,7 @@ attribution[rule][pair][TF] = {
 }
 ```
 
-14 rules × 5 pairs × 4 TFs = **280 buckets**. Granular enough to catch pair-specific rule misfires (e.g. *"`bollinger-touch-lower` works on BTC but not DOGE"*) without thinning samples beyond usefulness.
+14 rules × 5 pairs × 4 TFs = **280 buckets**. Granular enough to catch pair-specific rule misfires (e.g. _"`bollinger-touch-lower` works on BTC but not DOGE"_) without thinning samples beyond usefulness.
 
 **Not split by `type` (buy/sell/hold)** — a rule's contribution is direction-agnostic; splitting would 3× the buckets and overfit.
 
@@ -1302,6 +1345,7 @@ ECE(predictions, K=10):
 ```
 
 Computed per `(pair, TF)` over a rolling 90-day window. Surfaced on a calibration dashboard:
+
 - Brier < 0.25 = "decent" for advisory products
 - Brier < 0.20 = good
 - ECE < 0.05 = well-calibrated
@@ -1310,11 +1354,11 @@ Phase 8 fits per-(pair, TF) Platt scaling (`confidence_calibrated = sigmoid(a ·
 
 ### 10.7 Rolling accuracy windows
 
-| Window | Use |
-|---|---|
-| 7d | Weekly recap; marketing |
-| **30d** | **Primary user-facing badge** |
-| 90d | Calibration cycle / Platt scaling refresh trigger |
+| Window  | Use                                               |
+| ------- | ------------------------------------------------- |
+| 7d      | Weekly recap; marketing                           |
+| **30d** | **Primary user-facing badge**                     |
+| 90d     | Calibration cycle / Platt scaling refresh trigger |
 
 Compute on every resolved-signal event; cache aggregated results in DDB for cheap reads. 24h is too noisy; all-time risks misrepresenting current performance.
 
@@ -1327,7 +1371,7 @@ We do **not** compute hypothetical PnL ("if user had taken this signal at recomm
 - Users will compare claimed PnL to their own real PnL and discover the gap; trust collapses
 - Hindsight bias dressed as forecasting
 
-Marketing-friendly substitute when a $-flavored stat is needed: *"across 90 days, the signal direction matched price movement 73% of the time. Average move size at resolution: 1.2× ATR."* Numerical, observational, no hindsight PnL.
+Marketing-friendly substitute when a $-flavored stat is needed: _"across 90 days, the signal direction matched price movement 73% of the time. Average move size at resolution: 1.2× ATR."_ Numerical, observational, no hindsight PnL.
 
 ### 10.9 Backtest harness contract (Phase 8)
 
@@ -1342,13 +1386,13 @@ These guarantees flow into the §11 storage schema.
 
 ### 10.10 What §10 explicitly defers
 
-| Topic | Phase |
-|---|---|
-| Backtest harness implementation | Phase 8 |
-| Platt scaling fit + per-(pair, TF) confidence calibration | Phase 8 |
-| Auto-disable / prune of rules with sustained low accuracy | Phase 8 |
-| User-observed PnL ("I took this trade and made/lost X") | Phase 9+ UI |
-| Real-time accuracy push notifications | Out of scope |
+| Topic                                                     | Phase        |
+| --------------------------------------------------------- | ------------ |
+| Backtest harness implementation                           | Phase 8      |
+| Platt scaling fit + per-(pair, TF) confidence calibration | Phase 8      |
+| Auto-disable / prune of rules with sustained low accuracy | Phase 8      |
+| User-observed PnL ("I took this trade and made/lost X")   | Phase 9+ UI  |
+| Real-time accuracy push notifications                     | Out of scope |
 
 ---
 
@@ -1441,16 +1485,17 @@ Why: backtestability. We need to be able to point the indicator engine at histor
 
 ### 12.2 Latency budget
 
-| Step | Target | Notes |
-|---|---|---|
-| Candle close → indicator state updated | < 5s | Lambda cold start is the cap |
-| Indicators → algo signal | < 50ms | Pure CPU |
-| Algo signal → LLM ratification (when invoked) | < 3s | Haiku is sub-second typically; budget 3s p99 |
-| Signal → user-visible | < 30s end-to-end | Backend caches and pushes to web |
+| Step                                          | Target           | Notes                                        |
+| --------------------------------------------- | ---------------- | -------------------------------------------- |
+| Candle close → indicator state updated        | < 5s             | Lambda cold start is the cap                 |
+| Indicators → algo signal                      | < 50ms           | Pure CPU                                     |
+| Algo signal → LLM ratification (when invoked) | < 3s             | Haiku is sub-second typically; budget 3s p99 |
+| Signal → user-visible                         | < 30s end-to-end | Backend caches and pushes to web             |
 
 ### 12.3 Scheduling
 
 EventBridge rules per timeframe:
+
 - `cron(* * * * ? *)` — every minute (drives 15m/1h/4h/1d depending on minute-of-hour)
 - The Lambda checks `now() % timeframe == 0` for each TF and only computes the ones that just closed.
 
@@ -1463,38 +1508,47 @@ Avoids deploying 4 separate schedules; single Lambda decides what to do.
 Eight phases. Each phase shippable on its own — no big-bang merge. Each is sized to fit one agent-ready issue.
 
 ### Phase 1 — Indicator engine (offline-equivalent)
+
 Files: `ingestion/src/indicators/{ema,macd,rsi,atr,bollinger,obv,vwap}.ts` + tests.
 Acceptance: given a fixture of 200 candles, every indicator output matches a TradingView-equivalent reference (tolerance: ±0.01%).
 
 ### Phase 2 — Per-timeframe scoring
+
 Files: `ingestion/src/signals/score.ts`, `packages/shared/src/constants/signals.ts` (add rule definitions).
 Acceptance: deterministic mapping from indicator state → `{type, confidence, rulesFired}`. Replay test on a known historical setup yields expected output.
 
 ### Phase 3 — Multi-horizon blending
+
 Files: `ingestion/src/signals/blend.ts`.
 Acceptance: weighted blending matches §5.3 formula; agreement/disagreement tests pass.
 
 ### Phase 4 — Indicator Lambda + DDB schema
+
 Files: `ingestion/src/indicator-handler.ts`, terraform additions for `signals` and `indicator-state` tables, EventBridge rule.
 Acceptance: real candles → cached indicator state → algo signal persisted to DDB.
 
 ### Phase 5 — News pair-tagging + sentiment aggregation
+
 Files: extend `ingestion/src/news/enrich.ts` (or wherever the enrichment lives), add `mentionedPairs` and `sentiment` to the schema.
 Acceptance: backfilled news has pair tags; `sentiment:{pair}:4h` metadata is updated by a scheduled job.
 
 ### Phase 6 — LLM ratification
+
 Files: `backend/src/lib/genie/ratify.ts` (or `ingestion`-side, depending on where signal emission lands).
 Acceptance: when gates fire, the LLM is called; downgrade-only contract is enforced server-side; failures fall back to algo signal.
 
 ### Phase 7 — Risk management module
+
 Files: `ingestion/src/signals/risk.ts`, schema extension to `Signal.risk`.
 Acceptance: every non-hold signal carries position-size, stop, TP recommendations consistent with the user's tier.
 
 ### Phase 8 — Outcome tracking + accuracy badges
+
 Files: `ingestion/src/signals/resolve.ts` (Lambda triggered by signal expiry), backend `/genie/history` actually returns data instead of `[]`.
 Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is computable per pair / timeframe / rule.
 
 ### Future phases (post-MVP)
+
 - **Phase 9:** Whale-flow integration into the LLM ratification context.
 - **Phase 10:** Per-user risk profile customization (currently global defaults).
 - **Phase 11:** Backtest harness — replay any historical window and produce a signal stream.
@@ -1515,14 +1569,14 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 
 ## 15. Risks
 
-| Risk | Mitigation |
-|---|---|
-| Indicator off-by-one bugs propagate silently into bad signals. | Phase 1's TradingView-fixture acceptance bar; replay tests. |
-| LLM hallucinates a `buy` from a `hold`. | Server-side guardrail validates allowed transformations; logs breaches. |
-| Sentiment classification misreads sarcasm/satire. | Aggregated over many articles; single bad classification has bounded impact. |
-| Volatility gate fires too often, suppressing all signals. | Threshold tunable; backtested to balance suppression vs noise. |
-| User over-trusts confidence numbers. | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere. |
-| Cross-exchange price disagreement on flash events. | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale. |
+| Risk                                                           | Mitigation                                                                             |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Indicator off-by-one bugs propagate silently into bad signals. | Phase 1's TradingView-fixture acceptance bar; replay tests.                            |
+| LLM hallucinates a `buy` from a `hold`.                        | Server-side guardrail validates allowed transformations; logs breaches.                |
+| Sentiment classification misreads sarcasm/satire.              | Aggregated over many articles; single bad classification has bounded impact.           |
+| Volatility gate fires too often, suppressing all signals.      | Threshold tunable; backtested to balance suppression vs noise.                         |
+| User over-trusts confidence numbers.                           | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.   |
+| Cross-exchange price disagreement on flash events.             | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale. |
 
 ---
 
@@ -1534,42 +1588,78 @@ Initial rules to ship in Phase 2. Each is `(name, condition, direction, strength
 // packages/shared/src/constants/signals.ts (proposed)
 export const RULES = [
   // momentum
-  { name: "rsi-oversold-strong",     direction: "bullish", strength: 1.5,
-    when: (s) => s.rsi14 < 20 },
-  { name: "rsi-oversold",            direction: "bullish", strength: 1.0,
-    when: (s) => s.rsi14 >= 20 && s.rsi14 < 30 },
-  { name: "rsi-overbought-strong",   direction: "bearish", strength: 1.5,
-    when: (s) => s.rsi14 > 80 },
-  { name: "rsi-overbought",          direction: "bearish", strength: 1.0,
-    when: (s) => s.rsi14 > 70 && s.rsi14 <= 80 },
+  { name: "rsi-oversold-strong", direction: "bullish", strength: 1.5, when: (s) => s.rsi14 < 20 },
+  {
+    name: "rsi-oversold",
+    direction: "bullish",
+    strength: 1.0,
+    when: (s) => s.rsi14 >= 20 && s.rsi14 < 30,
+  },
+  { name: "rsi-overbought-strong", direction: "bearish", strength: 1.5, when: (s) => s.rsi14 > 80 },
+  {
+    name: "rsi-overbought",
+    direction: "bearish",
+    strength: 1.0,
+    when: (s) => s.rsi14 > 70 && s.rsi14 <= 80,
+  },
 
   // trend
-  { name: "ema-stack-bull",          direction: "bullish", strength: 0.8,
-    when: (s) => s.ema20 > s.ema50 && s.ema50 > s.ema200 },
-  { name: "ema-stack-bear",          direction: "bearish", strength: 0.8,
-    when: (s) => s.ema20 < s.ema50 && s.ema50 < s.ema200 },
-  { name: "macd-cross-bull",         direction: "bullish", strength: 1.0,
-    when: (s) => s.macdHist > 0 && s.macdHist_prev <= 0 },
-  { name: "macd-cross-bear",         direction: "bearish", strength: 1.0,
-    when: (s) => s.macdHist < 0 && s.macdHist_prev >= 0 },
+  {
+    name: "ema-stack-bull",
+    direction: "bullish",
+    strength: 0.8,
+    when: (s) => s.ema20 > s.ema50 && s.ema50 > s.ema200,
+  },
+  {
+    name: "ema-stack-bear",
+    direction: "bearish",
+    strength: 0.8,
+    when: (s) => s.ema20 < s.ema50 && s.ema50 < s.ema200,
+  },
+  {
+    name: "macd-cross-bull",
+    direction: "bullish",
+    strength: 1.0,
+    when: (s) => s.macdHist > 0 && s.macdHist_prev <= 0,
+  },
+  {
+    name: "macd-cross-bear",
+    direction: "bearish",
+    strength: 1.0,
+    when: (s) => s.macdHist < 0 && s.macdHist_prev >= 0,
+  },
 
   // mean reversion
-  { name: "bollinger-touch-lower",   direction: "bullish", strength: 0.5,
-    when: (s) => s.close <= s.bbLower },
-  { name: "bollinger-touch-upper",   direction: "bearish", strength: 0.5,
-    when: (s) => s.close >= s.bbUpper },
+  {
+    name: "bollinger-touch-lower",
+    direction: "bullish",
+    strength: 0.5,
+    when: (s) => s.close <= s.bbLower,
+  },
+  {
+    name: "bollinger-touch-upper",
+    direction: "bearish",
+    strength: 0.5,
+    when: (s) => s.close >= s.bbUpper,
+  },
 
   // volume confirmation
-  { name: "volume-spike-bull",       direction: "bullish", strength: 0.7,
-    when: (s) => s.volZ > 2 && s.close > s.open },
-  { name: "volume-spike-bear",       direction: "bearish", strength: 0.7,
-    when: (s) => s.volZ > 2 && s.close < s.open },
+  {
+    name: "volume-spike-bull",
+    direction: "bullish",
+    strength: 0.7,
+    when: (s) => s.volZ > 2 && s.close > s.open,
+  },
+  {
+    name: "volume-spike-bear",
+    direction: "bearish",
+    strength: 0.7,
+    when: (s) => s.volZ > 2 && s.close < s.open,
+  },
 
   // sentiment overlay (Fear & Greed only — news is in LLM layer)
-  { name: "fng-extreme-greed",       direction: "bearish", strength: 0.3,
-    when: (s) => s.fearGreed > 75 },
-  { name: "fng-extreme-fear",        direction: "bullish", strength: 0.3,
-    when: (s) => s.fearGreed < 25 },
+  { name: "fng-extreme-greed", direction: "bearish", strength: 0.3, when: (s) => s.fearGreed > 75 },
+  { name: "fng-extreme-fear", direction: "bullish", strength: 0.3, when: (s) => s.fearGreed < 25 },
 ];
 ```
 
