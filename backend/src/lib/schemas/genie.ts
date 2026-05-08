@@ -28,16 +28,6 @@ export const Signal = z
 const TimeframeEnum = z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]);
 
 /**
- * Subset of TimeframeEnum that the multi-horizon blender actually emits.
- * Per §5.2 of SIGNALS_AND_RISK.md, blending uses only 15m/1h/4h/1d (1m and 5m
- * are too noisy for the headline signal). The indicator-handler writes
- * BlendedSignal records with perTimeframe/weightsUsed keyed only on these 4 TFs;
- * the schema must reflect the production write shape, otherwise OpenAPI
- * response validation rejects real data.
- */
-const BlendTimeframeEnum = z.enum(["15m", "1h", "4h", "1d"]);
-
-/**
  * Per-timeframe vote produced by scoreTimeframe.
  * Mirrors the TimeframeVote interface from @quantara/shared so the OpenAPI
  * spec exposes a typed schema instead of an opaque blob.
@@ -99,10 +89,25 @@ export const BlendedSignalSchema = z
 
     // Per-timeframe vote breakdown — null when a TF had no valid data.
     // Keyed only on the 4 blender TFs (§5.2); 1m/5m are not part of blended signals.
-    // z.record permits missing keys, so a real persisted item with just 15m/1h/4h/1d passes.
-    perTimeframe: z.record(BlendTimeframeEnum, TimeframeVoteSchema.nullable()),
+    // Keys are individually optional so that:
+    //   - Test fixtures need not populate every TF
+    //   - Historical DDB items written before schema-tightening (PR #103) still parse
+    //   - Future indicator-handler regressions that drop a TF degrade gracefully
+    perTimeframe: z.object({
+      "15m": TimeframeVoteSchema.nullable().optional(),
+      "1h": TimeframeVoteSchema.nullable().optional(),
+      "4h": TimeframeVoteSchema.nullable().optional(),
+      "1d": TimeframeVoteSchema.nullable().optional(),
+    }),
     // Post-renormalization weights per timeframe (§5.6).
-    weightsUsed: z.record(BlendTimeframeEnum, z.number()),
+    // Same optional-key pattern as perTimeframe — partial DDB items and test
+    // fixtures need not carry every TF weight.
+    weightsUsed: z.object({
+      "15m": z.number().optional(),
+      "1h": z.number().optional(),
+      "4h": z.number().optional(),
+      "1d": z.number().optional(),
+    }),
 
     // Lifecycle / identifying
     asOf: z.number().describe("Unix ms of the latest TF close that triggered this blend"),

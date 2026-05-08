@@ -99,6 +99,47 @@ const fixtureItem = {
 };
 
 // ---------------------------------------------------------------------------
+// BlendedSignalSchema — partial perTimeframe parse guard
+// ---------------------------------------------------------------------------
+
+describe("BlendedSignalSchema.parse (partial perTimeframe)", () => {
+  it("accepts a fixture with only one TF key present (other 3 absent)", async () => {
+    // Regression guard for PR #107: perTimeframe keys are now individually optional,
+    // so a DDB item or test fixture that omits some TFs must not throw ZodError.
+    const { BlendedSignalSchema } = await import("./schemas/genie.js");
+    const partialFixture = {
+      pair: "ETH/USDT",
+      type: "buy" as const,
+      confidence: 0.65,
+      volatilityFlag: false,
+      gateReason: null,
+      rulesFired: ["ema_cross_bullish"],
+      perTimeframe: {
+        "15m": {
+          type: "buy" as const,
+          confidence: 0.65,
+          rulesFired: ["ema_cross_bullish"],
+          bullishScore: 0.7,
+          bearishScore: 0.2,
+          volatilityFlag: false,
+          gateReason: null,
+          asOf: 1700000000000,
+        },
+        // "1h", "4h", "1d" intentionally absent
+      },
+      weightsUsed: { "15m": 1.0 },
+      asOf: 1700000000000,
+      emittingTimeframe: "15m" as const,
+      risk: null,
+    };
+    expect(() => BlendedSignalSchema.parse(partialFixture)).not.toThrow();
+    const parsed = BlendedSignalSchema.parse(partialFixture);
+    expect(parsed.perTimeframe["15m"]).toBeDefined();
+    expect(parsed.perTimeframe["1h"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getSignalForUser
 // ---------------------------------------------------------------------------
 
