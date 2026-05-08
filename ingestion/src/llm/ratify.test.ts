@@ -57,10 +57,20 @@ function makeCandidate(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
     gateReason: null,
     rulesFired: ["ema_cross_bullish"],
     perTimeframe: {
-      "1m": null, "5m": null, "15m": null, "1h": null, "4h": null, "1d": null,
+      "1m": null,
+      "5m": null,
+      "15m": null,
+      "1h": null,
+      "4h": null,
+      "1d": null,
     },
     weightsUsed: {
-      "1m": 0, "5m": 0, "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35,
+      "1m": 0,
+      "5m": 0,
+      "15m": 0.15,
+      "1h": 0.2,
+      "4h": 0.3,
+      "1d": 0.35,
     },
     asOf: 1700000000000,
     emittingTimeframe: "4h",
@@ -83,7 +93,7 @@ function makeContext(candidateOverrides: Partial<BlendedSignal> = {}): RatifyCon
           pair: "BTC/USDT",
           window: "4h",
           computedAt: new Date().toISOString(),
-          articleCount: 3,    // recentNewsExists = true
+          articleCount: 3, // recentNewsExists = true
           meanScore: 0.6,
           meanMagnitude: 0.4,
           fearGreedTrend24h: 5,
@@ -119,7 +129,8 @@ function makeLlmTextContent(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     type: "hold",
     confidence: 0.6,
-    reasoning: "Elevated fear and greed index (65) suggests caution despite bullish technical signals.",
+    reasoning:
+      "Elevated fear and greed index (65) suggests caution despite bullish technical signals.",
     downgraded: true,
     downgradeReason: "FNG elevated",
     ...overrides,
@@ -145,9 +156,9 @@ function makeAnthropicResponse(textContent: string) {
  */
 function setupDdbForCacheMiss() {
   ddbSendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // getLastRatificationFor
-  ddbSendMock.mockResolvedValueOnce({ Count: 0 });            // countRatificationsToday
-  ddbSendMock.mockResolvedValueOnce({ Item: null });           // getCachedRatification (miss)
-  ddbSendMock.mockResolvedValue({});                           // putCachedRatification + putRatificationRecord
+  ddbSendMock.mockResolvedValueOnce({ Count: 0 }); // countRatificationsToday
+  ddbSendMock.mockResolvedValueOnce({ Item: null }); // getCachedRatification (miss)
+  ddbSendMock.mockResolvedValue({}); // putCachedRatification + putRatificationRecord
 }
 
 // ---------------------------------------------------------------------------
@@ -177,8 +188,8 @@ describe("ratifySignal — gating", () => {
     ctx.candidate.volatilityFlag = false;
     ctx.fearGreed.trend24h = 3;
     ddbSendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // rate limit
-    ddbSendMock.mockResolvedValueOnce({ Count: 0 });             // daily cap
-    ddbSendMock.mockResolvedValue({});                           // store write
+    ddbSendMock.mockResolvedValueOnce({ Count: 0 }); // daily cap
+    ddbSendMock.mockResolvedValue({}); // store write
     const result = await ratifySignal(ctx);
     expect(result.fellBackToAlgo).toBe(true);
     expect(anthropicCreateMock).not.toHaveBeenCalled();
@@ -196,9 +207,9 @@ describe("ratifySignal — cache hit", () => {
     const cachedSignal = makeCandidate({ type: "hold", confidence: 0.6 });
 
     ddbSendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // rate limit
-    ddbSendMock.mockResolvedValueOnce({ Count: 0 });             // daily cap
+    ddbSendMock.mockResolvedValueOnce({ Count: 0 }); // daily cap
     ddbSendMock.mockResolvedValueOnce({ Item: { signal: cachedSignal } }); // cache hit
-    ddbSendMock.mockResolvedValue({});                           // putRatificationRecord
+    ddbSendMock.mockResolvedValue({}); // putRatificationRecord
 
     const result = await ratifySignal(ctx);
     expect(result.cacheHit).toBe(true);
@@ -223,7 +234,9 @@ describe("ratifySignal — cache hit", () => {
       (c) => (c[0] as { __cmd: string }).__cmd === "Put",
     );
     expect(allPutCalls.length).toBeGreaterThanOrEqual(1);
-    const recordItem = (allPutCalls[0][0] as { input: { Item: { cacheHit: boolean; costUsd: number } } }).input.Item;
+    const recordItem = (
+      allPutCalls[0][0] as { input: { Item: { cacheHit: boolean; costUsd: number } } }
+    ).input.Item;
     expect(recordItem.cacheHit).toBe(true);
     expect(recordItem.costUsd).toBe(0);
   });
@@ -239,7 +252,7 @@ describe("ratifySignal — successful LLM ratification", () => {
     const ctx = makeContext();
     setupDdbForCacheMiss();
     anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "hold", confidence: 0.6 }))
+      makeAnthropicResponse(makeLlmTextContent({ type: "hold", confidence: 0.6 })),
     );
     const result = await ratifySignal(ctx);
     expect(result.fellBackToAlgo).toBe(false);
@@ -252,9 +265,7 @@ describe("ratifySignal — successful LLM ratification", () => {
     const { ratifySignal } = await import("./ratify.js");
     const ctx = makeContext();
     setupDdbForCacheMiss();
-    anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent())
-    );
+    anthropicCreateMock.mockResolvedValueOnce(makeAnthropicResponse(makeLlmTextContent()));
     await ratifySignal(ctx);
     // There should be at least 2 Put calls: cache write + record write
     const putCalls = ddbSendMock.mock.calls.filter(
@@ -267,16 +278,16 @@ describe("ratifySignal — successful LLM ratification", () => {
     const { ratifySignal } = await import("./ratify.js");
     const ctx = makeContext();
     setupDdbForCacheMiss();
-    anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent())
-    );
+    anthropicCreateMock.mockResolvedValueOnce(makeAnthropicResponse(makeLlmTextContent()));
     await ratifySignal(ctx);
     const putCalls = ddbSendMock.mock.calls.filter(
       (c) => (c[0] as { __cmd: string }).__cmd === "Put",
     );
     // One of the Put calls should have fellBackToAlgo=false
     const storePut = putCalls.find(
-      (c) => (c[0] as { input: { Item: { fellBackToAlgo?: boolean } } }).input.Item.fellBackToAlgo === false,
+      (c) =>
+        (c[0] as { input: { Item: { fellBackToAlgo?: boolean } } }).input.Item.fellBackToAlgo ===
+        false,
     );
     expect(storePut).toBeDefined();
   });
@@ -288,14 +299,15 @@ describe("ratifySignal — successful LLM ratification", () => {
 
 describe("ratifySignal — validation failures", () => {
   it("falls back to algo on hold→buy violation", async () => {
-    const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } = await import("./ratify.js");
+    const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } =
+      await import("./ratify.js");
     _resetValidationFailureCount();
     // confidence 0.7 passes the gate; type hold means LLM must return hold
     const ctx = makeContext({ type: "hold", confidence: 0.7 });
     setupDdbForCacheMiss();
     // LLM returns buy — forbidden from hold
     anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.6 }))
+      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
     );
     const result = await ratifySignal(ctx);
     expect(result.fellBackToAlgo).toBe(true);
@@ -303,13 +315,14 @@ describe("ratifySignal — validation failures", () => {
   });
 
   it("falls back to algo on confidence increase", async () => {
-    const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } = await import("./ratify.js");
+    const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } =
+      await import("./ratify.js");
     _resetValidationFailureCount();
     const ctx = makeContext({ confidence: 0.7 });
     setupDdbForCacheMiss();
     // LLM returns higher confidence — forbidden
     anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.9 }))
+      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.9 })),
     );
     const result = await ratifySignal(ctx);
     expect(result.fellBackToAlgo).toBe(true);
@@ -317,7 +330,8 @@ describe("ratifySignal — validation failures", () => {
   });
 
   it("falls back to algo on schema parse failure (non-JSON response)", async () => {
-    const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } = await import("./ratify.js");
+    const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } =
+      await import("./ratify.js");
     _resetValidationFailureCount();
     const ctx = makeContext();
     setupDdbForCacheMiss();
@@ -348,7 +362,8 @@ describe("ratifySignal — validation failures", () => {
 
 describe("getValidationFailureCount", () => {
   it("increments on validation failure and can be reset", async () => {
-    const { ratifySignal, getValidationFailureCount, _resetValidationFailureCount } = await import("./ratify.js");
+    const { ratifySignal, getValidationFailureCount, _resetValidationFailureCount } =
+      await import("./ratify.js");
     _resetValidationFailureCount();
     expect(getValidationFailureCount()).toBe(0);
 
@@ -356,7 +371,7 @@ describe("getValidationFailureCount", () => {
     const ctx = makeContext({ type: "hold", confidence: 0.7 });
     setupDdbForCacheMiss();
     anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.6 }))
+      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
     );
     await ratifySignal(ctx);
     expect(getValidationFailureCount()).toBe(1);

@@ -41,10 +41,20 @@ function makeSignal(): BlendedSignal {
     gateReason: null,
     rulesFired: [],
     perTimeframe: {
-      "1m": null, "5m": null, "15m": null, "1h": null, "4h": null, "1d": null,
+      "1m": null,
+      "5m": null,
+      "15m": null,
+      "1h": null,
+      "4h": null,
+      "1d": null,
     },
     weightsUsed: {
-      "1m": 0, "5m": 0, "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35,
+      "1m": 0,
+      "5m": 0,
+      "15m": 0.15,
+      "1h": 0.2,
+      "4h": 0.3,
+      "1d": 0.35,
     },
     asOf: 1700000000000,
     emittingTimeframe: "4h",
@@ -179,7 +189,9 @@ describe("putCachedRatification", () => {
     const signal = makeSignal();
     await putCachedRatification("mykey", signal, 300);
     expect(sendMock).toHaveBeenCalledTimes(1);
-    const call = sendMock.mock.calls[0][0] as { input: { TableName: string; Item: { ttl: number; cacheKey: string } } };
+    const call = sendMock.mock.calls[0][0] as {
+      input: { TableName: string; Item: { ttl: number; cacheKey: string } };
+    };
     expect(call.input.TableName).toBe("test-ratification-cache");
     expect(call.input.Item.cacheKey).toBe("mykey");
     expect(typeof call.input.Item.ttl).toBe("number");

@@ -16,8 +16,7 @@ import type { BlendedSignal, Timeframe } from "@quantara/shared";
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const RATIFICATIONS_TABLE =
-  process.env.TABLE_RATIFICATIONS ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
+  process.env.TABLE_RATIFICATIONS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
 
 /** TTL: 30 days in seconds. */
 const TTL_SECONDS = 86400 * 30;

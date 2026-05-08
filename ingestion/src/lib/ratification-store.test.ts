@@ -41,10 +41,20 @@ function makeBlendedSignal(): BlendedSignal {
     gateReason: null,
     rulesFired: [],
     perTimeframe: {
-      "1m": null, "5m": null, "15m": null, "1h": null, "4h": null, "1d": null,
+      "1m": null,
+      "5m": null,
+      "15m": null,
+      "1h": null,
+      "4h": null,
+      "1d": null,
     },
     weightsUsed: {
-      "1m": 0, "5m": 0, "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35,
+      "1m": 0,
+      "5m": 0,
+      "15m": 0.15,
+      "1h": 0.2,
+      "4h": 0.3,
+      "1d": 0.35,
     },
     asOf: 1700000000000,
     emittingTimeframe: "4h",
@@ -63,7 +73,13 @@ function makeRecord(overrides: Partial<RatificationRecord> = {}): RatificationRe
       systemHash: "abc123",
       userJsonHash: "def456",
     },
-    llmRawResponse: { type: "hold", confidence: 0.6, reasoning: "test", downgraded: true, downgradeReason: null },
+    llmRawResponse: {
+      type: "hold",
+      confidence: 0.6,
+      reasoning: "test",
+      downgraded: true,
+      downgradeReason: null,
+    },
     cacheHit: false,
     validation: { ok: true },
     ratified: { ...signal, type: "hold", confidence: 0.6 },
@@ -122,7 +138,9 @@ describe("putRatificationRecord", () => {
     const { putRatificationRecord } = await import("./ratification-store.js");
     sendMock.mockResolvedValueOnce({});
     await putRatificationRecord(makeRecord({ cacheHit: true, costUsd: 0 }));
-    const call = sendMock.mock.calls[0][0] as { input: { Item: { cacheHit: boolean; costUsd: number } } };
+    const call = sendMock.mock.calls[0][0] as {
+      input: { Item: { cacheHit: boolean; costUsd: number } };
+    };
     expect(call.input.Item.cacheHit).toBe(true);
     expect(call.input.Item.costUsd).toBe(0);
   });
@@ -144,7 +162,9 @@ describe("getRecentRatifications", () => {
     const { getRecentRatifications } = await import("./ratification-store.js");
     sendMock.mockResolvedValueOnce({ Items: [] });
     await getRecentRatifications("ETH/USDT", 5);
-    const call = sendMock.mock.calls[0][0] as { input: { ExpressionAttributeValues: Record<string, unknown>; Limit: number } };
+    const call = sendMock.mock.calls[0][0] as {
+      input: { ExpressionAttributeValues: Record<string, unknown>; Limit: number };
+    };
     expect(call.input.ExpressionAttributeValues[":pair"]).toBe("ETH/USDT");
     expect(call.input.Limit).toBe(5);
   });

@@ -105,10 +105,7 @@ export function parseRatificationResponse(raw: unknown): RatificationResponse | 
 // ---------------------------------------------------------------------------
 
 /** Stable SHA-256 hash of the system prompt — stored in RatificationRecord for auditing. */
-export const SYSTEM_HASH: string = crypto
-  .createHash("sha256")
-  .update(SYSTEM_PROMPT)
-  .digest("hex");
+export const SYSTEM_HASH: string = crypto.createHash("sha256").update(SYSTEM_PROMPT).digest("hex");
 
 /**
  * Hash the user JSON string (not the context object) for deduplication and auditing.

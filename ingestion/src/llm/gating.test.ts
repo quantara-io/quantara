@@ -42,10 +42,20 @@ function makeCandidate(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
     gateReason: null,
     rulesFired: [],
     perTimeframe: {
-      "1m": null, "5m": null, "15m": null, "1h": null, "4h": null, "1d": null,
+      "1m": null,
+      "5m": null,
+      "15m": null,
+      "1h": null,
+      "4h": null,
+      "1d": null,
     },
     weightsUsed: {
-      "1m": 0, "5m": 0, "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35,
+      "1m": 0,
+      "5m": 0,
+      "15m": 0.15,
+      "1h": 0.2,
+      "4h": 0.3,
+      "1d": 0.35,
     },
     asOf: 1700000000000,
     emittingTimeframe: "4h",
@@ -54,13 +64,15 @@ function makeCandidate(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
   };
 }
 
-function makeContext(overrides: {
-  candidate?: Partial<BlendedSignal>;
-  articleCount4h?: number;
-  articleCount24h?: number;
-  volatilityFlag?: boolean;
-  fngTrend24h?: number;
-} = {}): RatifyContext {
+function makeContext(
+  overrides: {
+    candidate?: Partial<BlendedSignal>;
+    articleCount4h?: number;
+    articleCount24h?: number;
+    volatilityFlag?: boolean;
+    fngTrend24h?: number;
+  } = {},
+): RatifyContext {
   const candidate = makeCandidate(overrides.candidate ?? {});
   if (overrides.volatilityFlag !== undefined) {
     candidate.volatilityFlag = overrides.volatilityFlag;
@@ -164,7 +176,7 @@ describe("shouldInvokeRatification", () => {
     const ctx = makeContext({ candidate: { confidence: 0.6 } });
     // No previous invocation, under daily cap
     sendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // getLastRatificationFor
-    sendMock.mockResolvedValueOnce({ Count: 0 });            // countRatificationsToday
+    sendMock.mockResolvedValueOnce({ Count: 0 }); // countRatificationsToday
     const result = await shouldInvokeRatification(ctx);
     expect(result.shouldInvoke).toBe(true);
   });
@@ -195,7 +207,7 @@ describe("shouldInvokeRatification", () => {
     // Only news, no vol, no fng shift
     const ctx = makeContext({ volatilityFlag: false, fngTrend24h: 5, articleCount4h: 5 });
     sendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // no recent rate limit
-    sendMock.mockResolvedValueOnce({ Count: 100 });           // at daily cap
+    sendMock.mockResolvedValueOnce({ Count: 100 }); // at daily cap
     const result = await shouldInvokeRatification(ctx);
     expect(result.shouldInvoke).toBe(false);
     expect(result.reason).toMatch(/daily cap/);
@@ -206,16 +218,21 @@ describe("shouldInvokeRatification", () => {
     // All three: news + vol + fng shift
     const ctx = makeContext({ volatilityFlag: true, fngTrend24h: 20, articleCount4h: 5 });
     sendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // no rate limit
-    sendMock.mockResolvedValueOnce({ Count: 100 });           // at daily cap
+    sendMock.mockResolvedValueOnce({ Count: 100 }); // at daily cap
     const result = await shouldInvokeRatification(ctx);
     expect(result.shouldInvoke).toBe(true);
   });
 
   it("blocks when no trigger conditions fire (no news, no vol, no fng shift)", async () => {
     const { shouldInvokeRatification } = await import("./gating.js");
-    const ctx = makeContext({ articleCount4h: 0, articleCount24h: 0, volatilityFlag: false, fngTrend24h: 3 });
+    const ctx = makeContext({
+      articleCount4h: 0,
+      articleCount24h: 0,
+      volatilityFlag: false,
+      fngTrend24h: 3,
+    });
     sendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // no rate limit
-    sendMock.mockResolvedValueOnce({ Count: 0 });             // daily count fine
+    sendMock.mockResolvedValueOnce({ Count: 0 }); // daily count fine
     const result = await shouldInvokeRatification(ctx);
     expect(result.shouldInvoke).toBe(false);
     expect(result.reason).toMatch(/no trigger/);

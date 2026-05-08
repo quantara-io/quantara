@@ -25,10 +25,7 @@ import {
   parseRatificationResponse,
 } from "./prompt.js";
 import { validateRatification } from "./validate.js";
-import {
-  putRatificationRecord,
-  type InvokedReason,
-} from "../lib/ratification-store.js";
+import { putRatificationRecord, type InvokedReason } from "../lib/ratification-store.js";
 
 // ---------------------------------------------------------------------------
 // Model config (pinned per issue spec)
@@ -254,7 +251,10 @@ export async function ratifySignal(context: RatifyContext): Promise<RatifyResult
   const validation = validateRatification(context.candidate, parsedResponse);
   if (!validation.ok) {
     _validationFailureCount++;
-    console.warn(`[Ratifier] Validation failed for ${context.pair}: ${validation.reason}`, llmRawResponse);
+    console.warn(
+      `[Ratifier] Validation failed for ${context.pair}: ${validation.reason}`,
+      llmRawResponse,
+    );
     await putRatificationRecord({
       pair: context.pair,
       timeframe: context.candidate.emittingTimeframe,
@@ -295,7 +295,9 @@ export async function ratifySignal(context: RatifyContext): Promise<RatifyResult
     invokedAt,
   });
 
-  console.log(`[Ratifier] Ratified ${context.pair}: ${ratified.type} conf=${ratified.confidence.toFixed(3)}`);
+  console.log(
+    `[Ratifier] Ratified ${context.pair}: ${ratified.type} conf=${ratified.confidence.toFixed(3)}`,
+  );
   return { signal: ratified, fellBackToAlgo: false, cacheHit: false };
 }
 

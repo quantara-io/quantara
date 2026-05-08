@@ -28,10 +28,20 @@ function makeCandidate(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
     gateReason: null,
     rulesFired: ["ema_cross_bullish", "rsi_oversold"],
     perTimeframe: {
-      "1m": null, "5m": null, "15m": null, "1h": null, "4h": null, "1d": null,
+      "1m": null,
+      "5m": null,
+      "15m": null,
+      "1h": null,
+      "4h": null,
+      "1d": null,
     },
     weightsUsed: {
-      "1m": 0, "5m": 0, "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35,
+      "1m": 0,
+      "5m": 0,
+      "15m": 0.15,
+      "1h": 0.2,
+      "4h": 0.3,
+      "1d": 0.35,
     },
     asOf: 1700000000000,
     emittingTimeframe: "4h",
@@ -81,7 +91,13 @@ function makeContext(candidateOverrides: Partial<BlendedSignal> = {}): RatifyCon
     },
     whaleSummary: null,
     pricePoints: [
-      { exchange: "binance", price: 42000, volume24h: 12000000, timestamp: new Date().toISOString(), stale: false },
+      {
+        exchange: "binance",
+        price: 42000,
+        volume24h: 12000000,
+        timestamp: new Date().toISOString(),
+        stale: false,
+      },
     ],
     fearGreed: { value: 65, trend24h: 5 },
   };

@@ -23,8 +23,7 @@ import type { RatifyContext } from "./ratify.js";
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const RATIFICATIONS_TABLE =
-  process.env.TABLE_RATIFICATIONS ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
+  process.env.TABLE_RATIFICATIONS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
 
 /** Confidence floor: calls below this are never gated through. */
 export const CONFIDENCE_FLOOR = 0.6;
@@ -45,8 +44,7 @@ export const FNG_SHIFT_THRESHOLD = 15;
 /** True if there are recent news articles (any articleCount > 0). */
 export function recentNewsExists(ctx: RatifyContext): boolean {
   return (
-    ctx.sentiment.windows["4h"].articleCount > 0 ||
-    ctx.sentiment.windows["24h"].articleCount > 0
+    ctx.sentiment.windows["4h"].articleCount > 0 || ctx.sentiment.windows["24h"].articleCount > 0
   );
 }
 
@@ -145,10 +143,7 @@ export async function shouldInvokeRatification(
   }
 
   // 2. Per-(pair, TF) rate limit (5 min)
-  const lastInvocation = await getLastRatificationFor(
-    ctx.pair,
-    ctx.candidate.emittingTimeframe,
-  );
+  const lastInvocation = await getLastRatificationFor(ctx.pair, ctx.candidate.emittingTimeframe);
   if (lastInvocation && Date.now() - Date.parse(lastInvocation) < RATE_LIMIT_MS) {
     return { shouldInvoke: false, reason: "per-(pair, TF) rate limit" };
   }
@@ -157,8 +152,7 @@ export async function shouldInvokeRatification(
   const todayCount = await countRatificationsToday(ctx.pair);
   if (todayCount >= DAILY_CAP) {
     // Above cap: only invoke if ALL three trigger conditions fire (rare extreme cases)
-    const allConditions =
-      recentNewsExists(ctx) && volatilityFlagSet(ctx) && fngShifted(ctx);
+    const allConditions = recentNewsExists(ctx) && volatilityFlagSet(ctx) && fngShifted(ctx);
     if (!allConditions) {
       return {
         shouldInvoke: false,
