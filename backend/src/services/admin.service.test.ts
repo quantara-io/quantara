@@ -222,19 +222,28 @@ describe("getMarket — indicator key fix (Bug 1)", () => {
       history: { rsi14: [], macdHist: [], ema20: [], ema50: [], close: [], volume: [] },
     };
 
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { KeyConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } } }) => {
-      if (cmd.__cmd === "Get") return { Item: { value: 50, classification: "Neutral" } };
-      if (cmd.__cmd === "Query") {
-        const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
-        // Indicator query: pk contains #consensus#
-        if (ev?.[":pk"] && String(ev[":pk"]).includes("#consensus#")) {
-          return { Items: [mockIndicatorItem] };
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: {
+          KeyConditionExpression?: string;
+          ExpressionAttributeValues?: Record<string, unknown>;
+          Key?: { metaKey?: string };
+        };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: { value: 50, classification: "Neutral" } };
+        if (cmd.__cmd === "Query") {
+          const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
+          // Indicator query: pk contains #consensus#
+          if (ev?.[":pk"] && String(ev[":pk"]).includes("#consensus#")) {
+            return { Items: [mockIndicatorItem] };
+          }
+          // Other queries (prices, candles)
+          return { Items: [] };
         }
-        // Other queries (prices, candles)
-        return { Items: [] };
-      }
-      return {};
-    });
+        return {};
+      },
+    );
 
     const { getMarket } = await importService();
 
@@ -246,26 +255,43 @@ describe("getMarket — indicator key fix (Bug 1)", () => {
     expect(result.indicators?.rsi14).toBe(55);
 
     // Verify the query used "BTC/USDT#consensus#1m" as the PK
-    const indicatorQuery = (dynamoSend.mock.calls as Array<[{ __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown> } }]>)
+    const indicatorQuery = (
+      dynamoSend.mock.calls as Array<
+        [{ __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown> } }]
+      >
+    )
       .map(([cmd]) => cmd)
-      .find((cmd) => cmd.__cmd === "Query" && String((cmd.input?.ExpressionAttributeValues as Record<string, unknown>)?.[":pk"] ?? "").includes("#consensus#"));
+      .find(
+        (cmd) =>
+          cmd.__cmd === "Query" &&
+          String(
+            (cmd.input?.ExpressionAttributeValues as Record<string, unknown>)?.[":pk"] ?? "",
+          ).includes("#consensus#"),
+      );
     expect(indicatorQuery).toBeDefined();
-    expect((indicatorQuery!.input!.ExpressionAttributeValues as Record<string, unknown>)[":pk"]).toBe("BTC/USDT#consensus#1m");
+    expect(
+      (indicatorQuery!.input!.ExpressionAttributeValues as Record<string, unknown>)[":pk"],
+    ).toBe("BTC/USDT#consensus#1m");
   });
 
   it("returns indicators null when there is no consensus row (never binanceus key)", async () => {
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } } }) => {
-      if (cmd.__cmd === "Get") return { Item: null };
-      if (cmd.__cmd === "Query") {
-        const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
-        // Simulate only having a binanceus row — consensus lookup returns empty
-        if (ev?.[":pk"] && String(ev[":pk"]).includes("#binanceus#")) {
-          return { Items: [{ pair: "BTC/USDT", exchange: "binanceus" }] };
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
+          // Simulate only having a binanceus row — consensus lookup returns empty
+          if (ev?.[":pk"] && String(ev[":pk"]).includes("#binanceus#")) {
+            return { Items: [{ pair: "BTC/USDT", exchange: "binanceus" }] };
+          }
+          return { Items: [] };
         }
-        return { Items: [] };
-      }
-      return {};
-    });
+        return {};
+      },
+    );
 
     const { getMarket } = await importService();
     const result = await getMarket("BTC/USDT", "binanceus");
@@ -276,21 +302,28 @@ describe("getMarket — indicator key fix (Bug 1)", () => {
 describe("computeDispersion via getMarket — dedupe fix (Bug 2)", () => {
   // Helper to mock getMarket returning specific price rows, then inspect dispersion
   async function dispersionFor(priceItems: Array<Record<string, unknown>>): Promise<number | null> {
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } } }) => {
-      if (cmd.__cmd === "Get") return { Item: null };
-      if (cmd.__cmd === "Query") {
-        const ev = cmd.input?.ExpressionAttributeValues as Record<string, unknown>;
-        // Candles query has a :prefix key; prices query has :pair only
-        if (ev?.[":prefix"]) return { Items: [] };
-        // Indicator query has :pk
-        if (ev?.[":pk"]) return { Items: [] };
-        // Prices query: return priceItems filtered to the requested pair
-        const requestedPair = ev?.[":pair"] as string | undefined;
-        const items = requestedPair ? priceItems.filter((p) => p.pair === requestedPair) : priceItems;
-        return { Items: items };
-      }
-      return {};
-    });
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const ev = cmd.input?.ExpressionAttributeValues as Record<string, unknown>;
+          // Candles query has a :prefix key; prices query has :pair only
+          if (ev?.[":prefix"]) return { Items: [] };
+          // Indicator query has :pk
+          if (ev?.[":pk"]) return { Items: [] };
+          // Prices query: return priceItems filtered to the requested pair
+          const requestedPair = ev?.[":pair"] as string | undefined;
+          const items = requestedPair
+            ? priceItems.filter((p) => p.pair === requestedPair)
+            : priceItems;
+          return { Items: items };
+        }
+        return {};
+      },
+    );
 
     const { getMarket } = await importService();
     const result = await getMarket("BTC/USDT", "binanceus");
