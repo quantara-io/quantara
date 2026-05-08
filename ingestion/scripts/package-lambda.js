@@ -14,6 +14,7 @@ const LAMBDAS = [
   { entry: "backfill-handler.js", zip: "backfill.zip" },
   { entry: "news-backfill-handler.js", zip: "news-backfill.zip" },
   { entry: "enrichment-handler.js", zip: "enrichment.zip" },
+  { entry: "indicator-handler.js", zip: "indicator-handler.zip" },
 ];
 
 // Install production-only ccxt into a clean directory
