@@ -136,7 +136,41 @@ EOF
 )"
 ```
 
-### 9. Probe auto-merge capability, then merge or label
+### 9. Wait for CI, iterate on failures (do not skip)
+
+After pushing, **wait for all required checks to complete**. If any fails, fix and iterate before labeling the PR ready. The reviewer should never see a PR with red CI.
+
+```bash
+PR_NUMBER=$(gh pr view --json number -q .number)
+
+# Block until all required checks finish (success, failure, or skipped). Polls every 30s.
+gh pr checks "$PR_NUMBER" --watch --interval 30 --required || CI_FAILED=1
+```
+
+If `CI_FAILED` is set, pull the failure logs and iterate:
+
+```bash
+RUN_ID=$(gh pr view "$PR_NUMBER" --json statusCheckRollup \
+  -q '.statusCheckRollup[] | select(.conclusion=="FAILURE") | .detailsUrl' \
+  | head -1 | grep -oE '[0-9]+$')
+gh run view "$RUN_ID" --repo quantara-io/quantara --log-failed 2>&1 | tail -100
+```
+
+Common failures and fixes:
+| Failure | Likely cause | Fix |
+|---|---|---|
+| `npm ci` lockfile mismatch | Added a dep to `package.json` without regenerating `package-lock.json` | `npm install` locally; commit the lockfile delta |
+| Typecheck failure on a downstream test fixture | Type widening (e.g. new required field on a shared interface) hits fixtures in workspaces this PR didn't touch | Update those fixtures with the new field; merge `origin/main` first if your branch is behind |
+| Lint failure | New rule fires on existing code | Auto-fix with `npm run lint:fix`; if rule is too aggressive, soften it (warning vs error) |
+| Test failure on a previously-green test | Cross-cutting change broke an unrelated test | Read the test, understand the dependency, fix the test or the change |
+
+Cap at **3 fix attempts**. If CI is still red after 3 iterations:
+- Label the PR `agent-blocked`
+- Comment with the specific failure and the iterations attempted
+- Set `STATUS: agent-blocked` in your final report
+- Stop. Do not push more attempts.
+
+### 10. Probe auto-merge capability, then merge or label
 ```bash
 AUTO_MERGE_OK=$(gh api repos/quantara-io/quantara --jq '.allow_auto_merge')
 if [ "$AUTO_MERGE_OK" = "true" ]; then
@@ -148,7 +182,7 @@ fi
 
 If `allow_auto_merge` is `false` (GitHub Free plan / private repo without branch protection), skip auto-merge and add the `awaiting-review` label instead. Set `STATUS: awaiting-review` in your report.
 
-### 10. Stop
+### 11. Stop
 Report back: PR URL, branch, task ID. **Do not** start a new task. **Do not** delete the worktree — that happens on PR close (cleanup script in `/agent-status`).
 
 ## Escalation paths
