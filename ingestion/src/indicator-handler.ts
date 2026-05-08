@@ -33,7 +33,11 @@ import { scoreTimeframe } from "./signals/score.js";
 import { blendTimeframeVotes, isTrivialChange } from "./signals/blend.js";
 import { evaluateGates, narrowPair } from "./signals/gates.js";
 import { EXCHANGES } from "./exchanges/config.js";
-import { tryClaimProcessedClose } from "./lib/processed-close-store.js";
+import {
+  tryClaimProcessedClose,
+  commitProcessedClose,
+  clearProcessedClose,
+} from "./lib/processed-close-store.js";
 
 // ---------------------------------------------------------------------------
 // DDB client for vote persistence (ingestion-metadata table)
@@ -250,6 +254,9 @@ async function processTimeframePair(
 ): Promise<void> {
   // Idempotency: claim this (pair, tf, lastClose) — if another invocation already
   // processed it (EventBridge at-least-once), skip all work.
+  // NOTE: The marker is written here as an "in-progress" lock to prevent duplicate
+  // work. It is committed (status → "committed") only after the vote is safely
+  // persisted, and cleared on any error so retries can re-enter.
   const claimed = await tryClaimProcessedClose(pair, tf, lastClose);
   if (!claimed) {
     console.log(
@@ -258,6 +265,32 @@ async function processTimeframePair(
     return;
   }
 
+  // All subsequent work is wrapped in try/finally so the marker is either committed
+  // (on success) or cleared (on error) before this function returns.
+  try {
+    await processTimeframePairWork(pair, tf, fearGreed, lastClose);
+
+    // Marker commit: the vote/sentinel is now safely written — other invocations
+    // that see status="committed" should skip.
+    await commitProcessedClose(pair, tf, lastClose);
+  } catch (err) {
+    // Clear the in-progress marker so the next retry can reclaim the slot.
+    await clearProcessedClose(pair, tf, lastClose);
+    throw err;
+  }
+}
+
+/**
+ * Inner implementation of per-TF/pair processing — separated so the outer
+ * function can cleanly handle the marker commit/clear lifecycle without
+ * muddying the business logic.
+ */
+async function processTimeframePairWork(
+  pair: string,
+  tf: SignalTimeframe,
+  fearGreed: number | null,
+  lastClose: number,
+): Promise<void> {
   // 2a. Pull recent candles per exchange (250 for warm-up).
   const CANDLE_LIMIT = 250;
   const perExchangeLatest: Record<string, import("@quantara/shared").Candle | null> = {};
@@ -267,16 +300,19 @@ async function processTimeframePair(
     EXCHANGES.map(async (ex) => {
       const candles = await getCandles(pair, ex, tf, CANDLE_LIMIT);
       perExchangeHistory[ex] = candles;
-      // "Latest candle" = most recent closed candle (index 0 = newest from QueryCommand with ScanIndexForward=false).
-      // Candle freshness: only use if it belongs to the bar that just closed.
-      const latest = candles.length > 0 ? candles[0]! : null;
-      if (latest && Math.abs(latest.closeTime - lastClose) <= 1) {
+      // Scan for the candle whose closeTime matches lastClose exactly.
+      // candles is newest-first (ScanIndexForward=false); backfill can write a
+      // newer in-progress bar (isClosed: false) ahead of the just-closed bar, so
+      // blindly taking candles[0] would pick the wrong slot.
+      const latest = candles.find((c) => Math.abs(c.closeTime - lastClose) <= 1) ?? null;
+      if (latest) {
         perExchangeLatest[ex] = latest;
       } else {
         perExchangeLatest[ex] = null;
-        if (latest) {
+        const head = candles.length > 0 ? candles[0] : null;
+        if (head) {
           console.log(
-            `[IndicatorHandler] ${pair}/${tf}@${ex}: candle closeTime ${latest.closeTime} doesn't match lastClose ${lastClose} — treating exchange as stale.`,
+            `[IndicatorHandler] ${pair}/${tf}@${ex}: no candle found for lastClose ${lastClose} (head.closeTime=${head.closeTime}) — treating exchange as stale.`,
           );
         }
       }
