@@ -222,13 +222,13 @@ When any of these happens, label and stop. Do not iterate past the cap.
 
 **Tripwire / oversized diff escalation still goes through step 9 (CI).** Complete CI iteration before applying `needs-human-review`. A reviewer must not open a PR with red CI.
 
-| Situation                                                | Action                                                                                                                                        |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tripwire crossed                                         | Complete step 9 (CI) first. Then add label `needs-human-review` to the PR. Comment the specific tripwire. Do NOT enable auto-merge.           |
-| Diff > 400 LOC                                           | Same as tripwire — complete CI before labeling. Note the LOC count in the comment.                                                            |
-| Tests failing after 3 attempts                           | Add label `agent-blocked` to the issue. Comment the failure. Push WIP commits so the human can see. Unassign self.                            |
-| Conflict with main on push                               | Try `git rebase origin/main` once. If conflicts, escalate as `agent-blocked`.                                                                 |
-| Issue underspecified (no acceptance criteria, ambiguous) | Comment on issue with specific questions. Add label `agent-blocked`. Do not guess.                                                            |
+| Situation                                                | Action                                                                                                                              |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Tripwire crossed                                         | Complete step 9 (CI) first. Then add label `needs-human-review` to the PR. Comment the specific tripwire. Do NOT enable auto-merge. |
+| Diff > 400 LOC                                           | Same as tripwire — complete CI before labeling. Note the LOC count in the comment.                                                  |
+| Tests failing after 3 attempts                           | Add label `agent-blocked` to the issue. Comment the failure. Push WIP commits so the human can see. Unassign self.                  |
+| Conflict with main on push                               | Try `git rebase origin/main` once. If conflicts, escalate as `agent-blocked`.                                                       |
+| Issue underspecified (no acceptance criteria, ambiguous) | Comment on issue with specific questions. Add label `agent-blocked`. Do not guess.                                                  |
 
 ## Hard rules (non-negotiable)
 
