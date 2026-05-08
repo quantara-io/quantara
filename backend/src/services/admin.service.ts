@@ -1,5 +1,6 @@
 import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import type { BlendedSignal, IndicatorState } from "@quantara/shared";
 import { ECSClient, DescribeServicesCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
 import { CloudWatchLogsClient, GetLogEventsCommand, DescribeLogStreamsCommand } from "@aws-sdk/client-cloudwatch-logs";
@@ -10,6 +11,9 @@ const REGION = process.env.AWS_REGION ?? "us-west-2";
 const PREFIX = (process.env.TABLE_PREFIX ?? "quantara-dev-").replace(/-$/, "");
 const ACCOUNT_ID = process.env.AWS_ACCOUNT_ID ?? "";
 const ENVIRONMENT = process.env.ENVIRONMENT ?? "dev";
+
+const SIGNALS_V2_TABLE = process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+const INDICATOR_STATE_TABLE = process.env.TABLE_INDICATOR_STATE ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const dynamoRaw = new DynamoDBClient({ region: REGION });
@@ -142,6 +146,7 @@ export async function getStatus() {
 const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
 
 async function getLatestPrices() {
+  const now = Date.now();
   const results: Array<Record<string, unknown>> = [];
   for (const pair of PAIRS) {
     try {
@@ -153,12 +158,77 @@ async function getLatestPrices() {
         ScanIndexForward: false,
         Limit: 3,
       }));
-      for (const item of result.Items ?? []) results.push(item);
+      for (const item of result.Items ?? []) {
+        const timestamp = item.timestamp as string | undefined;
+        const ageSeconds = timestamp
+          ? Math.round((now - new Date(timestamp).getTime()) / 1000)
+          : null;
+        results.push({ ...item, ageSeconds });
+      }
     } catch (err) {
       console.error(`[admin.service] getLatestPrices failed for ${pair}:`, err);
     }
   }
   return results;
+}
+
+async function getIndicatorState(pair: string, exchange: string, timeframe = "1m"): Promise<IndicatorState | null> {
+  try {
+    const pk = `${pair}#${exchange}#${timeframe}`;
+    const result = await dynamo.send(new QueryCommand({
+      TableName: INDICATOR_STATE_TABLE,
+      KeyConditionExpression: "#pk = :pk",
+      ExpressionAttributeNames: { "#pk": "pk" },
+      ExpressionAttributeValues: { ":pk": pk },
+      ScanIndexForward: false,
+      Limit: 1,
+    }));
+    const item = result.Items?.[0];
+    if (!item) return null;
+    return {
+      pair: item.pair as string,
+      exchange: item.exchange as string,
+      timeframe: item.timeframe as IndicatorState["timeframe"],
+      asOf: item.asOfMs as number,
+      barsSinceStart: item.barsSinceStart as number,
+      rsi14: (item.rsi14 as number | null) ?? null,
+      ema20: (item.ema20 as number | null) ?? null,
+      ema50: (item.ema50 as number | null) ?? null,
+      ema200: (item.ema200 as number | null) ?? null,
+      macdLine: (item.macdLine as number | null) ?? null,
+      macdSignal: (item.macdSignal as number | null) ?? null,
+      macdHist: (item.macdHist as number | null) ?? null,
+      atr14: (item.atr14 as number | null) ?? null,
+      bbUpper: (item.bbUpper as number | null) ?? null,
+      bbMid: (item.bbMid as number | null) ?? null,
+      bbLower: (item.bbLower as number | null) ?? null,
+      bbWidth: (item.bbWidth as number | null) ?? null,
+      obv: (item.obv as number | null) ?? null,
+      obvSlope: (item.obvSlope as number | null) ?? null,
+      vwap: (item.vwap as number | null) ?? null,
+      volZ: (item.volZ as number | null) ?? null,
+      realizedVolAnnualized: (item.realizedVolAnnualized as number | null) ?? null,
+      fearGreed: (item.fearGreed as number | null) ?? null,
+      dispersion: (item.dispersion as number | null) ?? null,
+      history: item.history as IndicatorState["history"],
+    };
+  } catch (err) {
+    console.error(`[admin.service] getIndicatorState failed for ${pair}/${exchange}:`, err);
+    return null;
+  }
+}
+
+function computeDispersion(prices: Array<Record<string, unknown>>, pair: string): number | null {
+  const freshPrices = prices
+    .filter((p) => p.pair === pair && p.stale !== true)
+    .map((p) => p.price as number)
+    .filter((v) => typeof v === "number" && !isNaN(v));
+  if (freshPrices.length < 2) return null;
+  const max = Math.max(...freshPrices);
+  const min = Math.min(...freshPrices);
+  const avg = freshPrices.reduce((a, b) => a + b, 0) / freshPrices.length;
+  if (avg === 0) return null;
+  return (max - min) / avg;
 }
 
 async function getRecentCandles(pair: string, exchange: string, timeframe: string, limit = 60) {
@@ -180,12 +250,50 @@ async function getRecentCandles(pair: string, exchange: string, timeframe: strin
 }
 
 export async function getMarket(pair: string, exchange: string) {
-  const [prices, candles, fearGreed] = await Promise.all([
+  const [prices, candles, fearGreed, indicators] = await Promise.all([
     getLatestPrices(),
     getRecentCandles(pair, exchange, "1m", 60),
     getFearGreed(),
+    getIndicatorState(pair, exchange, "1m"),
   ]);
-  return { prices, candles, fearGreed, pair, exchange };
+  const dispersion = computeDispersion(prices, pair);
+  return { prices, candles, fearGreed, indicators, dispersion, pair, exchange };
+}
+
+export async function getSignals(
+  pair: string,
+  since: Date,
+  limit: number,
+): Promise<Array<BlendedSignal & { signalId: string; emittedAt: string }>> {
+  try {
+    const sinceIso = since.toISOString();
+    const sinceSk = `${sinceIso}#`;
+    const result = await dynamo.send(new QueryCommand({
+      TableName: SIGNALS_V2_TABLE,
+      KeyConditionExpression: "#pair = :pair AND #sk >= :sinceSk",
+      ExpressionAttributeNames: { "#pair": "pair", "#sk": "emittedAtSignalId" },
+      ExpressionAttributeValues: { ":pair": pair, ":sinceSk": sinceSk },
+      ScanIndexForward: false,
+      Limit: limit,
+    }));
+    return (result.Items ?? []).map((item) => ({
+      pair: item.pair as string,
+      type: item.type as BlendedSignal["type"],
+      confidence: item.confidence as number,
+      volatilityFlag: item.volatilityFlag as boolean,
+      gateReason: item.gateReason as BlendedSignal["gateReason"],
+      rulesFired: item.rulesFired as string[],
+      perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
+      weightsUsed: item.weightsUsed as BlendedSignal["weightsUsed"],
+      asOf: item.asOf as number,
+      emittingTimeframe: item.emittingTimeframe as BlendedSignal["emittingTimeframe"],
+      signalId: item.signalId as string,
+      emittedAt: item.emittedAt as string,
+    }));
+  } catch (err) {
+    console.error(`[admin.service] getSignals failed for ${pair}:`, err);
+    return [];
+  }
 }
 
 export async function getNews(limit = 50) {
