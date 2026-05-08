@@ -7,6 +7,7 @@ export type * from "./types/api.js";
 export type * from "./types/ingestion.js";
 export type * from "./types/indicators.js";
 export type * from "./types/rules.js";
+export type * from "./types/risk.js";
 
 export { TIER_IDS } from "./types/tiers.js";
 export { SIGNAL_TYPES } from "./types/signals.js";
@@ -19,3 +20,12 @@ export { TIER_DEFINITIONS } from "./constants/tiers.js";
 export { SIGNAL_COLORS, ADVISORY_DISCLAIMER, VOLATILITY_BANNER, RULES, MIN_CONFLUENCE } from "./constants/signals.js";
 export { PAIRS, type TradingPair } from "./constants/pairs.js";
 export { VOL_GATE_THRESHOLDS } from "./constants/vol-gates.js";
+export {
+  RISK_PCT,
+  STOP_MULTIPLIER_ATR,
+  TP_R_MULTIPLES,
+  TP_CLOSE_PCT,
+  TRAILING_STOP_ATR_MULTIPLIER,
+  KELLY_UNLOCK,
+  DRAWDOWN_CAPS,
+} from "./constants/risk.js";
