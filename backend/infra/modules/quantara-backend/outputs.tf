@@ -26,7 +26,8 @@ output "table_names" {
     ingestion_metadata = aws_dynamodb_table.ingestion_metadata.name
     indicator_state    = aws_dynamodb_table.indicator_state.name
     signals_v2         = aws_dynamodb_table.signals_v2.name
-    embedding_cache    = aws_dynamodb_table.embedding_cache.name
+    embedding_cache        = aws_dynamodb_table.embedding_cache.name
+    sentiment_aggregates   = aws_dynamodb_table.sentiment_aggregates.name
   }
 }
 
