@@ -129,6 +129,7 @@ function makeBlendedSignal(): BlendedSignal {
     weightsUsed: { "15m": 0.15, "1h": 0.20, "4h": 0.30, "1d": 0.35, "1m": 0, "5m": 0 },
     asOf: 1700000900000,
     emittingTimeframe: "15m",
+    risk: null,
   };
 }
 
