@@ -26,6 +26,24 @@
 - Pair-to-pair relative strength signals (BTC vs ETH). Future work.
 - Order routing, slippage modeling, or trade execution. Out of scope by product definition.
 
+### Latency targets (v2 — supersedes the §12.2 aspirational budget)
+
+End-to-end latency is measured from candle close (UTC boundary) to a connected SSE client receiving the updated signal.
+
+| Segment                                                  | p50  | p99   | Notes                                               |
+| -------------------------------------------------------- | ---- | ----- | --------------------------------------------------- |
+| Candle close → DDB write (poller Lambda)                 | <1s  | <2s   | EventBridge → Lambda cold start dominates           |
+| DDB write → DDB Streams record visible                   | <1s  | <2s   | DDB Streams replication lag                         |
+| Streams → quorum check + indicator Lambda invocation     | <1s  | <1.5s | Quorum counter check (see §5.5); skip non-quorum    |
+| Indicator compute + signal blend                         | <50ms| <200ms| Pure CPU; indicator cache warm                     |
+| LLM ratification (when invoked, ~10–20% of closes)      | <1s  | <3s   | Sonnet 4.6 via API; budget 3s p99                   |
+| Signal write → SNS fanout → SSE Lambda → client          | <1s  | <2s   | SNS broadcast + SSE push (see §16)                  |
+| **Total end-to-end**                                     | **<3s** | **<6s** | **Primary target. Measure at p99.**              |
+
+Note: the LLM ratification path adds up to 3s on the ~10–20% of closes it fires. The non-ratified path stays well under 6s p99. The 6s p99 budget covers the ratified path end-to-end.
+
+The §12.2 per-segment budget retains its finer-grained breakdown and remains the implementation target. The table above is the user-facing SLO.
+
 ### Architectural commitment: Hybrid (Option C)
 
 Decision recorded: **algo proposes, LLM ratifies**.
@@ -501,13 +519,74 @@ If `1d` says `buy` and `1h` says `sell`, the blended scalar might still be bulli
 
 **Decision: keep the 3-type schema (`buy / sell / hold`). Do not add a `conflict` type in v1.** The reasoning string is the right surface for inter-TF disagreement. Adding a 4th type would touch the `Signal.type` enum, signal history, accuracy scoring, and the UI chip set — too much change for nuance the LLM can express in prose. Revisit if user research shows the distinction matters.
 
-### 5.5 Time alignment — when do we re-blend?
+### 5.5 Time alignment — event-driven via DDB Streams (v2)
 
-**Policy: re-blend on every per-TF close. Suppress the user-visible signal change if it's trivial.**
+**Policy: re-blend on every per-TF close. Trigger via DDB Streams, not a polling schedule. Suppress the user-visible signal change if it's trivial.**
 
-Each TF closes at its own boundary (15m every 15 min, 1h every hour, 4h every 4 hours, 1d at 00:00 UTC). Whenever any per-TF vote updates, the blender re-runs against the current set of cached votes from all four TFs.
+This section reflects the corrections from #120 (superseding the #114 / PR #118 design). Three architectural flaws in the v1 design — multi-exchange race (Fix #1), SQS non-broadcast (Fix #2), and backfill contamination (Fix #3) — are addressed below.
 
-Suppression rule for UI emit (does not affect internal storage — every blend run is persisted to DDB):
+#### Trigger: DDB Streams on `candles` table
+
+The scheduled IndicatorLambda (§12.3) is replaced by a DDB Streams event-source mapping on the `candles` table. Every candle write (from the higher-TF poller) emits a NEW_IMAGE record that the indicator handler processes.
+
+**Fix #3 — Filter: `source = "live"`**
+
+The poller Lambda (`MarketStreamManager` / scheduled REST poller) stamps every candle record with `source: "live"`. The `quantara-{env}-backfill` Lambda stamps every historical candle with `source: "backfill"`.
+
+The Lambda event source mapping carries a `FilterCriteria` filter so only live writes trigger the indicator handler:
+
+```json
+{
+  "FilterCriteria": {
+    "Filters": [
+      {
+        "Pattern": "{\"dynamodb\":{\"NewImage\":{\"source\":{\"S\":[\"live\"]}}}}"
+      }
+    ]
+  }
+}
+```
+
+Backfilled candles still land in the table (so `getCandles` reads are unaffected), but the indicator-handler stream subscription ignores them. Without this filter, a 30-day backfill replay would flood the signal pipeline with stale compute and push stale signals to live SSE clients.
+
+**Fix #1 — Quorum-based claim (Pattern A: per-exchange counter)**
+
+**Problem:** The poller writes Binance/Coinbase/Kraken candles for the same `(pair, timeframe, closeTime)` as three separate DDB items. DDB Streams emits one record per write. The first exchange's record can trigger cross-exchange canonicalization before the other two writes are visible. Because `processed-close-store` is keyed by `(pair, timeframe, closeTime)`, the later-arriving exchange records are then skipped, leaving a stale or single-exchange signal.
+
+**Solution (Pattern A — per-exchange counter):** maintain a small counter row in a `quantara-{env}-close-quorum` table, keyed by `(pair, timeframe, closeTime)`. Each exchange's candle write (via the DDB Streams handler) atomically increments this counter. The handler only proceeds to compute indicators when the counter reaches the quorum threshold (`≥ 2 of 3` exchanges).
+
+Counter row schema:
+```
+PK: pair#timeframe#closeTime  (e.g. "BTC/USDT#1h#2024-01-15T14:00:00Z")
+SK: "quorum"
+Attributes:
+  exchangeCount: number          // atomically incremented
+  exchanges: Set<string>         // which exchanges have arrived
+  claimedBy: string | null       // exchange name that claimed compute; null until quorum
+  ttl: number                    // closeTime + 1 hour (auto-expire old rows)
+```
+
+Handler logic per stream record:
+```
+1. Check: does NewImage have source = "live"? (FilterCriteria already ensures yes)
+2. Atomically increment close-quorum counter for (pair, tf, closeTime)
+3. If exchangeCount < QUORUM_THRESHOLD (2): stop. Another exchange write will arrive.
+4. If exchangeCount >= QUORUM_THRESHOLD AND claimedBy is null:
+     a. Conditional-write: set claimedBy = thisExchange (prevents concurrent claims)
+     b. If condition fails (another handler already claimed): stop.
+     c. If claim succeeds: proceed to compute indicators.
+5. Check processed-close-store: if (pair, tf, closeTime) already marked done, idempotent stop.
+6. Compute indicators, blend, persist signal.
+7. Write to processed-close-store: (pair, tf, closeTime) = done.
+```
+
+The `processed-close-store` (from #82) now acts as a second idempotency guard. The quorum counter handles the "wait for all exchanges" contract; `processed-close-store` prevents double-processing if the handler ever races on the quorum write.
+
+**What happens when an exchange is consistently slow or missing?**
+
+The quorum threshold is `2 of 3`. If one exchange fails to write within a window, the other two trigger compute. The TTL on the quorum row (closeTime + 1 hour) prevents leftover rows accumulating indefinitely. If all three writes arrive but the first two already triggered compute, the third write's handler finds `claimedBy` is set and stops cleanly.
+
+**Suppression rule for UI emit** (unchanged from v1):
 
 ```
 if  blended.type === previous_blended.type
@@ -518,9 +597,7 @@ then: silent update — no notification, no UI badge change
 else: emit user-visible change
 ```
 
-This gives freshness internally (every minute matters for backtest replay and audit) while keeping the user-visible signal stable.
-
-**Compute cost:** 5 pairs × ~96 closes/day across the 4 TFs (15m=96, 1h=24, 4h=6, 1d=1; sum = 127 per pair/day) ≈ 635 blend runs/day. Lambda + DDB write ≈ negligible (~$5/month).
+**Compute cost:** 5 pairs × ~127 closes/day across the 4 TFs ≈ 635 blend runs/day. Lambda + DDB write + SNS publish ≈ negligible (~$5–10/month).
 
 ### 5.6 Per-TF `null` (no opinion) handling
 
@@ -1463,6 +1540,95 @@ value: { avgScore, totalMagnitude, articleCount, computedAt }
 ttl: 600  // 10 min
 ```
 
+### 11.5 DDB Streams configuration (v2 — event-driven trigger)
+
+This section captures the infrastructure requirements for the §5.5 event-driven design. See also §16 for the `signals-v2` stream that drives SSE fanout.
+
+#### `candles` table — streams enabled
+
+```
+StreamSpecification:
+  StreamEnabled: true
+  StreamViewType: NEW_IMAGE
+```
+
+**`source` attribute requirement:** every item written to the `candles` table must carry a `source` attribute with value `"live"` or `"backfill"`. This is a hard contract between the writer and the stream handler.
+
+- `MarketStreamManager` (Fargate, WebSocket stream) — writes `source: "live"`
+- Scheduled higher-TF REST poller Lambda — writes `source: "live"`
+- `quantara-{env}-backfill` Lambda — writes `source: "backfill"`
+
+Any candle write that omits `source` will not match the `FilterCriteria` and will be silently ignored by the stream handler. During the Terraform rollout, run a one-time backfill attribution pass to stamp existing rows if needed (or accept that pre-migration rows produce no stream events — they're historical).
+
+**Lambda event source mapping — indicator-handler subscription:**
+
+```json
+{
+  "EventSourceArn": "<candles-table-stream-arn>",
+  "FunctionName": "quantara-{env}-indicator-handler",
+  "StartingPosition": "LATEST",
+  "BatchSize": 10,
+  "FilterCriteria": {
+    "Filters": [
+      {
+        "Pattern": "{\"dynamodb\":{\"NewImage\":{\"source\":{\"S\":[\"live\"]}}}}"
+      }
+    ]
+  }
+}
+```
+
+`BatchSize: 10` is a starting point. Under normal load (635 close events/day) the handler will rarely see batches > 1–2 items; the batch size matters more during backfill catch-up, which the filter prevents from reaching the handler. Tune up if latency budget allows processing multiple candles in one invocation.
+
+#### `signals-v2` table — streams enabled
+
+The `signals-v2` table drives the SSE fanout (see §16). Streams are also enabled here so the `signals-fanout` Lambda can respond to every new signal write.
+
+```
+StreamSpecification:
+  StreamEnabled: true
+  StreamViewType: NEW_IMAGE
+```
+
+**Lambda event source mapping — signals-fanout subscription:**
+
+```json
+{
+  "EventSourceArn": "<signals-v2-table-stream-arn>",
+  "FunctionName": "quantara-{env}-signals-fanout",
+  "StartingPosition": "LATEST",
+  "BatchSize": 5,
+  "FilterCriteria": {
+    "Filters": [
+      {
+        "Pattern": "{\"eventName\":[\"INSERT\",\"MODIFY\"]}"
+      }
+    ]
+  }
+}
+```
+
+Only `INSERT` and `MODIFY` events reach the fanout handler — `REMOVE` (TTL expiry) is filtered out to avoid pushing phantom deletes to SSE clients.
+
+#### `close-quorum` table — new table required
+
+The quorum counter (§5.5 Fix #1) requires a dedicated table:
+
+```
+Table name: quantara-{env}-close-quorum
+PK: closeKey (string) — "pair#timeframe#closeTime"
+SK: "quorum" (constant)
+Attributes:
+  exchangeCount (number)
+  exchanges (string set)
+  claimedBy (string | null)
+  ttl (number)
+TTL attribute: ttl
+BillingMode: PAY_PER_REQUEST
+```
+
+No streams needed on this table — it is internal bookkeeping only.
+
 ---
 
 ## 12. Compute architecture
@@ -1485,21 +1651,28 @@ Why: backtestability. We need to be able to point the indicator engine at histor
 
 ### 12.2 Latency budget
 
-| Step                                          | Target           | Notes                                        |
-| --------------------------------------------- | ---------------- | -------------------------------------------- |
-| Candle close → indicator state updated        | < 5s             | Lambda cold start is the cap                 |
-| Indicators → algo signal                      | < 50ms           | Pure CPU                                     |
-| Algo signal → LLM ratification (when invoked) | < 3s             | Haiku is sub-second typically; budget 3s p99 |
-| Signal → user-visible                         | < 30s end-to-end | Backend caches and pushes to web             |
+See §1 for the user-facing SLO (6s p99 end-to-end). This table gives the per-segment implementation targets.
 
-### 12.3 Scheduling
+| Step                                                        | Target           | Notes                                                           |
+| ----------------------------------------------------------- | ---------------- | --------------------------------------------------------------- |
+| Candle close → DDB write (poller Lambda)                    | < 2s p99         | EventBridge → Lambda cold start dominates                       |
+| DDB write → DDB Streams record visible                      | < 2s p99         | DDB Streams replication lag                                     |
+| Streams → quorum check (§5.5) + indicator Lambda invocation | < 1.5s p99       | Skip when quorum not reached                                    |
+| Indicator compute + algo signal                             | < 200ms p99      | Pure CPU; indicator cache warm                                  |
+| Algo signal → LLM ratification (when invoked, ~10–20%)     | < 3s p99         | Sonnet 4.6; falls back to algo signal on timeout                |
+| Signal write → SNS fanout → SSE Lambda → client (§16)      | < 2s p99         | SNS broadcast + SSE push                                        |
+| **Total end-to-end (non-ratified path)**                    | **< 6s p99**     | **Primary SLO. Ratified path may touch 6s ceiling on p99.**    |
 
-EventBridge rules per timeframe:
+### 12.3 Triggering — DDB Streams (v2)
 
-- `cron(* * * * ? *)` — every minute (drives 15m/1h/4h/1d depending on minute-of-hour)
-- The Lambda checks `now() % timeframe == 0` for each TF and only computes the ones that just closed.
+The scheduled IndicatorLambda approach (EventBridge cron) described in earlier drafts is **replaced by DDB Streams** (see §5.5 and §11.5). The indicator handler is triggered by candle writes, not by a clock. This eliminates the EventBridge schedule entirely for the indicator path.
 
-Avoids deploying 4 separate schedules; single Lambda decides what to do.
+The candle-write poller Lambda (higher-TF REST poll) continues to be EventBridge-scheduled per the §2.1 data-quality decision — it calls `fetchOHLCV` at each close boundary. Once its write lands in DDB, DDB Streams triggers the indicator handler. The separation keeps the ingest path (polling → write) distinct from the compute path (write → indicator → signal).
+
+**EventBridge rules still needed (post-v2):**
+
+- Higher-TF REST poller: `cron` per timeframe close boundary (one rule per TF, 4 total). Unchanged.
+- SSE cleanup Lambda (§16.2): `rate(1 hour)` for zombie subscription cleanup.
 
 ---
 
@@ -1577,6 +1750,140 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 | Volatility gate fires too often, suppressing all signals.      | Threshold tunable; backtested to balance suppression vs noise.                         |
 | User over-trusts confidence numbers.                           | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.   |
 | Cross-exchange price disagreement on flash events.             | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale. |
+| **SNS subscription churn cost** (Fix #2 — §16). Each client connect creates 1–5 SNS subscriptions; disconnect removes them. SNS Subscribe/Unsubscribe API is rate-limited (~3,000 calls/s soft limit) and costs $0.50/million API calls. Under sustained user churn (reconnects on mobile lifecycle), costs could spike. | Rate-limit subscription creates per client using a short-lived connection registry grace period (do not re-subscribe if an existing subscription was created < 30s ago for the same `(connectionId, pair)`). Monitor `SNSSubscriptionCount` and `SubscribeCount` CloudWatch metrics. Escalate to AWS IoT Core if SNS API rate limits are regularly exceeded. |
+| **FilterCriteria evaluation cost** (Fix #3 — §5.5, §11.5). DDB Streams delivers all records to the Lambda event source mapping infrastructure, which evaluates `FilterCriteria` before invoking the Lambda. Backfill writes still traverse the stream; they are filtered before invocation, not before delivery. Cost: DDB Streams charges for shard reads regardless of whether the Lambda fires. During a large backfill, stream shard costs may be non-trivial. | Keep `source: "backfill"` writes to off-peak windows. Monitor DDB Streams `ReadThrottleEvents` and `IteratorAge` during backfills. Consider disabling the indicator-handler event source mapping (not the stream itself) during mass backfills if shard cost becomes visible. |
+| **Quorum partial-failure modes** (Fix #1 — §5.5). Three failure scenarios: (a) one exchange permanently stops writing for a `(pair, tf, closeTime)` — quorum row's `exchangeCount` never reaches threshold; (b) two exchanges write but the claim conditional-write races and both claims succeed (DDB conditional write prevents this); (c) the quorum row TTL-expires before quorum is reached, losing the close entirely. | For (a): quorum threshold is `2 of 3`, not `3 of 3` — one missing exchange does not block compute. For (b): DDB `ConditionExpression: attribute_not_exists(claimedBy)` is atomic; only one writer wins. For (c): TTL is `closeTime + 1h`; the poller retries on exchange failure up to its own retry budget (tracked in ingestion-metadata). Emit a CloudWatch metric `CloseMissed` when the quorum row expires without being claimed. |
+
+---
+
+## 16. SSE realtime push — SNS fanout architecture (v2)
+
+This section reflects the corrections from #120 (superseding the #114 / PR #118 design). The v1 design routed per-pair signal updates through SQS queues, which have single-consumer delivery semantics — only the first SSE Lambda instance to `ReceiveMessage` receives the event. With multiple Lambda instances (one per connected client), this breaks the push contract for all but one client. Fix #2 replaces SQS with SNS topics for broadcast semantics.
+
+### 16.1 Architecture overview
+
+```
+signals-v2 DDB table (write on every blend run)
+       │
+       ▼
+DDB Streams (NEW_IMAGE, INSERT/MODIFY filter — see §11.5)
+       │
+       ▼
+quantara-{env}-signals-fanout Lambda
+       │ (publishes NewImage to SNS topic keyed by pair)
+       ▼
+SNS topic per pair (5 topics):
+  signals-stream-BTC
+  signals-stream-ETH
+  signals-stream-SOL
+  signals-stream-XRP
+  signals-stream-DOGE
+       │ (broadcast — every subscriber receives independently)
+       ▼
+Connected SSE Lambda instances
+  (one active HTTPS subscription per subscribed pair per client connection)
+       │
+       ▼
+Connected SSE clients (browser / mobile)
+```
+
+SNS delivers to **all** current subscribers simultaneously. Each connected client's SSE Lambda instance holds its own SNS HTTPS subscription for each pair the client is watching. There is no message loss due to consumer contention.
+
+### 16.2 Client connect / disconnect lifecycle
+
+**On client connect:**
+
+1. Client sends a `GET /signals/stream?pairs=BTC,ETH&token=<jwt>` request to the SSE Lambda function URL.
+2. Lambda authenticates the JWT (Aldero, per standard auth flow).
+3. For each requested pair, Lambda calls `sns.subscribe({ TopicArn, Protocol: "https", Endpoint: <lambdaFunctionUrl> })`.
+4. Lambda writes a connection registry entry for each `(connectionId, pair)`:
+
+```
+Table: quantara-{env}-sse-connections
+PK: connectionId (UUID generated at connect)
+SK: pair
+Attributes:
+  snsSubscriptionArn: string   // returned from sns.subscribe
+  userId: string
+  connectedAt: ISO8601
+  ttl: number                  // connectedAt + 24h (failsafe cleanup)
+```
+
+5. Lambda begins streaming SSE keep-alive events (comment: `": keepalive"`) on a 20-second cadence.
+
+**On client disconnect (clean):**
+
+1. Lambda detects the HTTP response stream close.
+2. For each `(connectionId, pair)` entry in the registry: call `sns.unsubscribe({ SubscriptionArn })`.
+3. Delete the connection registry rows for this `connectionId`.
+
+**On Lambda timeout / crash (unclean disconnect):**
+
+1. The connection registry row TTL (connectedAt + 24h) ensures eventual cleanup.
+2. A periodic cleanup Lambda (EventBridge rate 1h) scans registry rows with `connectedAt < now − 24h` and calls `sns.unsubscribe` on each, then deletes the rows.
+3. SNS HTTPS subscription confirmations: SNS sends a `SubscriptionConfirmation` POST to the Lambda function URL when `subscribe` is called. The Lambda must respond with the confirmation URL (call `sns.confirmSubscription`). Lambda code handles this as a special case before the SSE stream starts.
+
+### 16.3 Fanout Lambda — signals-fanout
+
+Triggered by `signals-v2` DDB Streams (see §11.5). For each NEW_IMAGE record:
+
+1. Extract `pair` from the signal item.
+2. Serialize the signal as JSON.
+3. Publish to SNS topic `signals-stream-{pair}`.
+
+The fanout Lambda is simple — it does not filter based on subscriber state; SNS handles delivery to all subscribers. Keep it under 100ms. No retry logic needed: if a publish fails, the DDB Stream record is retried automatically (up to the stream's `BisectBatchOnFunctionError` policy).
+
+### 16.4 SSE event format
+
+Each SNS message delivered to a subscriber Lambda is a JSON body containing the signal update. The SSE Lambda re-emits it to the connected client:
+
+```
+data: {"pair":"BTC/USDT","type":"buy","confidence":0.68,"reasoning":"...","updatedAt":"2024-01-15T14:00:05Z"}
+
+data: {"pair":"ETH/USDT","type":"hold","confidence":0.5,"volatilityFlag":false,"updatedAt":"2024-01-15T14:00:06Z"}
+```
+
+SSE event fields:
+- `data:` — JSON payload (signal fields from §11.1)
+- `id:` — signalId (for client-side de-duplication and resume)
+- `event:` — `"signal"` for signal updates; `"keepalive"` for heartbeat; `"error"` for recoverable errors
+
+### 16.5 Auth — JWT in query parameter
+
+WebSocket connection upgrading is not available on Lambda function URLs. The SSE endpoint authenticates via a short-lived JWT passed as `?token=<jwt>` in the query string. The JWT is validated at connect time; once the SSE stream is open, no re-authentication is needed for the stream's lifetime.
+
+The `token` must expire within 1 hour (enforced by the Lambda; reject if `exp` > `now + 3600`). Clients refresh by disconnecting and reconnecting with a new token. This matches mobile lifecycle: apps reconnect on foreground resume anyway.
+
+### 16.6 Mobile lifecycle — reconnect on foreground
+
+Mobile clients (React Native) should disconnect the SSE stream when the app goes to background and reconnect on foreground resume. This pattern:
+
+- Avoids the Lambda timeout on long-lived connections (15 min max)
+- Avoids accumulating zombie subscriptions on SNS
+- Keeps the keep-alive path simple (no WebSocket ping/pong needed)
+
+On reconnect, the client receives a full signal snapshot via the REST `/genie/signals` endpoint before opening the SSE stream, so no gap in state.
+
+### 16.7 Scaling considerations
+
+| Factor                               | Current limit / cost         | Mitigation path                                              |
+| ------------------------------------ | ----------------------------- | ------------------------------------------------------------ |
+| SNS subscriptions per topic          | **10,000**                   | 1K concurrent users × 5 pairs = 5K/topic at peak. Within limits but monitor `NumberOfSubscriptions` per topic. Escalation: AWS IoT Core (millions of subscribers, purpose-built for fanout). |
+| SNS API rate (Subscribe/Unsubscribe) | ~3,000 req/s (soft)          | Grace period dedup: don't re-subscribe if existing subscription < 30s old for same `(connectionId, pair)`. See §15 risk entry. |
+| Lambda function URL concurrency      | Account Lambda concurrency   | Reserve concurrency for SSE Lambda to prevent starvation during signal bursts. Start at 200; tune with load tests. |
+| SNS HTTPS delivery latency           | Typically < 500ms            | P99 adds ~1s to the fanout path. Within the 6s p99 budget from §1. |
+
+Defer AWS IoT Core migration until (a) SNS subscription count consistently exceeds 8,000/topic or (b) Subscribe/Unsubscribe rate limits cause visible subscription failures in CloudWatch.
+
+### 16.8 What §16 explicitly defers
+
+| Topic                                          | Phase / Reason                                              |
+| ---------------------------------------------- | ----------------------------------------------------------- |
+| WebSocket variant                              | Explicitly rejected for v1. Lambda function URLs don't support WS upgrades natively. |
+| AWS IoT Core migration                         | Only if SNS limits become real (see §16.7 scaling table).  |
+| Per-client signal filtering (server-side)      | V1 pushes all subscribed-pair updates; client filters UI.  |
+| Tick-level streaming (< 1s updates)            | P3 — explicitly deferred. Sub-second closes not a v1 goal. |
+| Subscription sharing across users (shared SNS batch) | Out of scope — per-client subscription is clean. |
 
 ---
 
