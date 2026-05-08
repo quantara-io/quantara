@@ -1,8 +1,10 @@
 import ccxt from "ccxt";
 import type { Candle, Timeframe } from "@quantara/shared";
-import { EXCHANGES, PAIRS, getSymbol, type ExchangeId, type TradingPair } from "./config.js";
+
 import { storeCandles } from "../lib/candle-store.js";
 import { storePriceSnapshots } from "../lib/store.js";
+
+import { EXCHANGES, PAIRS, getSymbol, type ExchangeId, type TradingPair } from "./config.js";
 import type { PriceSnapshot } from "./fetcher.js";
 
 const WATCHDOG_INTERVAL_MS = 60_000;

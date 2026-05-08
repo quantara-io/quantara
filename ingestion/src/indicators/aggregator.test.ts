@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Candle } from "@quantara/shared";
+
 import { buildIndicatorState } from "./index.js";
 
 // Build 250 deterministic candles (more than enough for all warm-ups).

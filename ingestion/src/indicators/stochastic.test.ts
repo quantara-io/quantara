@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { stochastic } from "./stochastic.js";
 
 function makeOHLC(n = 200, seed = 7): {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
 import type { CryptoPanicPost } from "./types.js";
 
 const ssmSend = vi.fn();

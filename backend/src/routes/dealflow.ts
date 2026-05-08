@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
+
 import { requireAuth } from "../middleware/require-auth.js";
 import { DealsListResponse, CreateDealRequest, DealDetailResponse, DealProfileResponse, UpdateProfileRequest } from "../lib/schemas/dealflow.js";
 import { SuccessResponse } from "../lib/schemas/auth.js";

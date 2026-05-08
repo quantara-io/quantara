@@ -1,8 +1,9 @@
+import { publish } from "../lib/sqs-publisher.js";
+
 import { fetchAlpacaNews, alpacaToNewsRecord } from "./alpaca.js";
 import { fetchRssNews } from "./rss.js";
 import { fetchFearGreedIndex } from "./fear-greed.js";
 import { storeNewsRecords } from "./news-store.js";
-import { publish } from "../lib/sqs-publisher.js";
 
 const POLL_INTERVAL_MS = 2 * 60_000; // 2 minutes
 const FEAR_GREED_INTERVAL_MS = 60 * 60_000; // 1 hour (updates daily, no need to poll fast)

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { bollinger } from "./bollinger.js";
 
 function makeCloses(n = 200, seed = 22): number[] {

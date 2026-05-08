@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { realizedVol, BARS_PER_YEAR } from "./realized-vol.js";
 
 function makeCloses(n = 200, seed = 33): number[] {

@@ -1,4 +1,5 @@
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
+
 import type { CryptoPanicResponse, CryptoPanicPost } from "./types.js";
 
 const ssm = new SSMClient({});

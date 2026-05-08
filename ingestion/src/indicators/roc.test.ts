@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { roc } from "./roc.js";
 
 function makeCloses(n = 200, seed = 55): number[] {

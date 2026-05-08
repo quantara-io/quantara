@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { vwap } from "./vwap.js";
 
 // Build a simple OHLCV series spanning 2 UTC days.

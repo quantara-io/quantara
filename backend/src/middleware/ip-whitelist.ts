@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import ipaddr from "ipaddr.js";
+
 import { logger } from "../lib/logger.js";
 
 const ssm = new SSMClient({});

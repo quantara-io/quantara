@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
 import type { NewsRecord } from "./types.js";
 
 const send = vi.fn();

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { macd, macdUpdate, MacdIncrState } from "./macd.js";
+
+import type { MacdIncrState } from "./macd.js";
+import { macd, macdUpdate } from "./macd.js";
 
 function makeCloses(n = 200, seed = 99): number[] {
   let val = 100;
@@ -341,7 +343,7 @@ describe("macd — single-bar-update parity", () => {
     let emaSlow = closes.slice(0, 26).reduce((a, b) => a + b, 0) / 26;
 
     // MACD line starts at bar 25.
-    let macdLine0 = emaFast - emaSlow;
+    const macdLine0 = emaFast - emaSlow;
 
     // We need 9 MACD values to seed signal EMA at bar 33.
     // Collect macdLine values for bars 25..33.
@@ -353,7 +355,7 @@ describe("macd — single-bar-update parity", () => {
     }
 
     // Seed signal EMA with SMA of first 9 MACD values.
-    let signalEma =
+    const signalEma =
       macdSeedVals.slice(0, 9).reduce((a, b) => a + b, 0) / 9;
 
     // Update emaFast/emaSlow to match bar 33 state after seeding.

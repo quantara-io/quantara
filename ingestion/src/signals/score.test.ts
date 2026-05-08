@@ -18,10 +18,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { scoreRules, scoreTimeframe } from "./score.js";
-import type { GateResult } from "./score.js";
 import type { Rule, TimeframeVote } from "@quantara/shared";
 import type { IndicatorState } from "@quantara/shared";
+
+import { scoreRules, scoreTimeframe } from "./score.js";
+import type { GateResult } from "./score.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures

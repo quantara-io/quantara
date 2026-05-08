@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
+
 import { currentUser, isAdmin } from "../lib/auth";
 
 export function AuthGate({ children }: { children: ReactNode }) {

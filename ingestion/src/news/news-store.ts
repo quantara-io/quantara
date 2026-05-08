@@ -1,5 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, BatchWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+
 import type { NewsRecord } from "./types.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));

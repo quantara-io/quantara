@@ -1,9 +1,11 @@
 import ccxt from "ccxt";
 import type { Candle, Timeframe } from "@quantara/shared";
-import { getSymbol, type ExchangeId, type TradingPair } from "./config.js";
+
 import { storeCandles } from "../lib/candle-store.js";
 import { archiveCandles } from "../lib/s3-archive.js";
 import { getCursor, saveCursor } from "../lib/metadata-store.js";
+
+import { getSymbol, type ExchangeId, type TradingPair } from "./config.js";
 
 const BATCH_SIZE = 500;
 

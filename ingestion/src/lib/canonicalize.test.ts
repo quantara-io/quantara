@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Candle } from "@quantara/shared";
+
 import { canonicalizeCandle } from "./canonicalize.js";
 
 function makeCandle(overrides: Partial<Candle> = {}): Candle {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { volumeZscore } from "./volume-zscore.js";
 
 function makeVolume(n = 200, seed = 88): number[] {

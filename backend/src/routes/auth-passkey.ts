@@ -1,6 +1,7 @@
 // @ts-nocheck — proxy routes return dynamic Aldero responses
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
+
 import { alderoPost, alderoGet, alderoDelete, AlderoError } from "../lib/aldero-client.js";
 import {
   PasskeyOptionsResponse, PasskeyVerifyRequest, PasskeyListResponse,

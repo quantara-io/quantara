@@ -25,8 +25,9 @@ import { describe, it, expect } from "vitest";
 import { RULES, MIN_CONFLUENCE } from "@quantara/shared";
 import type { Rule } from "@quantara/shared";
 import type { IndicatorState } from "@quantara/shared";
-import { buildIndicatorState } from "../indicators/index.js";
 import type { Candle } from "@quantara/shared";
+
+import { buildIndicatorState } from "../indicators/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

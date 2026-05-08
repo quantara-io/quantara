@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { handle } from "hono/aws-lambda";
+
 import { AppError } from "./lib/errors.js";
 import { logger } from "./lib/logger.js";
 import { AlderoError } from "./lib/aldero-client.js";

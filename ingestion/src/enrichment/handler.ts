@@ -1,9 +1,11 @@
 import type { SQSEvent, Context } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { enrichNewsItem } from "./bedrock.js";
+
 import { enrichArticle } from "../news/enrich.js";
 import { publish } from "../lib/sqs-publisher.js";
+
+import { enrichNewsItem } from "./bedrock.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const NEWS_TABLE = process.env.TABLE_NEWS_EVENTS!;

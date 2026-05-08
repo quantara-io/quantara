@@ -1,6 +1,7 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
-import { buildEnrichmentMessage } from "./prompts.js";
 import type { NewsEnrichment } from "@quantara/shared";
+
+import { buildEnrichmentMessage } from "./prompts.js";
 
 const bedrock = new BedrockRuntimeClient({});
 

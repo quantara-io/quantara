@@ -1,5 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+
 import type { PriceSnapshot } from "../exchanges/fetcher.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));

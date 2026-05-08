@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { atr, atrUpdate } from "./atr.js";
 
 function makeOHLC(n = 200, seed = 13): {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { rsi, rsiUpdate } from "./rsi.js";
 
 // Deterministic 200-bar close series: seeded random walk starting at 100.

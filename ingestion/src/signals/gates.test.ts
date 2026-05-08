@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import type { IndicatorState } from "@quantara/shared";
+
 import {
   gateVolatility,
   gateDispersion,
@@ -6,7 +8,6 @@ import {
   evaluateGates,
   narrowPair,
 } from "./gates.js";
-import type { IndicatorState } from "@quantara/shared";
 
 // Minimal IndicatorState factory — only the fields the gate functions read
 function makeState(overrides: Partial<IndicatorState> = {}): IndicatorState {

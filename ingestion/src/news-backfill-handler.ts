@@ -1,4 +1,5 @@
 import type { Context } from "aws-lambda";
+
 import { fetchAlpacaNews, alpacaToNewsRecord } from "./news/alpaca.js";
 import { storeNewsRecords } from "./news/news-store.js";
 import { saveCursor, getCursor } from "./lib/metadata-store.js";

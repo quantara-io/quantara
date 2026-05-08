@@ -15,9 +15,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { blendTimeframeVotes, isTrivialChange, DEFAULT_TIMEFRAME_WEIGHTS, BLEND_THRESHOLD_T } from "./blend.js";
 import type { BlendedSignal } from "@quantara/shared";
 import type { TimeframeVote } from "@quantara/shared";
+
+import { blendTimeframeVotes, isTrivialChange, DEFAULT_TIMEFRAME_WEIGHTS, BLEND_THRESHOLD_T } from "./blend.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures

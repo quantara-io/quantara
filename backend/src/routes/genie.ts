@@ -1,8 +1,9 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
+import { ADVISORY_DISCLAIMER } from "@quantara/shared";
+
 import { requireAuth } from "../middleware/require-auth.js";
 import { SignalsResponse, SignalByPairResponse, SignalHistoryResponse } from "../lib/schemas/genie.js";
-import { ADVISORY_DISCLAIMER } from "@quantara/shared";
 
 const genie = new OpenAPIHono();
 genie.use("*", requireAuth);

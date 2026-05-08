@@ -20,6 +20,9 @@ import type { Timeframe } from "@quantara/shared";
 import { PAIRS } from "@quantara/shared";
 import { RULES } from "@quantara/shared";
 import type { TimeframeVote } from "@quantara/shared";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+
 import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
@@ -30,8 +33,6 @@ import { scoreTimeframe } from "./signals/score.js";
 import { blendTimeframeVotes, isTrivialChange } from "./signals/blend.js";
 import { evaluateGates, narrowPair } from "./signals/gates.js";
 import { EXCHANGES } from "./exchanges/config.js";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 // ---------------------------------------------------------------------------
 // DDB client for vote persistence (ingestion-metadata table)
