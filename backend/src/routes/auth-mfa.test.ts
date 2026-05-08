@@ -54,7 +54,7 @@ describe("GET /mfa/methods", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(body.data.available).toEqual(["totp", "email"]);
+    expect(body.data.available).toEqual(["totp", "email", "sms"]);
     expect(body.data.enrolled).toEqual([
       { id: "a1", type: "totp", enrolledAt: "2026-01-01" },
       { id: "a2", type: "email", enrolledAt: "2026-02-01" },
@@ -71,7 +71,7 @@ describe("GET /mfa/methods", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data.enrolled).toEqual([]);
-    expect(body.data.available).toEqual(["totp", "email"]);
+    expect(body.data.available).toEqual(["totp", "email", "sms"]);
   });
 
   it("handles a non-array upstream response gracefully", async () => {
@@ -284,6 +284,7 @@ describe("POST /mfa/challenge", () => {
     expect(alderoPostMock).toHaveBeenCalledWith("/v1/auth/mfa/challenge", {
       mfa_token: "mfa_abc",
       challenge_type: "oob",
+      oob_channel: "email",
     });
   });
 
