@@ -26,6 +26,19 @@
 - Pair-to-pair relative strength signals (BTC vs ETH). Future work.
 - Order routing, slippage modeling, or trade execution. Out of scope by product definition.
 
+### Latency targets (v3 — dual-SLO, Option B; supersedes the §12.2 aspirational budget)
+
+End-to-end latency is measured from candle close (UTC boundary) to a connected WebSocket client receiving the updated signal. Two separate SLOs reflect the reality that LLM ratification adds non-trivial latency on the subset of closes where it fires.
+
+| Path                              | p99    | Rationale                                                                                              |
+| --------------------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
+| **Non-ratified** (algo only)      | **6s** | Candle close → DDB write → Streams → indicator → signal → WebSocket push. LLM not invoked.            |
+| **Ratified** (algo + LLM, ~10–20% of closes) | **10s** | Same path plus LLM ratification call (budget 3s p99). Honest about the additional latency. |
+
+Each SLO is independently measurable. Operations dashboards track `p99_unratified` and `p99_ratified` as separate CloudWatch metrics. The 6s/10s split corresponds to codex #122 Fix #4 (Option B) — two SLOs rather than one 6s number that the ratified path cannot meet, or one 10s number that undersells the non-ratified path.
+
+The §12.2 per-segment budget retains its finer-grained breakdown and remains the implementation target.
+
 ### Architectural commitment: Hybrid (Option C)
 
 Decision recorded: **algo proposes, LLM ratifies**.
@@ -501,13 +514,65 @@ If `1d` says `buy` and `1h` says `sell`, the blended scalar might still be bulli
 
 **Decision: keep the 3-type schema (`buy / sell / hold`). Do not add a `conflict` type in v1.** The reasoning string is the right surface for inter-TF disagreement. Adding a 4th type would touch the `Signal.type` enum, signal history, accuracy scoring, and the UI chip set — too much change for nuance the LLM can express in prose. Revisit if user research shows the distinction matters.
 
-### 5.5 Time alignment — when do we re-blend?
+### 5.5 Time alignment — event-driven via DDB Streams (v3)
 
-**Policy: re-blend on every per-TF close. Suppress the user-visible signal change if it's trivial.**
+**Policy: re-blend on every per-TF close. Trigger via DDB Streams, not a polling schedule. Suppress the user-visible signal change if it's trivial.**
 
-Each TF closes at its own boundary (15m every 15 min, 1h every hour, 4h every 4 hours, 1d at 00:00 UTC). Whenever any per-TF vote updates, the blender re-runs against the current set of cached votes from all four TFs.
+This section reflects the corrections from #122 (superseding the #120 / PR #121 v2 design, itself superseding #114 / PR #118 v1). The v3 design addresses all four codex findings: Fix #1 (realtime push channel), Fix #2 (quorum via exchange set), Fix #3 (claimedBy ABSENT invariant), Fix #4 (dual SLO). This sub-section addresses Fix #2 and the DDB Streams event-driven trigger retained from v2.
 
-Suppression rule for UI emit (does not affect internal storage — every blend run is persisted to DDB):
+#### Trigger: DDB Streams on `candles` table
+
+The scheduled IndicatorLambda (EventBridge cron) is replaced by a DDB Streams event-source mapping on the `candles` table. Every live candle write emits a NEW_IMAGE record that the indicator handler processes. A `FilterCriteria` filter on `source = "live"` prevents backfill writes from triggering the compute path (see §11.5 for stream configuration).
+
+#### Fix #2 (P1) — Quorum via exchange set, not counter
+
+**Problem (codex #122 Fix #2):** DDB Streams retries can deliver the same record twice; the higher-TF poller can rewrite the same exchange's candle. A counter increments on each visit, so quorum=2 can be satisfied by one exchange's two events. The v2 design (PR #121) used `exchangeCount: number` — this is incorrect.
+
+**Solution:** Track the set of seen exchanges, not a count. The `close-quorum` table row stores a DDB string set (`SS`):
+
+```ts
+// close-quorum row after two distinct exchanges have written
+{
+  pk: "BTC/USDT#15m#2026-05-08T20:00:00.000Z",
+  exchanges: ["binanceus", "coinbase"]  // SS (string set)
+  // NOT: exchangeCount: 2
+}
+```
+
+Each handler invocation issues an atomic `ADD` on the set:
+
+```ts
+UpdateExpression: "ADD #exchanges :exchange",
+ExpressionAttributeNames: { "#exchanges": "exchanges" },
+ExpressionAttributeValues: { ":exchange": new Set(["binanceus"]) },
+ReturnValues: "ALL_NEW"
+```
+
+After the update, check `exchanges.size >= QUORUM_THRESHOLD` (default: 2). DDB string sets are inherently de-duplicated — the same exchange visiting twice produces no change in set size. Same-exchange revisits are idempotent at the DDB-set level.
+
+Quorum is claimed when this handler's own update brings `exchanges.size` to `>= 2` AND `claimedBy` is absent (see §11.5 for the conditional Put that enforces the ABSENT invariant). If the set was already `>= 2` before this update (another handler already claimed), no-op.
+
+**Handler logic per stream record:**
+
+```
+1. FilterCriteria ensures source = "live" (§11.5)
+2. ADD this exchange to close-quorum exchanges set (atomic)
+3. If exchanges.size < QUORUM_THRESHOLD (2): stop — another exchange will arrive
+4. If exchanges.size >= QUORUM_THRESHOLD AND claimedBy absent:
+     a. Conditional Put: SET claimedBy = thisExchange, claimedAt = now
+        ConditionExpression: "size(exchanges) >= :quorum AND attribute_not_exists(claimedBy)"
+     b. If condition fails (another handler already claimed): stop
+     c. If claim succeeds: proceed to compute indicators
+5. Check processed-close-store: if (pair, tf, closeTime) already done, idempotent stop
+6. Compute indicators, blend, persist signal
+7. Write to processed-close-store: (pair, tf, closeTime) = done
+```
+
+**What happens when an exchange is consistently slow or missing?**
+
+Quorum threshold is `2 of 3`. If one exchange fails to write within a window, the other two trigger compute. The TTL on the quorum row (`closeTime + 24h`) prevents leftover rows accumulating. The `processed-close-store` acts as a second idempotency guard if the quorum race is somehow tied.
+
+**Suppression rule for UI emit** (unchanged from v1 design — internal storage always receives every blend run):
 
 ```
 if  blended.type === previous_blended.type
@@ -518,9 +583,7 @@ then: silent update — no notification, no UI badge change
 else: emit user-visible change
 ```
 
-This gives freshness internally (every minute matters for backtest replay and audit) while keeping the user-visible signal stable.
-
-**Compute cost:** 5 pairs × ~96 closes/day across the 4 TFs (15m=96, 1h=24, 4h=6, 1d=1; sum = 127 per pair/day) ≈ 635 blend runs/day. Lambda + DDB write ≈ negligible (~$5/month).
+**Compute cost:** 5 pairs × ~127 closes/day across the 4 TFs ≈ 635 blend runs/day. Lambda + DDB write + WebSocket postToConnection ≈ negligible (~$5–10/month).
 
 ### 5.6 Per-TF `null` (no opinion) handling
 
@@ -1463,6 +1526,120 @@ value: { avgScore, totalMagnitude, articleCount, computedAt }
 ttl: 600  // 10 min
 ```
 
+### 11.5 DDB Streams configuration + close-quorum table (v3 — event-driven trigger)
+
+This section captures the infrastructure requirements for the §5.5 event-driven design. See §16 for the `signals-v2` stream that drives WebSocket fanout.
+
+#### `candles` table — streams enabled
+
+```
+StreamSpecification:
+  StreamEnabled: true
+  StreamViewType: NEW_IMAGE
+```
+
+**`source` attribute requirement:** every item written to the `candles` table must carry a `source` attribute with value `"live"` or `"backfill"`. This is a hard contract between the writer and the stream handler.
+
+- `MarketStreamManager` (Fargate, WebSocket stream) — writes `source: "live"`
+- Scheduled higher-TF REST poller Lambda — writes `source: "live"`
+- `quantara-{env}-backfill` Lambda — writes `source: "backfill"`
+
+Any candle write that omits `source` will not match the FilterCriteria and will be silently ignored by the stream handler.
+
+**Lambda event source mapping — indicator-handler subscription:**
+
+```json
+{
+  "EventSourceArn": "<candles-table-stream-arn>",
+  "FunctionName": "quantara-{env}-indicator-handler",
+  "StartingPosition": "LATEST",
+  "BatchSize": 10,
+  "FilterCriteria": {
+    "Filters": [
+      {
+        "Pattern": "{\"dynamodb\":{\"NewImage\":{\"source\":{\"S\":[\"live\"]}}}}"
+      }
+    ]
+  }
+}
+```
+
+#### `signals-v2` table — streams enabled
+
+The `signals-v2` table drives WebSocket fanout (see §16). Streams are enabled here so the `signals-fanout` Lambda can respond to every new signal write.
+
+```
+StreamSpecification:
+  StreamEnabled: true
+  StreamViewType: NEW_IMAGE
+```
+
+**Lambda event source mapping — signals-fanout subscription:**
+
+```json
+{
+  "EventSourceArn": "<signals-v2-table-stream-arn>",
+  "FunctionName": "quantara-{env}-signals-fanout",
+  "StartingPosition": "LATEST",
+  "BatchSize": 5,
+  "FilterCriteria": {
+    "Filters": [
+      {
+        "Pattern": "{\"eventName\":[\"INSERT\",\"MODIFY\"]}"
+      }
+    ]
+  }
+}
+```
+
+Only `INSERT` and `MODIFY` events reach the fanout handler — `REMOVE` (TTL expiry) is filtered out to avoid pushing phantom deletes to WebSocket clients.
+
+#### `close-quorum` table — schema (v3: Fix #2 + Fix #3)
+
+The quorum mechanism (§5.5 Fix #2) and `claimedBy` ABSENT invariant (Fix #3 from codex #122) require a dedicated table.
+
+**close-quorum row schema:**
+
+```
+Table name: quantara-{env}-close-quorum
+PK: pk (string) — "pair#timeframe#closeTime"  e.g. "BTC/USDT#15m#2026-05-08T20:00:00.000Z"
+SK: "quorum" (constant)
+Attributes:
+  pk: string           (always present)
+  exchanges: SS        (string set — always present, grows as exchanges report; DDB-deduplicated)
+  claimedBy: string    (ABSENT until quorum is reached and a handler claims; NEVER null)
+  claimedAt: string    (ABSENT until claimed)
+  ttl: number          (set to closeTime + 24h on row creation)
+BillingMode: PAY_PER_REQUEST
+TTL attribute: ttl
+```
+
+**Fix #3 (P2) — `claimedBy` ABSENT invariant (codex #122):**
+
+> DDB treats `null` as a present attribute. `attribute_not_exists(claimedBy)` returns false if the row was initialized with `claimedBy: null`, causing every claim attempt after row creation to fail. The v2 design (PR #121) documented `claimedBy: string | null` — this is incorrect.
+>
+> The attribute must be **absent** (not set at all) until a handler successfully claims quorum. Row creation only sets `pk`, `exchanges`, and `ttl`. `claimedBy` and `claimedAt` are set for the first time via the conditional claim Put.
+
+**Conditional Put for the claim:**
+
+```ts
+await ddb.update({
+  TableName: closeQuorumTable,
+  Key: { pk: closeKey, sk: "quorum" },
+  UpdateExpression: "SET claimedBy = :handler, claimedAt = :now",
+  ConditionExpression: "size(exchanges) >= :quorum AND attribute_not_exists(claimedBy)",
+  ExpressionAttributeValues: {
+    ":handler": thisExchange,
+    ":now": new Date().toISOString(),
+    ":quorum": QUORUM_THRESHOLD,
+  },
+});
+```
+
+This is safe because: (a) `claimedBy` is absent on row creation, so `attribute_not_exists(claimedBy)` is true initially; (b) the first successful claim sets `claimedBy`, making subsequent claims' `attribute_not_exists` false; (c) DDB conditional writes are atomic.
+
+No streams needed on the `close-quorum` table — it is internal bookkeeping only.
+
 ---
 
 ## 12. Compute architecture
@@ -1479,27 +1656,34 @@ Cons: stateful service is harder to scale horizontally; restart loses warm-up wi
 Pros: stateless, easy to scale, easy to replay against historical candles for backtests.
 Cons: pays DDB read cost on every run; indicators have to be re-derived from candles each invocation.
 
-**Recommendation: Shape B.** Scheduled `IndicatorLambda` triggered on each candle-close boundary (per timeframe) computes indicators from DDB candles + caches the indicator values back into a `quantara-{env}-indicator-state` table. The next signal computation reads cached state + the most recent candle and recomputes only the deltas.
+**Recommendation: Shape B.** `IndicatorLambda` triggered by DDB Streams on candle writes (event-driven, not scheduled — see §5.5 and §11.5) computes indicators from DDB candles + caches the indicator values back into a `quantara-{env}-indicator-state` table. The next signal computation reads cached state + the most recent candle and recomputes only the deltas.
 
 Why: backtestability. We need to be able to point the indicator engine at historical candles and reproduce the exact signals that would have fired. A stateful Fargate process makes that arduous.
 
 ### 12.2 Latency budget
 
-| Step                                          | Target           | Notes                                        |
-| --------------------------------------------- | ---------------- | -------------------------------------------- |
-| Candle close → indicator state updated        | < 5s             | Lambda cold start is the cap                 |
-| Indicators → algo signal                      | < 50ms           | Pure CPU                                     |
-| Algo signal → LLM ratification (when invoked) | < 3s             | Haiku is sub-second typically; budget 3s p99 |
-| Signal → user-visible                         | < 30s end-to-end | Backend caches and pushes to web             |
+See §1 for the user-facing dual-SLO (non-ratified p99 = 6s, ratified p99 = 10s). This table gives the per-segment implementation targets.
 
-### 12.3 Scheduling
+| Step                                                        | Target       | Notes                                                        |
+| ----------------------------------------------------------- | ------------ | ------------------------------------------------------------ |
+| Candle close → DDB write (poller Lambda)                    | < 2s p99     | EventBridge → Lambda cold start dominates                    |
+| DDB write → DDB Streams record visible                      | < 2s p99     | DDB Streams replication lag                                  |
+| Streams → quorum check (§5.5) + indicator Lambda invocation | < 1.5s p99   | Skip when set-quorum not reached                             |
+| Indicator compute + algo signal                             | < 200ms p99  | Pure CPU; indicator cache warm                               |
+| Algo signal → LLM ratification (when invoked, ~10–20%)     | < 3s p99     | Sonnet 4.6; falls back to algo signal on timeout             |
+| Signal write → WebSocket postToConnection (§16)             | < 1s p99     | API Gateway manages connections; fanout Lambda iterates registry |
+| **Total end-to-end (non-ratified path)**                    | **< 6s p99** | **Primary SLO. Ratified path p99 = 10s (§1).**              |
 
-EventBridge rules per timeframe:
+### 12.3 Triggering — DDB Streams (v3)
 
-- `cron(* * * * ? *)` — every minute (drives 15m/1h/4h/1d depending on minute-of-hour)
-- The Lambda checks `now() % timeframe == 0` for each TF and only computes the ones that just closed.
+The scheduled IndicatorLambda approach (EventBridge cron) described in earlier drafts is **replaced by DDB Streams** (see §5.5 and §11.5). The indicator handler is triggered by live candle writes, not by a clock.
 
-Avoids deploying 4 separate schedules; single Lambda decides what to do.
+The candle-write poller Lambda (higher-TF REST poll) continues to be EventBridge-scheduled per the §2.1 data-quality decision — it calls `fetchOHLCV` at each close boundary. Once its write lands in DDB, DDB Streams triggers the indicator handler. The separation keeps the ingest path (polling → write) distinct from the compute path (write → indicator → signal).
+
+**EventBridge rules still needed:**
+
+- Higher-TF REST poller: `cron` per timeframe close boundary (one rule per TF, 4 total). Unchanged.
+- WebSocket zombie-connection cleanup Lambda (§16.2): `rate(1 hour)` for stale connection-registry row cleanup.
 
 ---
 
@@ -1560,7 +1744,7 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 
 1. **Source of truth for "the price" across exchanges.** Median works but is rough. Volume-weighted across the three exchanges is better — but requires per-exchange volume normalization. Decide before Phase 1.
 2. **Tier gating.** Should free-tier users get all timeframes, or only `1d`? Affects compute cost and conversion strategy.
-3. **Push vs pull for the user-facing signal stream.** WebSocket from backend is the right answer long-term, but the current backend is Lambda-on-API-Gateway — no native WS. May need to plumb AppSync or accept polling for v1.
+3. **Push channel:** Resolved in v3 — API Gateway WebSocket (see §16). Removed from open questions.
 4. **News provider expansion.** CoinTelegraph + Decrypt + CoinDesk + Alpaca cover headlines but miss CT/X — which is where most crypto narrative actually breaks. Do we add a Twitter source?
 5. **Whale wallet list.** `WHALE_MONITORING.md` references a tracked-wallet set. Who curates it? How often does it rotate? Plug into Phase 9.
 6. **Compliance review.** "Advisory not advice" wording is in `ADVISORY_DISCLAIMER`. Does the risk-recommendation language (stop-loss, position size) need additional disclaimers? Likely yes in some jurisdictions.
@@ -1568,6 +1752,8 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 ---
 
 ## 15. Risks
+
+Risks updated for v3 (codex #122). SNS/SQS-specific entries from v2 (PR #121) are replaced with WebSocket-specific equivalents. Quorum partial-failure entry is retained and updated for exchange-set semantics.
 
 | Risk                                                           | Mitigation                                                                             |
 | -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
@@ -1577,6 +1763,164 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 | Volatility gate fires too often, suppressing all signals.      | Threshold tunable; backtested to balance suppression vs noise.                         |
 | User over-trusts confidence numbers.                           | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.   |
 | Cross-exchange price disagreement on flash events.             | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale. |
+| **WebSocket connection limit** (Fix #1 — §16). API Gateway WebSocket has a default limit of 500 concurrent connections per account in some regions; the soft limit can be raised but requires an AWS support case. Under high concurrent user load (e.g. a viral moment), new connection attempts may be rejected at the API Gateway layer. | Monitor `ConnectCount` and `ConnectionDuration` CloudWatch metrics. Request a connection limit increase before launch. Escalate to AWS IoT Core if concurrency exceeds 50% of the raised limit sustained for > 5 min. |
+| **`postToConnection` rate limits** (Fix #1 — §16). API Gateway WebSocket `postToConnection` is rate-limited per connection (default 32 KB/s per connection, 128 messages/s per connection) and at the account level. A fanout Lambda that sends to thousands of connections simultaneously may hit account-level limits during a signal burst. | Batch `postToConnection` calls with exponential backoff on `LimitExceededException`. Shard the fanout Lambda by pair (one Lambda invocation per pair) to distribute load. Monitor `PostConnectionCount` and `TooManyRequestsException` in CloudWatch. |
+| **Stale WebSocket connections** (Fix #1 — §16). API Gateway emits `$disconnect` events on clean disconnects but may not emit them for mobile clients that drop network silently. The connection registry then holds stale entries; `postToConnection` calls to them return `GoneException` (410). | Handle `GoneException` in the fanout Lambda: on 410, delete the stale connection registry row and continue. Periodic cleanup Lambda (§16, §12.3) scans rows with `connectedAt < now − 24h` as a backstop. |
+| **FilterCriteria evaluation cost** (§5.5, §11.5). DDB Streams delivers all records to the Lambda event source mapping infrastructure; FilterCriteria evaluation happens before Lambda invocation but after shard read. Backfill writes still traverse the stream; shard read costs accumulate. | Keep `source: "backfill"` writes to off-peak windows. Monitor DDB Streams `ReadThrottleEvents` and `IteratorAge` during backfills. Consider disabling the indicator-handler event source mapping (not the stream itself) during mass backfills if shard cost becomes material. |
+| **Quorum partial-failure modes** (Fix #2 — §5.5). Three scenarios: (a) one exchange permanently stops writing for a `(pair, tf, closeTime)` — quorum set never reaches threshold; (b) two exchanges write but the claim conditional write races — DDB `attribute_not_exists(claimedBy)` prevents dual-claim; (c) the quorum row TTL-expires before quorum is reached, losing the close. | For (a): quorum threshold is `2 of 3` — one missing exchange does not block compute. For (b): DDB `ConditionExpression: attribute_not_exists(claimedBy)` is atomic; only one writer wins. For (c): TTL is `closeTime + 24h`; the poller retries on exchange failure up to its own retry budget. Emit a `CloseMissed` CloudWatch metric when the quorum row expires without being claimed. |
+
+---
+
+## 16. Realtime push — API Gateway WebSocket (v3)
+
+This section reflects the corrections from codex #122 Fix #1 (P1). The v2 design (PR #121) used Lambda Function URL SSE with SNS fanout. That design is fundamentally incompatible with Lambda's invocation model: a Lambda function URL spins up a new invocation per request and cannot receive a fanout signal from a separate Lambda invocation. The original SSE Lambda invocation (holding the open response stream) and any new POST/event invocation are different processes with no shared memory. SSE is explicitly rejected for this reason — it was the right semantic choice, but Lambda cannot implement it. API Gateway WebSocket is the correct primitive.
+
+AppSync GraphQL subscriptions were considered but rejected: heavier infra, Appsync-specific client SDKs, and no meaningful benefit over WebSocket for our one-way push contract. Not adopting.
+
+No migration story is needed for SSE → WebSocket: SSE was never shipped to production clients.
+
+### 16.1 Architecture overview
+
+```
+signals-v2 DDB table (write on every blend run)
+       │
+       ▼ (NEW_IMAGE, INSERT/MODIFY filter — see §11.5)
+DDB Streams
+       │
+       ▼
+quantara-{env}-signals-fanout Lambda
+       │ (reads connection registry; calls postToConnection per subscribed client)
+       ▼
+API Gateway WebSocket API
+  @connections/{connectionId} (Management API)
+       │ (pushes to each connected client subscribed to this pair)
+       ▼
+Connected WebSocket clients (browser / mobile)
+```
+
+API Gateway holds the WebSocket connections (long-lived, stateful). Lambda functions do not need to hold any open connection — they call the `@connections/{connectionId}` Management API endpoint from any invocation context. This is why WebSocket works where SSE fails: the connection state is in API Gateway, not in a Lambda process.
+
+### 16.2 Connection registry
+
+Each active WebSocket connection is tracked in a DDB connection registry table:
+
+```
+Table name: quantara-{env}-ws-connections
+PK: connectionId (string) — assigned by API Gateway at $connect
+Attributes:
+  userId: string
+  subscribedPairs: SS     // string set of pair identifiers e.g. {"BTC/USDT", "ETH/USDT"}
+  connectedAt: string     // ISO8601
+  ttl: number             // connectedAt + 24h (failsafe cleanup for zombie connections)
+BillingMode: PAY_PER_REQUEST
+TTL attribute: ttl
+```
+
+No SK needed — `connectionId` is globally unique (API Gateway guarantees uniqueness per WebSocket stage).
+
+### 16.3 Route handlers (`$connect`, `$disconnect`, `$default`)
+
+#### `$connect` — authentication + subscription registration
+
+API Gateway invokes the `$connect` Lambda when a client opens a WebSocket connection. The client must include auth and subscription parameters in the query string:
+
+```
+wss://xxx.execute-api.us-east-1.amazonaws.com/prod?token=<jwt>&pairs=BTC%2FUSDT,ETH%2FUSDT
+```
+
+Handler logic:
+1. Extract `token` from query string. Verify JWT via Aldero (standard auth flow — see `quantara-aldero-auth` skill). If verification fails, return HTTP 401 — API Gateway closes the connection.
+2. Extract `pairs` from query string. Validate each pair against the allowed set. Reject unknown pairs.
+3. Write a connection registry row: `{ connectionId, userId, subscribedPairs: Set(pairs), connectedAt, ttl }`.
+4. Return HTTP 200 — connection is now open.
+
+Auth at `$connect` is sufficient for the lifetime of the connection. No re-authentication is performed on subsequent messages. Clients refresh by disconnecting and reconnecting with a new token.
+
+#### `$disconnect` — cleanup
+
+API Gateway invokes `$disconnect` on clean disconnects (client close, idle timeout, server-side close). Handler logic:
+1. Delete the connection registry row for this `connectionId`.
+
+API Gateway also emits `$disconnect` for most abnormal disconnects, but mobile clients dropping network silently may not trigger it promptly. The TTL on the connection registry row (connectedAt + 24h) handles zombie cleanup as a backstop. A periodic cleanup Lambda (EventBridge `rate(1 hour)`) scans registry rows with `ttl < now` and deletes them (the TTL attribute handles DDB-side expiry; this Lambda handles any residual API Gateway subscription state if needed).
+
+#### `$default` — client messages (not used in v1)
+
+The `$default` route handles any messages sent by the client after connection. In v1, clients do not send commands beyond the initial subscription (handled at `$connect` via query params). The `$default` handler returns a 200 no-op. Future use: re-subscription requests without a full reconnect.
+
+### 16.4 signals-fanout Lambda
+
+Triggered by `signals-v2` DDB Streams (§11.5). For each NEW_IMAGE record:
+
+1. Extract `pair` from the signal item.
+2. Query the connection registry: scan for all connection rows where `subscribedPairs` contains this pair.
+   - Use a GSI if connection count exceeds ~100 (add `GSI: pair → connectionId` or use a secondary index on `subscribedPairs`). For v1 scale, a Scan with FilterExpression on `subscribedPairs` is sufficient.
+3. For each matching `connectionId`, call:
+   ```ts
+   await apigwManagement.postToConnection({
+     ConnectionId: connectionId,
+     Data: JSON.stringify(signalPayload),
+   });
+   ```
+4. On `GoneException` (HTTP 410): the connection is stale. Delete the registry row and continue.
+5. On `LimitExceededException`: apply exponential backoff (max 3 retries). If still failing, log and continue — signal delivery is best-effort per-connection; missing one push is acceptable since the client will see the update on next poll or reconnect.
+
+The fanout Lambda should complete within 3s for up to ~500 concurrent connections per pair (well within p99 budget). Above that, shard by pair: one Lambda invocation per pair.
+
+### 16.5 Event format
+
+Each `postToConnection` payload is a JSON object:
+
+```json
+{
+  "event": "signal",
+  "pair": "BTC/USDT",
+  "type": "buy",
+  "confidence": 0.68,
+  "reasoning": "RSI divergence confirmed by MACD crossover; 4h trend bullish.",
+  "volatilityFlag": false,
+  "updatedAt": "2026-05-08T20:00:05.000Z",
+  "signalId": "01HV..."
+}
+```
+
+Two event types:
+- `"signal"` — a new or updated signal for a subscribed pair.
+- `"signal-invalidated"` — a previously live signal has been invalidated (e.g. breaking news). Carries `{ event: "signal-invalidated", pair, signalId, reason }`.
+
+The `signalId` field enables client-side de-duplication if the fanout Lambda is retried.
+
+### 16.6 Client reconnect (manual — no browser auto-reconnect)
+
+WebSocket does not have SSE's built-in browser auto-reconnect. Clients must implement reconnect logic:
+
+1. On `close` event (any code): wait 1s, then attempt reconnect with exponential backoff (max 30s interval).
+2. On reconnect, fetch a fresh signal snapshot via `GET /genie/signals` before re-opening the WebSocket, so no state gap exists between disconnect and the first push.
+3. Mobile (React Native): disconnect on app background, reconnect on foreground resume. This avoids zombie connections and Lambda timeouts. The 29-minute API Gateway idle timeout is a backstop.
+
+Client SDK (React / React Native) should abstract this pattern. Do not rely on the WebSocket closing cleanly — always fetch a REST snapshot on reconnect.
+
+### 16.7 Scaling considerations
+
+| Factor                                    | Limit / cost                          | Mitigation path                                                                              |
+| ----------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| API Gateway WebSocket connections         | 500 default; raise via support case   | Request limit increase before launch. Monitor `ConnectCount`.                                |
+| `postToConnection` rate                   | 32 KB/s and 128 msg/s per connection | Within budget for our payload size (~1 KB). Flag if avg signal frequency exceeds 10/s/pair.  |
+| Account-level `postToConnection` rate     | 10,000 req/s default (soft limit)    | At 1K concurrent users × 5 pairs per user = 5,000 calls per signal emit. Within limits.     |
+| Connection registry scan (fanout path)   | O(connections) per signal emit        | Add GSI on `subscribedPairs` when connection count consistently exceeds 200.                 |
+| `$connect` Lambda cold start             | < 1s (Lambda SnapStart eligible)      | Keep `$connect` Lambda lean; no heavy dependencies.                                          |
+
+Escalate to AWS IoT Core if WebSocket connection count consistently exceeds 80% of the raised API Gateway limit, or if `postToConnection` rate limits cause visible delivery failures in CloudWatch.
+
+### 16.8 What §16 explicitly defers
+
+| Topic                                              | Reason / Phase                                                                     |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| SSE (Server-Sent Events)                           | Explicitly rejected — Lambda function URLs cannot fan messages into an open stream from a separate invocation. Not revisiting unless the compute model changes fundamentally. |
+| AppSync GraphQL subscriptions                      | Alternative considered; rejected for heavier infra and no benefit over WebSocket for one-way push. |
+| Tick-level streaming (< 1s updates)               | P3 — sub-second closes are not a v1 goal.                                          |
+| Per-pair GSI on connection registry               | Add when connection count > 200 concurrent per pair (monitor first).               |
+| Bidirectional commands (client → server via WS)  | `$default` handler is a no-op in v1; revisit if interactive features land.         |
+| AWS IoT Core migration                            | Only if API Gateway WebSocket limits become binding (§16.7).                       |
 
 ---
 
