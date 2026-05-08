@@ -283,6 +283,7 @@ export async function getSignals(
       volatilityFlag: item.volatilityFlag as boolean,
       gateReason: item.gateReason as BlendedSignal["gateReason"],
       rulesFired: item.rulesFired as string[],
+      risk: (item.risk as BlendedSignal["risk"]) ?? null,
       perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
       weightsUsed: item.weightsUsed as BlendedSignal["weightsUsed"],
       asOf: item.asOf as number,
