@@ -109,7 +109,7 @@ export async function pruneHistory(): Promise<void> {
       Key: { metaKey: "market:fear-greed" },
       ProjectionExpression: "#h",
       ExpressionAttributeNames: { "#h": "history" },
-    })
+    }),
   );
 
   const history = (result.Item?.history as FearGreedHistoryEntry[] | undefined) ?? [];
@@ -125,6 +125,6 @@ export async function pruneHistory(): Promise<void> {
       TableName: METADATA_TABLE,
       Key: { metaKey: "market:fear-greed" },
       UpdateExpression: removeExpression,
-    })
+    }),
   );
 }

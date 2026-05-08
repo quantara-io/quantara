@@ -95,10 +95,10 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
             source: (newsRecord.source as string | undefined) ?? "unknown",
             url: (newsRecord.url as string | undefined) ?? "",
             duplicateOf: phase5a.duplicateOf ?? null,
-          }))
+          })),
         );
         console.log(
-          `[Enrichment] Fan-out: wrote ${phase5a.mentionedPairs.length} pair rows for ${newsId}`
+          `[Enrichment] Fan-out: wrote ${phase5a.mentionedPairs.length} pair rows for ${newsId}`,
         );
       }
 

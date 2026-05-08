@@ -51,7 +51,7 @@ export interface SentimentAggregate {
  */
 export async function recomputeSentimentAggregate(
   pair: string,
-  window: AggregationWindow
+  window: AggregationWindow,
 ): Promise<SentimentAggregate> {
   const now = Date.now();
   const sinceISO = new Date(now - WINDOW_MS[window]).toISOString();
@@ -64,9 +64,7 @@ export async function recomputeSentimentAggregate(
 
   const articleCount = unique.length;
   const meanScore =
-    articleCount > 0
-      ? unique.reduce((sum, a) => sum + a.sentimentScore, 0) / articleCount
-      : null;
+    articleCount > 0 ? unique.reduce((sum, a) => sum + a.sentimentScore, 0) / articleCount : null;
   const meanMagnitude =
     articleCount > 0
       ? unique.reduce((sum, a) => sum + a.sentimentMagnitude, 0) / articleCount
@@ -90,11 +88,11 @@ export async function recomputeSentimentAggregate(
     new PutCommand({
       TableName: SENTIMENT_AGGREGATES_TABLE,
       Item: aggregate,
-    })
+    }),
   );
 
   console.log(
-    `[Aggregator] ${pair}/${window}: articles=${articleCount}, meanScore=${meanScore?.toFixed(3) ?? "null"}`
+    `[Aggregator] ${pair}/${window}: articles=${articleCount}, meanScore=${meanScore?.toFixed(3) ?? "null"}`,
   );
 
   return aggregate;
@@ -113,7 +111,7 @@ async function getFearGreedContext(): Promise<FearGreedContext> {
         Key: { metaKey: "market:fear-greed" },
         ProjectionExpression: "#v, #h",
         ExpressionAttributeNames: { "#v": "value", "#h": "history" },
-      })
+      }),
     );
 
     if (!result.Item) {

@@ -50,14 +50,14 @@ async function batchWriteWithRetry(items: DocumentWriteRequest[], table: string)
   for (let attempt = 0; attempt < 5 && unprocessed.length > 0; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, backoff));
     const res = await client.send(
-      new BatchWriteCommand({ RequestItems: { [table]: unprocessed } })
+      new BatchWriteCommand({ RequestItems: { [table]: unprocessed } }),
     );
     unprocessed = (res.UnprocessedItems?.[table] as DocumentWriteRequest[] | undefined) ?? [];
     backoff *= 2;
   }
   if (unprocessed.length > 0) {
     throw new Error(
-      `BatchWrite failed: ${unprocessed.length} items remain unprocessed after 5 attempts`
+      `BatchWrite failed: ${unprocessed.length} items remain unprocessed after 5 attempts`,
     );
   }
 }
@@ -128,7 +128,7 @@ export interface PairNewsQueryResult {
  */
 export async function queryNewsByPair(
   pair: string,
-  sinceISO: string
+  sinceISO: string,
 ): Promise<PairNewsQueryResult[]> {
   const items: PairNewsQueryResult[] = [];
   let lastKey: Record<string, unknown> | undefined;
@@ -146,9 +146,10 @@ export async function queryNewsByPair(
           ":pair": pair,
           ":since": sinceISO,
         },
-        ProjectionExpression: "articleId, publishedAt, sentimentScore, sentimentMagnitude, duplicateOf",
+        ProjectionExpression:
+          "articleId, publishedAt, sentimentScore, sentimentMagnitude, duplicateOf",
         ExclusiveStartKey: lastKey,
-      })
+      }),
     );
 
     for (const item of result.Items ?? []) {

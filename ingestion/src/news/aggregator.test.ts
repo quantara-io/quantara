@@ -75,9 +75,21 @@ describe("computeTrend24h", () => {
     const { computeTrend24h } = await import("./aggregator.js");
     const now = Date.now();
     const history: FearGreedHistoryEntry[] = [
-      { value: 45, classification: "Fear", timestamp: new Date(now - 2 * 3600 * 1000).toISOString() },
-      { value: 60, classification: "Greed", timestamp: new Date(now - 1 * 3600 * 1000).toISOString() },
-      { value: 65, classification: "Greed", timestamp: new Date(now - 30 * 60 * 1000).toISOString() },
+      {
+        value: 45,
+        classification: "Fear",
+        timestamp: new Date(now - 2 * 3600 * 1000).toISOString(),
+      },
+      {
+        value: 60,
+        classification: "Greed",
+        timestamp: new Date(now - 1 * 3600 * 1000).toISOString(),
+      },
+      {
+        value: 65,
+        classification: "Greed",
+        timestamp: new Date(now - 30 * 60 * 1000).toISOString(),
+      },
     ];
     // No entry is 24h old, so baseline = history[0] (value=45), latest = history[2] (value=65)
     const result = computeTrend24h(history);
@@ -88,9 +100,21 @@ describe("computeTrend24h", () => {
     const { computeTrend24h } = await import("./aggregator.js");
     const now = Date.now();
     const history: FearGreedHistoryEntry[] = [
-      { value: 30, classification: "Extreme Fear", timestamp: new Date(now - 30 * 3600 * 1000).toISOString() },
-      { value: 38, classification: "Fear",         timestamp: new Date(now - 25 * 3600 * 1000).toISOString() },
-      { value: 70, classification: "Greed",        timestamp: new Date(now - 1 * 3600 * 1000).toISOString() },
+      {
+        value: 30,
+        classification: "Extreme Fear",
+        timestamp: new Date(now - 30 * 3600 * 1000).toISOString(),
+      },
+      {
+        value: 38,
+        classification: "Fear",
+        timestamp: new Date(now - 25 * 3600 * 1000).toISOString(),
+      },
+      {
+        value: 70,
+        classification: "Greed",
+        timestamp: new Date(now - 1 * 3600 * 1000).toISOString(),
+      },
     ];
     // Both index 0 and index 1 are >=24h old; we keep the most recent baseline = index 1 (38)
     const result = computeTrend24h(history);
@@ -118,9 +142,27 @@ describe("recomputeSentimentAggregate", () => {
 
   it("computes correct meanScore excluding duplicate articles", async () => {
     queryNewsByPairMock.mockResolvedValue([
-      { articleId: "a1", publishedAt: "2026-05-07T10:00:00Z", sentimentScore: 0.8, sentimentMagnitude: 0.9, duplicateOf: null },
-      { articleId: "a2", publishedAt: "2026-05-07T10:30:00Z", sentimentScore: 0.4, sentimentMagnitude: 0.5, duplicateOf: null },
-      { articleId: "a3", publishedAt: "2026-05-07T11:00:00Z", sentimentScore: 0.6, sentimentMagnitude: 0.7, duplicateOf: "a1" }, // duplicate — excluded
+      {
+        articleId: "a1",
+        publishedAt: "2026-05-07T10:00:00Z",
+        sentimentScore: 0.8,
+        sentimentMagnitude: 0.9,
+        duplicateOf: null,
+      },
+      {
+        articleId: "a2",
+        publishedAt: "2026-05-07T10:30:00Z",
+        sentimentScore: 0.4,
+        sentimentMagnitude: 0.5,
+        duplicateOf: null,
+      },
+      {
+        articleId: "a3",
+        publishedAt: "2026-05-07T11:00:00Z",
+        sentimentScore: 0.6,
+        sentimentMagnitude: 0.7,
+        duplicateOf: "a1",
+      }, // duplicate — excluded
     ]);
     ddbSendMock.mockResolvedValue({ Item: null });
 
@@ -134,7 +176,13 @@ describe("recomputeSentimentAggregate", () => {
 
   it("writes the aggregate to DynamoDB (PutCommand called once)", async () => {
     queryNewsByPairMock.mockResolvedValue([
-      { articleId: "a1", publishedAt: "2026-05-07T10:00:00Z", sentimentScore: 0.5, sentimentMagnitude: 0.5, duplicateOf: null },
+      {
+        articleId: "a1",
+        publishedAt: "2026-05-07T10:00:00Z",
+        sentimentScore: 0.5,
+        sentimentMagnitude: 0.5,
+        duplicateOf: null,
+      },
     ]);
     ddbSendMock.mockResolvedValue({ Item: null });
 

@@ -24,11 +24,13 @@ beforeEach(() => {
   recomputeMock.mockResolvedValue({}); // default: succeed silently
 });
 
-function makeSqsEvent(articles: Array<{
-  newsId?: string;
-  mentionedPairs?: string[];
-  duplicateOf?: string | null;
-}>): SQSEvent {
+function makeSqsEvent(
+  articles: Array<{
+    newsId?: string;
+    mentionedPairs?: string[];
+    duplicateOf?: string | null;
+  }>,
+): SQSEvent {
   return {
     Records: articles.map((a, i) => ({
       messageId: `msg-${i}`,
@@ -82,9 +84,7 @@ describe("aggregator-handler — SQS path", () => {
 
   it("skips articles with no mentionedPairs", async () => {
     const { handler } = await import("./aggregator-handler.js");
-    const event = makeSqsEvent([
-      { newsId: "art-3", mentionedPairs: [], duplicateOf: null },
-    ]);
+    const event = makeSqsEvent([{ newsId: "art-3", mentionedPairs: [], duplicateOf: null }]);
 
     await handler(event, fakeContext);
 
@@ -111,9 +111,7 @@ describe("aggregator-handler — SQS path", () => {
       .mockResolvedValue({}); // rest succeed
 
     const { handler } = await import("./aggregator-handler.js");
-    const event = makeSqsEvent([
-      { newsId: "art-7", mentionedPairs: ["BTC"], duplicateOf: null },
-    ]);
+    const event = makeSqsEvent([{ newsId: "art-7", mentionedPairs: ["BTC"], duplicateOf: null }]);
 
     // Should not throw — errors are caught per-pair
     await expect(handler(event, fakeContext)).resolves.toBeUndefined();

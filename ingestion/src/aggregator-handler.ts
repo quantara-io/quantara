@@ -19,10 +19,7 @@ const WINDOWS: AggregationWindow[] = ["4h", "24h"];
 /** Pairs that always get refreshed on the fallback schedule. */
 const ALL_PAIRS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
 
-export async function handler(
-  event: SQSEvent | ScheduledEvent,
-  _context: Context
-): Promise<void> {
+export async function handler(event: SQSEvent | ScheduledEvent, _context: Context): Promise<void> {
   const sqsEvent = event as SQSEvent;
 
   // Scheduled EventBridge event has no Records array.
@@ -47,25 +44,19 @@ export async function handler(
       };
       enrichedArticle = message.data ?? {};
     } catch (err) {
-      console.error(
-        `[AggregatorHandler] Failed to parse SQS record: ${(err as Error).message}`
-      );
+      console.error(`[AggregatorHandler] Failed to parse SQS record: ${(err as Error).message}`);
       continue;
     }
 
     // Skip duplicates — they don't carry novel sentiment.
     if (enrichedArticle.duplicateOf) {
-      console.log(
-        `[AggregatorHandler] Skipping duplicate article: ${enrichedArticle.newsId}`
-      );
+      console.log(`[AggregatorHandler] Skipping duplicate article: ${enrichedArticle.newsId}`);
       continue;
     }
 
     const pairs = enrichedArticle.mentionedPairs ?? [];
     if (pairs.length === 0) {
-      console.log(
-        `[AggregatorHandler] No mentionedPairs for article: ${enrichedArticle.newsId}`
-      );
+      console.log(`[AggregatorHandler] No mentionedPairs for article: ${enrichedArticle.newsId}`);
       continue;
     }
 
@@ -80,9 +71,9 @@ async function recomputeAll(pairs: string[]): Promise<void> {
       tasks.push(
         recomputeSentimentAggregate(pair, window).catch((err: Error) => {
           console.error(
-            `[AggregatorHandler] recompute failed for ${pair}/${window}: ${err.message}`
+            `[AggregatorHandler] recompute failed for ${pair}/${window}: ${err.message}`,
           );
-        })
+        }),
       );
     }
   }

@@ -10,7 +10,12 @@
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { recomputeSentimentAggregate, computeTrend24h, type SentimentAggregate, type AggregationWindow } from "./aggregator.js";
+import {
+  recomputeSentimentAggregate,
+  computeTrend24h,
+  type SentimentAggregate,
+  type AggregationWindow,
+} from "./aggregator.js";
 import type { FearGreedHistoryEntry } from "./fear-greed.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -66,11 +71,17 @@ export async function getFearGreed(): Promise<FearGreedBundle> {
       new GetCommand({
         TableName: METADATA_TABLE,
         Key: { metaKey: "market:fear-greed" },
-      })
+      }),
     );
 
     if (!result.Item) {
-      return { value: null, classification: null, lastTimestamp: null, history: [], trend24h: null };
+      return {
+        value: null,
+        classification: null,
+        lastTimestamp: null,
+        history: [],
+        trend24h: null,
+      };
     }
 
     const history = (result.Item.history as FearGreedHistoryEntry[] | undefined) ?? [];

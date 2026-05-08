@@ -45,9 +45,7 @@ describe("writePairFanout", () => {
 
   it("writes records in BatchWrite calls of up to 25", async () => {
     send.mockResolvedValue({});
-    const records = Array.from({ length: 30 }, (_, i) =>
-      makeRecord({ articleId: `art-${i}` }),
-    );
+    const records = Array.from({ length: 30 }, (_, i) => makeRecord({ articleId: `art-${i}` }));
     const { writePairFanout } = await import("./news-by-pair-store.js");
     await writePairFanout(records);
     const writes = send.mock.calls.filter((c) => c[0].__cmd === "BatchWrite");
@@ -60,8 +58,7 @@ describe("writePairFanout", () => {
     send.mockResolvedValue({});
     const { writePairFanout } = await import("./news-by-pair-store.js");
     await writePairFanout([makeRecord()]);
-    const item =
-      send.mock.calls[0][0].input.RequestItems["test-news-by-pair"][0].PutRequest.Item;
+    const item = send.mock.calls[0][0].input.RequestItems["test-news-by-pair"][0].PutRequest.Item;
     expect(item.pair).toBe("BTC");
     expect(item.sk).toBe("2026-05-08T10:00:00.000Z#art-001");
   });
@@ -72,8 +69,7 @@ describe("writePairFanout", () => {
     vi.setSystemTime(now * 1000);
     const { writePairFanout } = await import("./news-by-pair-store.js");
     await writePairFanout([makeRecord()]);
-    const item =
-      send.mock.calls[0][0].input.RequestItems["test-news-by-pair"][0].PutRequest.Item;
+    const item = send.mock.calls[0][0].input.RequestItems["test-news-by-pair"][0].PutRequest.Item;
     expect(item.ttl).toBe(now + 86400 * 30);
   });
 
@@ -131,8 +127,7 @@ describe("writePairFanout", () => {
     send.mockResolvedValue({});
     const { writePairFanout } = await import("./news-by-pair-store.js");
     await writePairFanout([makeRecord({ duplicateOf: null } as any)]);
-    const item =
-      send.mock.calls[0][0].input.RequestItems["test-news-by-pair"][0].PutRequest.Item;
+    const item = send.mock.calls[0][0].input.RequestItems["test-news-by-pair"][0].PutRequest.Item;
     expect(item.duplicateOf).toBeNull();
   });
 });
