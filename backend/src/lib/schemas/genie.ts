@@ -113,6 +113,12 @@ export const BlendedSignalSchema = z
 
     // Risk recommendation — null when type === "hold"
     risk: RiskRecommendationSchema.nullable(),
+
+    // Phase 6b — breaking-news invalidation banner.
+    // null / absent = signal is current; non-null = UI shows "refreshing" banner.
+    // The next regular TF close emits a fresh row with invalidatedAt = null.
+    invalidatedAt: z.string().nullable().optional(),
+    invalidationReason: z.string().nullable().optional(),
   })
   .openapi("BlendedSignalSchema");
 

@@ -62,4 +62,11 @@ export interface BlendedSignal {
 
   // Risk recommendation — null when type === "hold" (§9.9 / Fix 2)
   risk: RiskRecommendation | null;
+
+  // Breaking-news invalidation (Phase 6b / §6.7).
+  // Set when a high-magnitude news event fires for the pair after this signal was emitted.
+  // undefined/null = signal is current; non-null string = UI should show a "refreshing" banner.
+  // The next regular TF close emits a fresh signal row with invalidatedAt = null.
+  invalidatedAt?: string | null;
+  invalidationReason?: string | null; // e.g. "Breaking news: Coinbase delists ETH staking"
 }
