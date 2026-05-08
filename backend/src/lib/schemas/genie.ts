@@ -167,10 +167,15 @@ export const SignalHistoryResponse = z
     data: z.object({
       history: z.array(SignalHistoryEntry),
       meta: z.object({
-        page: z.number(),
-        pageSize: z.number(),
+        /** Count of entries returned in this page. */
         total: z.number(),
         hasMore: z.boolean(),
+        /**
+         * Opaque DynamoDB cursor for the next page.
+         * Pass as `cursor` query param to retrieve the next batch.
+         * Absent when there are no more pages.
+         */
+        nextCursor: z.string().optional(),
       }),
     }),
   })

@@ -5,6 +5,7 @@ import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-
 import { enrichArticle } from "../news/enrich.js";
 import { publish } from "../lib/sqs-publisher.js";
 import { writePairFanout } from "../lib/news-by-pair-store.js";
+import { processNewsEventForInvalidation } from "../news/invalidation.js";
 
 import { enrichNewsItem } from "./bedrock.js";
 
@@ -112,6 +113,31 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
         sentiment: phase5a.sentiment,
         duplicateOf: phase5a.duplicateOf,
       });
+
+      // Phase 6b: signal invalidation — mark active signals as invalid when
+      // a high-magnitude article lands for a tracked pair (§6.7).
+      // Runs after all enrichment writes; errors are caught to avoid blocking
+      // the SQS ack for the enrichment message.
+      try {
+        const invalidationResult = await processNewsEventForInvalidation({
+          newsId,
+          title: newsRecord.title as string,
+          publishedAt,
+          mentionedPairs: phase5a.mentionedPairs,
+          sentiment: phase5a.sentiment,
+          duplicateOf: phase5a.duplicateOf ?? null,
+        });
+        if (invalidationResult.triggered) {
+          console.log(
+            `[Enrichment] Invalidation triggered: ${invalidationResult.signalsInvalidated} signal(s) for pairs [${invalidationResult.pairsInvalidated.join(", ")}]`,
+          );
+        }
+      } catch (invalidationErr) {
+        // Non-fatal — enrichment succeeded; invalidation is best-effort.
+        console.warn(
+          `[Enrichment] Invalidation check failed for ${newsId}: ${(invalidationErr as Error).message}`,
+        );
+      }
 
       console.log(
         `[Enrichment] Success: ${newsId} → ${enrichment.sentiment} (${enrichment.confidence}), pairs=${phase5a.mentionedPairs.join(",")}, sentiment.score=${phase5a.sentiment.score}`,

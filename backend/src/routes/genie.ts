@@ -3,7 +3,11 @@ import { z } from "@hono/zod-openapi";
 import { ADVISORY_DISCLAIMER, PAIRS } from "@quantara/shared";
 
 import { requireAuth } from "../middleware/require-auth.js";
-import { getSignalForUser, getAllSignalsForUser } from "../lib/signal-service.js";
+import {
+  getSignalForUser,
+  getAllSignalsForUser,
+  getSignalHistoryForUser,
+} from "../lib/signal-service.js";
 import {
   SignalsResponse,
   SignalByPairResponse,
@@ -89,13 +93,14 @@ const historyRoute = createRoute({
   tags: ["Genie"],
   summary: "Get signal history",
   description:
-    "Returns historical signals with outcomes for backtesting and performance evaluation.",
+    "Returns historical signals with outcomes for backtesting and performance evaluation. Paginated via cursor (nextCursor in response meta).",
   security: [{ Bearer: [] }],
   request: {
     query: z.object({
-      page: z.coerce.number().optional().default(1),
       pageSize: z.coerce.number().optional().default(20),
       pair: z.string().optional(),
+      /** Opaque cursor from previous response meta.nextCursor. */
+      cursor: z.string().optional(),
     }),
   },
   responses: {
@@ -105,11 +110,26 @@ const historyRoute = createRoute({
     },
   },
 });
-genie.openapi(historyRoute, (c) => {
-  const { page, pageSize } = c.req.valid("query");
+genie.openapi(historyRoute, async (c) => {
+  const { pageSize, pair, cursor } = c.req.valid("query");
+  const auth = c.get("auth");
+
+  const result = await getSignalHistoryForUser(auth.userId, auth.email, {
+    pageSize,
+    pair,
+    cursor,
+  });
+
   return c.json({
     success: true as const,
-    data: { history: [], meta: { page, pageSize, total: 0, hasMore: false } },
+    data: {
+      history: result.history,
+      meta: {
+        total: result.total,
+        hasMore: result.hasMore,
+        nextCursor: result.nextCursor,
+      },
+    },
   });
 });
 

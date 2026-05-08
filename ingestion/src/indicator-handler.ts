@@ -38,6 +38,8 @@ import {
   commitProcessedClose,
   clearProcessedClose,
 } from "./lib/processed-close-store.js";
+import { ratifySignal } from "./llm/ratify.js";
+import { buildSentimentBundle } from "./news/bundle.js";
 
 // ---------------------------------------------------------------------------
 // DDB client for vote persistence (ingestion-metadata table)
@@ -235,7 +237,7 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
   const emittingTf = closedTfs[closedTfs.length - 1]!.tf as Timeframe;
   for (const pair of PAIRS) {
     try {
-      await blendAndPersist(pair, emittingTf);
+      await blendAndPersist(pair, emittingTf, fearGreed);
     } catch (err) {
       console.error(`[IndicatorHandler] Error blending ${pair}: ${(err as Error).message}`);
     }
@@ -402,7 +404,11 @@ async function processTimeframePairWork(
 // Blend + persist BlendedSignal
 // ---------------------------------------------------------------------------
 
-async function blendAndPersist(pair: string, emittingTf: Timeframe): Promise<void> {
+async function blendAndPersist(
+  pair: string,
+  emittingTf: Timeframe,
+  fearGreed: number | null,
+): Promise<void> {
   // Collect all 4 TF votes.
   const votes = await Promise.all(
     SIGNAL_TIMEFRAMES.map(async (tf) => {
@@ -429,15 +435,46 @@ async function blendAndPersist(pair: string, emittingTf: Timeframe): Promise<voi
     return;
   }
 
+  // §7.5 Ratification gate — attempt LLM ratification when gating conditions are met.
+  // On any failure, fall back to the algo signal unchanged (graceful degradation).
+  let final = blended;
+  try {
+    const sentiment = await buildSentimentBundle(pair);
+    const ratifyResult = await ratifySignal({
+      pair,
+      candidate: blended,
+      perTimeframe: perTimeframeVotes,
+      sentiment,
+      whaleSummary: null, // Phase 9+
+      pricePoints: [], // Phase 9+
+      fearGreed: {
+        value: fearGreed ?? 50,
+        trend24h: sentiment.fearGreed.trend24h ?? 0,
+      },
+    });
+    final = ratifyResult.signal;
+    if (!ratifyResult.fellBackToAlgo) {
+      console.log(
+        `[IndicatorHandler] ${pair}: ratified → type=${final.type} confidence=${final.confidence.toFixed(3)}`,
+      );
+    }
+  } catch (err) {
+    // Graceful degradation: ratification failure must not block signal persistence.
+    console.warn(
+      `[IndicatorHandler] ${pair}: ratification failed, using algo signal — ${(err as Error).message}`,
+    );
+    final = blended;
+  }
+
   const previous = await getLatestSignal(pair);
-  const trivial = isTrivialChange(previous, blended);
+  const trivial = isTrivialChange(previous, final);
 
   // Always persist — isTrivialChange only affects UI emit downstream.
-  await putSignal(blended);
+  await putSignal(final);
 
   if (!trivial) {
     console.log(
-      `[IndicatorHandler] non-trivial signal change for ${pair}: type=${blended.type} confidence=${blended.confidence.toFixed(3)}`,
+      `[IndicatorHandler] non-trivial signal change for ${pair}: type=${final.type} confidence=${final.confidence.toFixed(3)}`,
     );
   }
 }

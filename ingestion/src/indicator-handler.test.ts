@@ -92,6 +92,20 @@ vi.mock("./signals/gates.js", () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// New mocks — ratification (Gap 3) + sentiment bundle
+// ---------------------------------------------------------------------------
+
+const ratifySignalMock = vi.fn();
+vi.mock("./llm/ratify.js", () => ({
+  ratifySignal: ratifySignalMock,
+}));
+
+const buildSentimentBundleMock = vi.fn();
+vi.mock("./news/bundle.js", () => ({
+  buildSentimentBundle: buildSentimentBundleMock,
+}));
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -230,6 +244,31 @@ beforeEach(() => {
   isTrivialChangeMock.mockReturnValue(false);
   evaluateGatesMock.mockReturnValue({ fired: false, reason: null });
   narrowPairMock.mockImplementation((pair: string) => pair);
+
+  // Ratification mocks (Gap 3) — default to algo fallback so tests are unaffected.
+  ratifySignalMock.mockReset();
+  buildSentimentBundleMock.mockReset();
+  // By default: ratification falls back to algo signal (no LLM cost).
+  ratifySignalMock.mockImplementation(async (ctx: { candidate: BlendedSignal }) => ({
+    signal: ctx.candidate,
+    fellBackToAlgo: true,
+    cacheHit: false,
+  }));
+  buildSentimentBundleMock.mockResolvedValue({
+    pair: "BTC/USDT",
+    assembledAt: new Date().toISOString(),
+    windows: {
+      "4h": { articleCount: 0, avgScore: 0, avgMagnitude: 0, windowStart: "", windowEnd: "" },
+      "24h": { articleCount: 0, avgScore: 0, avgMagnitude: 0, windowStart: "", windowEnd: "" },
+    },
+    fearGreed: {
+      value: 50,
+      classification: "Neutral",
+      lastTimestamp: null,
+      history: [],
+      trend24h: 0,
+    },
+  });
 
   // DDB send for handler's own GetCommand calls (fear-greed + staleness + dispersion + votes).
   send.mockResolvedValue({ Item: undefined });
@@ -681,6 +720,80 @@ describe("marker lifecycle — commit after vote, clear on error", () => {
 
     // Second invocation should have processed work (not been short-circuited).
     expect(putIndicatorStateMock).toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap 3 — ratifySignal wiring
+// ---------------------------------------------------------------------------
+
+describe("ratifySignal wiring (Gap 3)", () => {
+  it("calls ratifySignal after blending when a blended signal is produced", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    expect(ratifySignalMock).toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it("persists the ratified signal (not the algo candidate) when ratification succeeds", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    const ratifiedSignal = {
+      ...makeBlendedSignal(),
+      type: "buy" as const,
+      confidence: 0.85,
+    };
+    ratifySignalMock.mockResolvedValue({
+      signal: ratifiedSignal,
+      fellBackToAlgo: false,
+      cacheHit: false,
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // putSignal should have been called with the ratified signal
+    expect(putSignalMock).toHaveBeenCalled();
+    const persistedSignal = putSignalMock.mock.calls[0][0] as BlendedSignal;
+    expect(persistedSignal.confidence).toBe(0.85);
+
+    vi.useRealTimers();
+  });
+
+  it("falls back to algo signal and still calls putSignal when ratifySignal throws", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    ratifySignalMock.mockRejectedValue(new Error("Anthropic API error"));
+
+    const { handler } = await import("./indicator-handler.js");
+    // Handler must not throw — ratification failure is non-fatal.
+    await expect(handler({})).resolves.toBeUndefined();
+
+    // putSignal must still be called (with the algo fallback signal).
+    expect(putSignalMock).toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it("does not call ratifySignal when blendTimeframeVotes returns null", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    blendTimeframeVotesMock.mockReturnValue(null);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    expect(ratifySignalMock).not.toHaveBeenCalled();
 
     vi.useRealTimers();
   });
