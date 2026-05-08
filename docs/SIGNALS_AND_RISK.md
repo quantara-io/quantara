@@ -18,6 +18,20 @@
 - **Confidence numbers must be calibrated.** A signal emitted at `confidence: 0.8` should resolve correct ~80% of the time over the outcome window. Track Brier score and expected calibration error (ECE) per pair / timeframe — not just hit rate. Without calibration, the confidence number is decorative.
 - **Reasoning quality is a first-class output**, not compliance text. The `reasoning` string is what users read on mobile; treat it as product UX. Measurable dimensions: cites specific evidence (named indicators, news headlines, levels), narrative-coherent, length-appropriate (1–3 sentences for the headline; longer on-demand).
 - Stay an **advisory** product — Genie never executes trades. (`ADVISORY_DISCLAIMER` is hard-coded into every response.)
+- **Push signal updates to connected clients in near-real-time** (see §16). Users expect to see new signals without polling; an HTTP-polling model is no longer acceptable.
+
+### Latency targets (v1)
+
+> **Note:** Earlier drafts of this doc framed signal latency as "5–30s is fine for an advisory product." That framing is superseded here. User expectation research showed that polling-visible lag degrades trust even when users aren't executing trades. The targets below reflect the updated design; §16 covers the SSE architecture that achieves them.
+
+| Step | Target | Notes |
+| ---- | ------ | ----- |
+| **Producer → DDB write** | ≤ 5s after the source candle closes | Event-driven (DDB Streams), not cron-polled |
+| **DDB write → connected client** | ≤ 1s via SSE push | No client polling required |
+| **End-to-end (candle close → user view)** | ≤ 6s p99 in steady state | Sum of the two steps above |
+| **Cold-start tolerance** | ≤ 2s | A fresh client connection sees current state within 2s of connect |
+
+These targets are aspirational for v1 and tunable per pair/TF. They explicitly do NOT promise execution-grade latency — Quantara remains advisory.
 
 ### Non-goals
 
@@ -501,13 +515,22 @@ If `1d` says `buy` and `1h` says `sell`, the blended scalar might still be bulli
 
 **Decision: keep the 3-type schema (`buy / sell / hold`). Do not add a `conflict` type in v1.** The reasoning string is the right surface for inter-TF disagreement. Adding a 4th type would touch the `Signal.type` enum, signal history, accuracy scoring, and the UI chip set — too much change for nuance the LLM can express in prose. Revisit if user research shows the distinction matters.
 
-### 5.5 Time alignment — when do we re-blend?
+### 5.5 Time alignment — event-driven, not cron-polled
 
-**Policy: re-blend on every per-TF close. Suppress the user-visible signal change if it's trivial.**
+> **Note:** Earlier drafts described this section as "re-blend on every per-TF close" triggered by a cron schedule. That design introduced a 0–60s "waiting for cron" window between candle close and indicator computation. The design below replaces it with an event-driven approach via DDB Streams. The blending policy (re-blend on every per-TF vote update; suppress trivial UI changes) is unchanged.
 
-Each TF closes at its own boundary (15m every 15 min, 1h every hour, 4h every 4 hours, 1d at 00:00 UTC). Whenever any per-TF vote updates, the blender re-runs against the current set of cached votes from all four TFs.
+**Policy: the indicator handler is triggered by DDB Streams on the candles table** when a closed candle lands, NOT by a cron schedule. This eliminates the 0–60s "waiting for cron" window and brings end-to-end latency in line with the §1 targets.
 
-Suppression rule for UI emit (does not affect internal storage — every blend run is persisted to DDB):
+**Flow:**
+
+1. Higher-TF candle close → REST poll (Phase 4 scheduled Lambda) writes to the candles table
+2. DDB Streams fires → indicator-handler Lambda invoked with the `(pair, exchange, timeframe, closeTime)` of the new candle
+3. Handler runs the per-pair × per-TF logic for that specific event (not all 5 pairs × 4 TFs every minute)
+4. BlendedSignal write to `signals-v2` → triggers SSE fanout (§16)
+
+**Idempotency:** DDB Streams can deliver duplicates. The existing `processed-close-store` handles this (per Phase 4b follow-up #82).
+
+**Suppression rule for UI emit** (does not affect internal storage — every blend run is persisted to DDB):
 
 ```
 if  blended.type === previous_blended.type
@@ -518,9 +541,19 @@ then: silent update — no notification, no UI badge change
 else: emit user-visible change
 ```
 
-This gives freshness internally (every minute matters for backtest replay and audit) while keeping the user-visible signal stable.
+This gives freshness internally (every candle close matters for backtest replay and audit) while keeping the user-visible signal stable.
 
-**Compute cost:** 5 pairs × ~96 closes/day across the 4 TFs (15m=96, 1h=24, 4h=6, 1d=1; sum = 127 per pair/day) ≈ 635 blend runs/day. Lambda + DDB write ≈ negligible (~$5/month).
+**Trade-offs vs. cron:**
+
+| Dimension | Cron approach (superseded) | Event-driven (current) |
+| --------- | -------------------------- | ---------------------- |
+| Latency to first indicator update | 0–60s after candle close | ~5s after candle close |
+| Lambda invocations | 1 batched/min (all pairs × TFs) | 1 per candle close per (pair, TF) |
+| Work per invocation | All 5 pairs × 4 TFs | Only the slot that just closed |
+| AWS pricing | Comparable | Comparable |
+| Idempotency requirement | Lower (cron is self-deduping) | Required (DDB Streams can deliver duplicates) |
+
+**Compute cost:** 5 pairs × ~127 closes/day across the 4 TFs (15m=96, 1h=24, 4h=6, 1d=1) ≈ 635 invocations/day. Lambda + DDB write ≈ negligible (~$5/month). The Phase 4 cron handler (`ingestion/src/indicator-handler.ts`) is redesigned under this approach — the Lambda entry point is identical but invocation trigger changes from EventBridge schedule to DDB Streams.
 
 ### 5.6 Per-TF `null` (no opinion) handling
 
@@ -1463,6 +1496,17 @@ value: { avgScore, totalMagnitude, articleCount, computedAt }
 ttl: 600  // 10 min
 ```
 
+### 11.5 DDB Streams requirements
+
+Two tables need DDB Streams enabled for the event-driven architecture described in §5.5 and §16:
+
+| Table | Stream type | Consumer | Purpose |
+| ----- | ----------- | -------- | ------- |
+| `quantara-{env}-candles` | `NEW_IMAGE` | indicator-handler Lambda | Triggers indicator computation + blending on each closed candle (§5.5 event-driven trigger) |
+| `quantara-{env}-signals-v2` | `NEW_IMAGE` | SSE fanout Lambda | Triggers push to connected clients when a BlendedSignal is written (§16 SSE architecture) |
+
+Both stream configurations flow into Terraform additions as part of the implementation issues for §5.5 (P2 event-driven trigger) and §16 (P1 SSE push channel). They are documented here so the storage schema is self-contained and the implementation issues have a single source of truth.
+
 ---
 
 ## 12. Compute architecture
@@ -1479,24 +1523,29 @@ Cons: stateful service is harder to scale horizontally; restart loses warm-up wi
 Pros: stateless, easy to scale, easy to replay against historical candles for backtests.
 Cons: pays DDB read cost on every run; indicators have to be re-derived from candles each invocation.
 
-**Recommendation: Shape B.** Scheduled `IndicatorLambda` triggered on each candle-close boundary (per timeframe) computes indicators from DDB candles + caches the indicator values back into a `quantara-{env}-indicator-state` table. The next signal computation reads cached state + the most recent candle and recomputes only the deltas.
+**Recommendation: Shape B.** `IndicatorLambda` triggered by DDB Streams on the candles table (§5.5, §11.5) computes indicators from DDB candles + caches the indicator values back into a `quantara-{env}-indicator-state` table. The next signal computation reads cached state + the most recent candle and recomputes only the deltas.
 
-Why: backtestability. We need to be able to point the indicator engine at historical candles and reproduce the exact signals that would have fired. A stateful Fargate process makes that arduous.
+Why: backtestability. We need to be able to point the indicator engine at historical candles and reproduce the exact signals that would have fired. A stateful Fargate process makes that arduous. The DDB Streams trigger replaces the earlier EventBridge cron schedule, eliminating the 0–60s polling window.
 
 ### 12.2 Latency budget
 
+See §1 for the full latency targets (v1). Decomposed into internal steps:
+
 | Step                                          | Target           | Notes                                        |
 | --------------------------------------------- | ---------------- | -------------------------------------------- |
-| Candle close → indicator state updated        | < 5s             | Lambda cold start is the cap                 |
-| Indicators → algo signal                      | < 50ms           | Pure CPU                                     |
-| Algo signal → LLM ratification (when invoked) | < 3s             | Haiku is sub-second typically; budget 3s p99 |
-| Signal → user-visible                         | < 30s end-to-end | Backend caches and pushes to web             |
+| Candle close → DDB write (REST poller)        | < 5s             | Lambda cold start is the cap                 |
+| DDB write → DDB Streams → indicator Lambda    | < 1s             | DDB Streams delivery SLA                     |
+| Indicators → algo signal (CPU)                | < 50ms           | Pure CPU                                     |
+| Algo signal → LLM ratification (when invoked) | < 3s             | Sonnet 4.6 p99; budget 3s                    |
+| Signal write → SSE push to client             | < 1s             | DDB Streams → SSE Lambda → client (§16)      |
+| **End-to-end p99 (no LLM)**                   | **≤ 6s**         | Matches §1 target                            |
+| **End-to-end p99 (with LLM ratification)**    | **≤ 9s**         | Acceptable; LLM path is minority of signals  |
 
 ### 12.3 Scheduling
 
-EventBridge rules per timeframe:
+EventBridge rules are retained for the REST poll that writes candles to DDB (Phase 4). The indicator computation trigger moves to DDB Streams (§5.5). Per timeframe:
 
-- `cron(* * * * ? *)` — every minute (drives 15m/1h/4h/1d depending on minute-of-hour)
+- `cron(* * * * ? *)` — every minute (drives the REST poller for 15m/1h/4h/1d depending on minute-of-hour)
 - The Lambda checks `now() % timeframe == 0` for each TF and only computes the ones that just closed.
 
 Avoids deploying 4 separate schedules; single Lambda decides what to do.
@@ -1560,7 +1609,7 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 
 1. **Source of truth for "the price" across exchanges.** Median works but is rough. Volume-weighted across the three exchanges is better — but requires per-exchange volume normalization. Decide before Phase 1.
 2. **Tier gating.** Should free-tier users get all timeframes, or only `1d`? Affects compute cost and conversion strategy.
-3. **Push vs pull for the user-facing signal stream.** WebSocket from backend is the right answer long-term, but the current backend is Lambda-on-API-Gateway — no native WS. May need to plumb AppSync or accept polling for v1.
+3. ~~**Push vs pull for the user-facing signal stream.**~~ **Resolved in §16.** SSE via Lambda function URL with response streaming is the v1 answer. WebSocket deferred; see §16 for rationale.
 4. **News provider expansion.** CoinTelegraph + Decrypt + CoinDesk + Alpaca cover headlines but miss CT/X — which is where most crypto narrative actually breaks. Do we add a Twitter source?
 5. **Whale wallet list.** `WHALE_MONITORING.md` references a tracked-wallet set. Who curates it? How often does it rotate? Plug into Phase 9.
 6. **Compliance review.** "Advisory not advice" wording is in `ADVISORY_DISCLAIMER`. Does the risk-recommendation language (stop-loss, position size) need additional disclaimers? Likely yes in some jurisdictions.
@@ -1577,6 +1626,131 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 | Volatility gate fires too often, suppressing all signals.      | Threshold tunable; backtested to balance suppression vs noise.                         |
 | User over-trusts confidence numbers.                           | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.   |
 | Cross-exchange price disagreement on flash events.             | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale. |
+| SSE Lambda concurrency exhausted under spike load.             | Concurrency cap + CloudWatch alarm (§16.6). Advisory product; drop-on-full is acceptable. |
+| DDB Streams duplicate delivery causes double fanout.           | SSE fanout Lambda must be idempotent; dedupe by `(signalId, clientId)` within the Lambda invocation window. |
+
+---
+
+## 16. Realtime push architecture (SSE)
+
+This section documents the v1 push channel — how signal updates flow from the backend to connected clients without polling. It is a companion to §5.5 (event-driven indicator trigger) and §11.5 (DDB Streams on candles + signals tables).
+
+### 16.1 Decision: SSE over WebSocket for v1
+
+**Chosen: Server-Sent Events (SSE) via Lambda function URL with response streaming.**
+
+| Dimension | SSE (chosen) | WebSocket |
+| --------- | ------------ | --------- |
+| Direction | Server → client only | Bidirectional |
+| Fit for "tell me when a signal updates" | Perfect — one-way | Over-engineered |
+| Reconnect handling | Built into the browser/SSE spec | Custom reconnect logic required |
+| Lambda support | Response streaming (available since 2023) | Requires API Gateway WebSocket or ALB — additional infra |
+| Connection-state management | Stateless from server perspective | Requires connection registry |
+| Auth in browser | JWT in query param (standard SSE pattern) | `Authorization` header supported |
+| Implementation complexity | Low | High |
+
+**WebSocket revisited if/when** client-initiated subscriptions or commands are needed (e.g. "change my pair filter without reconnecting"). For v1, the client simply reconnects with a different `pairs=` query param; this is acceptable.
+
+### 16.2 Architecture
+
+```
+Candle close
+    │
+    ▼
+candles DDB table ──DDB Streams──► indicator-handler Lambda
+                                           │
+                                           ▼ (BlendedSignal write)
+                                   signals-v2 DDB table
+                                           │
+                                   DDB Streams (NEW_IMAGE)
+                                           │
+                                           ▼
+                                   SSE fanout Lambda
+                                     (per-pair SQS queue)
+                                           │
+                                     ┌─────┴─────┐
+                                     ▼           ▼
+                               SSE Lambda    SSE Lambda
+                              (client A)   (client B)
+                                     │           │
+                               SSE stream   SSE stream
+```
+
+**Components:**
+
+1. **DDB Streams on `signals-v2`** — fires on every `NEW_IMAGE` write (every BlendedSignal update). Configured with `NEW_IMAGE` stream type (§11.5).
+2. **SSE fanout Lambda** — consumes the DDB Streams event, publishes to an **SQS queue per pair** (e.g. `quantara-{env}-sse-BTC-USDT`). Fan-out decouples the DDB write from the client delivery path.
+3. **SSE Lambda** — a Lambda function URL with **response streaming** enabled. Subscribes to the relevant pair SQS queues, holds the connection open, and streams SSE events to the connected client. One Lambda invocation per connected client.
+4. **Lambda function URL** — provides a stable HTTPS endpoint without API Gateway WebSocket overhead. Response streaming (chunked transfer encoding) is the mechanism for long-lived connections.
+
+### 16.3 Endpoint shape
+
+```
+GET /genie/stream
+GET /genie/stream?pairs=BTC%2FUSDT,ETH%2FUSDT
+```
+
+- If `pairs` is omitted, defaults to all five tracked pairs.
+- Auth: signed JWT passed as `?token=<jwt>` query parameter. Browsers do not send `Authorization` headers on EventSource connections; the query-param pattern is the standard SSE auth approach. The JWT is the same token issued by Aldero (§quantara-aldero-auth skill) — no new token type.
+- The SSE Lambda validates the JWT on connect, then holds the connection and streams events.
+
+### 16.4 Event types
+
+```
+event: signal-update
+data: {"pair":"BTC/USDT","type":"buy","confidence":0.74,"reasoning":"...","updatedAt":"..."}
+
+event: signal-invalidated
+data: {"pair":"BTC/USDT","signalId":"...","invalidatedAt":"...","reason":"breaking-news"}
+
+event: keepalive
+data: {"ts":1715000000000}
+
+event: init
+data: {"pairs":{"BTC/USDT":{...currentSignal},"ETH/USDT":{...currentSignal},...}}
+```
+
+| Event | When emitted | Payload |
+| ----- | ------------ | ------- |
+| `init` | Immediately on connect | Current snapshot of all subscribed pairs |
+| `signal-update` | When a new BlendedSignal is written to `signals-v2` | Full signal object |
+| `signal-invalidated` | When a signal's `invalidated` flag is set (§10.4) | `signalId` + `invalidatedAt` |
+| `keepalive` | Every 15 seconds | Server timestamp |
+
+The `init` event ensures a freshly connected client (or a reconnecting mobile client) sees current state within 2s — satisfying the cold-start tolerance target in §1.
+
+### 16.5 Client lifecycle
+
+| Phase | Behavior |
+| ----- | -------- |
+| Connect | Client opens `EventSource` to `/genie/stream?token=<jwt>&pairs=BTC%2FUSDT,ETH%2FUSDT`. Server sends `init` event with current snapshot. |
+| Active | Server pushes `signal-update` and `signal-invalidated` events as they occur. `keepalive` every 15s to detect dead connections. |
+| Disconnect / network drop | SSE built-in: browser auto-reconnects with `Last-Event-ID` header. Server sends `init` to resync current state. |
+| Mobile background | App suspended → SSE connection drops. On resume, EventSource reconnects and the `init` event resyncs. No separate "catch up" mechanism needed for an advisory product. |
+| Token expiry | Server sends a `close` event (or lets the keepalive lapse). Client re-authenticates via Aldero and opens a new `EventSource`. |
+
+### 16.6 Backpressure and concurrency limits
+
+**Backpressure:** drop on full client buffer. The SSE Lambda does not maintain a replay queue — if the client's write buffer is full, the update is dropped. For an advisory product, a dropped `signal-update` is acceptable; the `init` on reconnect will resync. This avoids the complexity of a per-client replay queue.
+
+**Concurrency:** each connected client holds one Lambda invocation (response streaming mode). Lambda concurrency is finite.
+
+- Set a **reserved concurrency cap** on the SSE Lambda (e.g. 200 concurrent connections in v1).
+- Add a **CloudWatch alarm** at 80% of the cap to alert before hard-throttling.
+- At the cap, new connection attempts receive `HTTP 429`; the client SDK retries with backoff.
+- The cap is tunable; start conservative and raise based on observed usage.
+
+**SQS queue per pair** decouples the fanout Lambda from the SSE Lambda. If the SSE Lambda is at concurrency cap, SQS messages queue up briefly; the SSE Lambda processes them on the next available invocation cycle.
+
+### 16.7 What §16 explicitly defers
+
+| Topic | Phase |
+| ----- | ----- |
+| WebSocket variant | Revisit if client-initiated subscriptions are needed (post-MVP) |
+| Replay queue (client missed N updates) | Not needed for advisory product; `init` on reconnect is sufficient |
+| Per-user subscription filter (dynamic pair selection without reconnect) | Post-MVP; reconnect with new `pairs=` param is acceptable for v1 |
+| Tick-level (sub-candle) signal streaming | P3 deferred; signals emit on candle-close boundaries |
+| Connection analytics (active connections, p99 delivery latency) | Phase after SSE ships — instrument via CloudWatch Embedded Metrics Format |
 
 ---
 
