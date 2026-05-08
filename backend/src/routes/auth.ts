@@ -6,6 +6,8 @@ import {
 } from "../lib/schemas/auth.js";
 import { ErrorResponse } from "../lib/schemas/common.js";
 import { requireAuth } from "../middleware/require-auth.js";
+import { bootstrapUser } from "../lib/user-store.js";
+import { logger } from "../lib/logger.js";
 
 const auth = new OpenAPIHono();
 
@@ -72,6 +74,19 @@ auth.openapi(signupRoute, async (c) => {
   const body = c.req.valid("json");
   try {
     const result = await alderoPost("/v1/auth/signup", body) as Record<string, unknown>;
+
+    // Correction 2: bootstrap user record with default risk profiles at creation time.
+    // Best-effort — Aldero is the source of truth; a DDB failure here must not
+    // break the signup response. The genie route will lazy-bootstrap on first access.
+    const userId = (result.user as Record<string, unknown>)?.id as string | undefined
+      ?? (result.userId as string | undefined);
+    const email = body.email as string | undefined;
+    if (userId) {
+      bootstrapUser(userId, email ?? userId, "111").catch((err) => {
+        logger.warn({ err, userId }, "user-store bootstrap failed after signup (non-fatal)");
+      });
+    }
+
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {

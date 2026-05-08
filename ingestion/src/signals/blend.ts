@@ -137,9 +137,7 @@ export function blendTimeframeVotes(
       weightsUsed,
       asOf,
       emittingTimeframe,
-      // TODO(Phase 4b): attachRiskRecommendation is invoked by the indicator-handler
-      // before putSignal; the blender always returns risk: null here and the caller
-      // is responsible for enriching non-hold signals via attachRiskRecommendation.
+      // risk is always null when persisted; the backend attaches per-user risk at read time.
       risk: null,
     };
   }
@@ -223,9 +221,7 @@ export function blendTimeframeVotes(
     weightsUsed: renormalized,
     asOf,
     emittingTimeframe,
-    // TODO(Phase 4b): attachRiskRecommendation is invoked by the indicator-handler
-    // before putSignal; the blender always returns risk: null and the caller enriches
-    // non-hold signals via attachRiskRecommendation(signal, state, user.riskProfiles).
+    // risk is always null when persisted; the backend attaches per-user risk at read time.
     risk: null,
   };
 }

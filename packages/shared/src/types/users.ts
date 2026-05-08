@@ -19,13 +19,35 @@ export interface UserProfile {
   createdAt: string;
   updatedAt: string;
   /**
-   * Per-pair risk profiles. Non-optional — every user record must carry this.
+   * Per-pair risk profiles. Optional — legacy DDB records without this field
+   * get the tier default at read time via getEffectiveRiskProfiles().
    * Populated at user creation and updated on tier change by defaultRiskProfiles().
    * Users may override individual pairs in settings (future UI).
    *
-   * Design: §9.2 of docs/SIGNALS_AND_RISK.md / Fix 1
+   * Design: §9.2 of docs/SIGNALS_AND_RISK.md / Fix 1 (Correction 3 — Option A)
    */
-  riskProfiles: RiskProfileMap;
+  riskProfiles?: RiskProfileMap;
+}
+
+/**
+ * Map a tierId string to the coarse Tier discriminant used for risk defaults.
+ * Tier "111" is the free tier (priceMonthly=0); all others are considered paid.
+ */
+export function tierIdToTier(tierId: string): Tier {
+  return tierId === "111" ? "free" : "paid";
+}
+
+/**
+ * Return the user's effective risk profile map.
+ *
+ * If the user record has no riskProfiles (legacy or brand-new record before
+ * the backend write fires), fall back to the tier default. This is Correction 3
+ * (Option A) — no migration needed; existing users without the field work correctly.
+ *
+ * @param user  A UserProfile (riskProfiles may be absent on old DDB records).
+ */
+export function getEffectiveRiskProfiles(user: UserProfile): RiskProfileMap {
+  return user.riskProfiles ?? defaultRiskProfiles(tierIdToTier(user.tierId));
 }
 
 /**

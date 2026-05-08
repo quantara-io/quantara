@@ -1,13 +1,13 @@
 /**
  * attachRiskRecommendation — Phase 7 helper.
  *
- * Callers invoke this BEFORE putSignal so every persisted BlendedSignal
- * carries a risk field. signal-store.ts itself does NOT compute risk inline
- * (separation of concerns — it just persists what it's handed).
+ * Callers at read time (backend route) look up the user's riskProfiles and
+ * call this to enrich a persisted BlendedSignal (which always has risk: null).
  *
- * Usage:
- *   const enriched = attachRiskRecommendation(signal, state, user.riskProfiles, kellyStats);
- *   await putSignal(enriched);
+ * The implementation lives in packages/shared/src/risk/recommend.ts (moved
+ * in issue #87 so the backend can also import it without cross-workspace refs).
+ * This file re-exports via ./recommend.js so ingestion-internal mocks in tests
+ * continue to work — the mock of "./recommend.js" intercepts the call.
  *
  * Design: Fix 2 of issue #77 / §9.9 of docs/SIGNALS_AND_RISK.md
  */
@@ -29,12 +29,10 @@ import { computeRiskRecommendation } from "./recommend.js";
  *
  * Always returns a new BlendedSignal object (does not mutate the input).
  *
- * @param signal         The BlendedSignal produced by the blender.
+ * @param signal         The BlendedSignal produced by the blender (or fetched from DDB).
  * @param state          IndicatorState for the signal's pair/emittingTimeframe.
- * @param riskProfiles   The user's per-pair risk profile map.
+ * @param riskProfiles   The user's effective per-pair risk profile map.
  * @param kellyByPair    Optional map of pair → KellyStats (keyed by pair).
- *                       The caller should already have filtered to the correct
- *                       (pair, timeframe, direction) slice before passing.
  */
 export function attachRiskRecommendation(
   signal: BlendedSignal,
