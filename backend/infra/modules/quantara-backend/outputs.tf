@@ -29,6 +29,8 @@ output "table_names" {
     embedding_cache       = aws_dynamodb_table.embedding_cache.name
     news_events_by_pair   = aws_dynamodb_table.news_events_by_pair.name
     sentiment_aggregates  = aws_dynamodb_table.sentiment_aggregates.name
+    ratifications         = aws_dynamodb_table.ratifications.name
+    ratification_cache    = aws_dynamodb_table.ratification_cache.name
   }
 }
 
