@@ -2,17 +2,17 @@
  * Tests for genie.ts — trading signals route.
  *
  * Covers:
- *   - Valid pair → 200 with null signal (placeholder implementation)
+ *   - Valid pair → 200 with null signal
  *   - Invalid pair → 404 with UNKNOWN_PAIR error
  *   - getAllSignals → 200 with empty signals array
  *   - signal-service bootstrap is called (user record created on first read)
+ *   - /history → 200 with paginated results from getSignalHistoryForUser
+ *   - /history → passes cursor, pair, pageSize to service
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Minimal response shapes for the test assertions. Keeps `body.x` access typed
-// without claiming structural equivalence with the live Signal/RiskRecommendation —
-// tests only assert presence/types of top-level fields, not the inner shape.
+// Minimal response shapes for the test assertions.
 type SignalsBody = {
   success: boolean;
   data: { signals: unknown[]; disclaimer: string };
@@ -26,18 +26,20 @@ type HistoryBody = {
   success: boolean;
   data: {
     history: unknown[];
-    meta: { page: number; pageSize: number; total: number; hasMore: boolean };
+    meta: { total: number; hasMore: boolean; nextCursor?: string };
   };
 };
 
 // Mock signal-service so tests don't touch DynamoDB.
 const getSignalForUserMock = vi.fn();
 const getAllSignalsForUserMock = vi.fn();
+const getSignalHistoryForUserMock = vi.fn();
 
 vi.mock("../lib/signal-service.js", () => ({
   PAIRS: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"] as const,
   getSignalForUser: getSignalForUserMock,
   getAllSignalsForUser: getAllSignalsForUserMock,
+  getSignalHistoryForUser: getSignalHistoryForUserMock,
 }));
 
 // Inject fake auth context for all genie routes (protected by requireAuth).
@@ -60,6 +62,14 @@ beforeEach(() => {
   vi.resetModules();
   getSignalForUserMock.mockReset();
   getAllSignalsForUserMock.mockReset();
+  getSignalHistoryForUserMock.mockReset();
+  // Default: return empty history
+  getSignalHistoryForUserMock.mockResolvedValue({
+    history: [],
+    total: 0,
+    hasMore: false,
+    nextCursor: undefined,
+  });
 });
 
 async function loadApp() {
@@ -147,25 +157,97 @@ describe("GET /signals/:pair — invalid pair", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /history", () => {
-  it("returns 200 with empty history and correct meta defaults", async () => {
+  it("returns 200 with empty history when no records exist", async () => {
     const app = await loadApp();
     const res = await app.request("/history");
     expect(res.status).toBe(200);
     const body = (await res.json()) as HistoryBody;
     expect(body.success).toBe(true);
     expect(body.data.history).toEqual([]);
-    expect(body.data.meta.page).toBe(1);
-    expect(body.data.meta.pageSize).toBe(20);
     expect(body.data.meta.total).toBe(0);
     expect(body.data.meta.hasMore).toBe(false);
   });
 
-  it("accepts page and pageSize query params", async () => {
+  it("calls getSignalHistoryForUser with authenticated user and pageSize", async () => {
     const app = await loadApp();
-    const res = await app.request("/history?page=3&pageSize=5");
+    await app.request("/history?pageSize=10");
+    expect(getSignalHistoryForUserMock).toHaveBeenCalledWith(
+      fakeAuth.userId,
+      fakeAuth.email,
+      expect.objectContaining({ pageSize: 10 }),
+    );
+  });
+
+  it("passes pair filter when provided", async () => {
+    const app = await loadApp();
+    await app.request("/history?pair=BTC%2FUSDT");
+    expect(getSignalHistoryForUserMock).toHaveBeenCalledWith(
+      fakeAuth.userId,
+      fakeAuth.email,
+      expect.objectContaining({ pair: "BTC/USDT" }),
+    );
+  });
+
+  it("returns history entries and meta from getSignalHistoryForUser", async () => {
+    const historyEntry = {
+      signalId: "sig-001",
+      pair: "BTC/USDT",
+      type: "buy",
+      confidence: 0.72,
+      createdAt: "2024-01-01T00:00:00.000Z",
+      outcome: "correct",
+      priceAtSignal: 45000,
+      priceAtResolution: 46000,
+    };
+    getSignalHistoryForUserMock.mockResolvedValueOnce({
+      history: [historyEntry],
+      total: 1,
+      hasMore: false,
+      nextCursor: undefined,
+    });
+
+    const app = await loadApp();
+    const res = await app.request("/history");
     expect(res.status).toBe(200);
     const body = (await res.json()) as HistoryBody;
-    expect(body.data.meta.page).toBe(3);
-    expect(body.data.meta.pageSize).toBe(5);
+    expect(body.data.history).toHaveLength(1);
+    expect(body.data.meta.total).toBe(1);
+    expect(body.data.meta.hasMore).toBe(false);
+  });
+
+  it("includes nextCursor in meta when hasMore is true", async () => {
+    getSignalHistoryForUserMock.mockResolvedValueOnce({
+      history: [],
+      total: 0,
+      hasMore: true,
+      nextCursor: "abc123cursor",
+    });
+
+    const app = await loadApp();
+    const res = await app.request("/history");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as HistoryBody;
+    expect(body.data.meta.hasMore).toBe(true);
+    expect(body.data.meta.nextCursor).toBe("abc123cursor");
+  });
+
+  it("accepts cursor query param and passes to getSignalHistoryForUser", async () => {
+    const app = await loadApp();
+    await app.request("/history?cursor=someCursor123");
+    expect(getSignalHistoryForUserMock).toHaveBeenCalledWith(
+      fakeAuth.userId,
+      fakeAuth.email,
+      expect.objectContaining({ cursor: "someCursor123" }),
+    );
+  });
+
+  it("uses default pageSize of 20 when not specified", async () => {
+    const app = await loadApp();
+    await app.request("/history");
+    expect(getSignalHistoryForUserMock).toHaveBeenCalledWith(
+      fakeAuth.userId,
+      fakeAuth.email,
+      expect.objectContaining({ pageSize: 20 }),
+    );
   });
 });

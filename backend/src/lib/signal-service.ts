@@ -22,12 +22,14 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { BlendedSignal } from "@quantara/shared";
-import { PAIRS, type TradingPair } from "@quantara/shared";
+import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import type { BlendedSignal, IndicatorState, Timeframe } from "@quantara/shared";
+import { PAIRS, type TradingPair, attachRiskRecommendation, defaultRiskProfiles } from "@quantara/shared";
 
 import { BlendedSignalSchema } from "./schemas/genie.js";
 import { getOrCreateUserRecord } from "./user-store.js";
+import type { z } from "@hono/zod-openapi";
+import { SignalHistoryEntry } from "./schemas/genie.js";
 
 export type { TradingPair };
 export { PAIRS };
@@ -35,7 +37,19 @@ export { PAIRS };
 const SIGNALS_V2_TABLE =
   process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
 
+const INDICATOR_STATE_TABLE =
+  process.env.TABLE_INDICATOR_STATE ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
+
+const SIGNAL_OUTCOMES_TABLE =
+  process.env.TABLE_SIGNAL_OUTCOMES ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signal-outcomes`;
+
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Map a raw DynamoDB item to a BlendedSignal.
@@ -54,6 +68,96 @@ function itemToBlendedSignal(item: Record<string, unknown>): BlendedSignal {
 }
 
 /**
+ * Retrieve the most-recent IndicatorState for a pair/exchange/timeframe from DynamoDB.
+ * Returns null when no snapshot exists.
+ *
+ * This mirrors the ingestion-side getLatestIndicatorState but lives in the backend
+ * workspace so the signal-service can import it without crossing workspace boundaries.
+ */
+async function getLatestIndicatorStateForSignal(
+  pair: string,
+  exchange: string,
+  timeframe: Timeframe,
+): Promise<IndicatorState | null> {
+  const pk = `${pair}#${exchange}#${timeframe}`;
+
+  const result = await client.send(
+    new QueryCommand({
+      TableName: INDICATOR_STATE_TABLE,
+      KeyConditionExpression: "#pk = :pk",
+      ExpressionAttributeNames: { "#pk": "pk" },
+      ExpressionAttributeValues: { ":pk": pk },
+      ScanIndexForward: false,
+      Limit: 1,
+    }),
+  );
+
+  const item = result.Items?.[0];
+  if (!item) return null;
+
+  return {
+    pair: item["pair"] as string,
+    exchange: item["exchange"] as string,
+    timeframe: item["timeframe"] as Timeframe,
+    asOf: item["asOfMs"] as number,
+    barsSinceStart: item["barsSinceStart"] as number,
+    rsi14: (item["rsi14"] as number | null) ?? null,
+    ema20: (item["ema20"] as number | null) ?? null,
+    ema50: (item["ema50"] as number | null) ?? null,
+    ema200: (item["ema200"] as number | null) ?? null,
+    macdLine: (item["macdLine"] as number | null) ?? null,
+    macdSignal: (item["macdSignal"] as number | null) ?? null,
+    macdHist: (item["macdHist"] as number | null) ?? null,
+    atr14: (item["atr14"] as number | null) ?? null,
+    bbUpper: (item["bbUpper"] as number | null) ?? null,
+    bbMid: (item["bbMid"] as number | null) ?? null,
+    bbLower: (item["bbLower"] as number | null) ?? null,
+    bbWidth: (item["bbWidth"] as number | null) ?? null,
+    obv: (item["obv"] as number | null) ?? null,
+    obvSlope: (item["obvSlope"] as number | null) ?? null,
+    vwap: (item["vwap"] as number | null) ?? null,
+    volZ: (item["volZ"] as number | null) ?? null,
+    realizedVolAnnualized: (item["realizedVolAnnualized"] as number | null) ?? null,
+    fearGreed: (item["fearGreed"] as number | null) ?? null,
+    dispersion: (item["dispersion"] as number | null) ?? null,
+    history: item["history"] as IndicatorState["history"],
+  };
+}
+
+/**
+ * Enrich a BlendedSignal with the user's risk recommendation.
+ * Fetches the IndicatorState for the signal's pair/timeframe, then calls
+ * attachRiskRecommendation. Silently falls back to the original signal if
+ * the IndicatorState is unavailable (warm-up period).
+ */
+async function enrichWithRisk(
+  signal: BlendedSignal,
+  riskProfiles: ReturnType<typeof defaultRiskProfiles>,
+): Promise<BlendedSignal> {
+  if (signal.type === "hold") {
+    // Hold signals get risk: null — no IndicatorState fetch needed.
+    return { ...signal, risk: null };
+  }
+
+  const state = await getLatestIndicatorStateForSignal(
+    signal.pair,
+    "consensus",
+    signal.emittingTimeframe,
+  );
+
+  if (!state) {
+    // IndicatorState not yet available (warm-up period) — return signal unchanged.
+    return signal;
+  }
+
+  return attachRiskRecommendation(signal, state, riskProfiles);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
  * Fetch the latest signal for a pair, enriching with the user's risk profile.
  * Bootstraps the user record on first call.
  *
@@ -64,7 +168,7 @@ function itemToBlendedSignal(item: Record<string, unknown>): BlendedSignal {
  * @param userId  Authenticated user id (AuthContext.userId).
  * @param pair    Trading pair — must be a member of PAIRS.
  * @param email   Optional email from JWT claims passed to bootstrap.
- * @returns       The latest BlendedSignal, or null if no signal is available yet.
+ * @returns       The latest BlendedSignal with risk populated, or null if none available.
  */
 export async function getSignalForUser(
   userId: string,
@@ -72,7 +176,7 @@ export async function getSignalForUser(
   email?: string,
 ): Promise<BlendedSignal | null> {
   // Lazy bootstrap — creates record with tier="free" on first authenticated request.
-  await getOrCreateUserRecord(userId, email);
+  const user = await getOrCreateUserRecord(userId, email);
 
   const result = await client.send(
     new QueryCommand({
@@ -87,7 +191,10 @@ export async function getSignalForUser(
 
   const item = result.Items?.[0];
   if (!item) return null;
-  return itemToBlendedSignal(item);
+
+  const raw = itemToBlendedSignal(item);
+  const riskProfiles = user.riskProfiles ?? defaultRiskProfiles(user.tier ?? "free");
+  return enrichWithRisk(raw, riskProfiles);
 }
 
 /**
@@ -98,13 +205,14 @@ export async function getSignalForUser(
  *
  * @param userId  Authenticated user id.
  * @param email   Optional email from JWT claims.
- * @returns       Array of latest BlendedSignals (one per pair, empty when none available).
+ * @returns       Array of latest BlendedSignals with risk populated (one per pair, empty when none).
  */
 export async function getAllSignalsForUser(
   userId: string,
   email?: string,
 ): Promise<BlendedSignal[]> {
-  await getOrCreateUserRecord(userId, email);
+  const user = await getOrCreateUserRecord(userId, email);
+  const riskProfiles = user.riskProfiles ?? defaultRiskProfiles(user.tier ?? "free");
 
   // Fetch the latest signal for each pair in parallel.
   const results = await Promise.all(
@@ -119,9 +227,135 @@ export async function getAllSignalsForUser(
           Limit: 1,
         }),
       );
-      return result.Items?.[0] ? itemToBlendedSignal(result.Items[0]) : null;
+      if (!result.Items?.[0]) return null;
+      const raw = itemToBlendedSignal(result.Items[0]);
+      return enrichWithRisk(raw, riskProfiles);
     }),
   );
 
   return results.filter((s): s is BlendedSignal => s !== null);
+}
+
+// ---------------------------------------------------------------------------
+// Signal history (Gap 5) — reads from signal-outcomes table
+// ---------------------------------------------------------------------------
+
+export type SignalHistoryEntryType = z.infer<typeof SignalHistoryEntry>;
+
+export interface SignalHistoryResult {
+  history: SignalHistoryEntryType[];
+  total: number;
+  hasMore: boolean;
+  /** DynamoDB cursor for the next page — undefined when no more pages. */
+  nextCursor?: string;
+}
+
+/**
+ * Fetch paginated signal history for a user from the signal-outcomes table.
+ *
+ * Uses DynamoDB LastEvaluatedKey-based cursor pagination — not page-number-based,
+ * since DDB doesn't support efficient skip. The cursor is returned as an opaque
+ * base64 string the client echoes back.
+ *
+ * @param userId    Authenticated user id (unused in query, kept for future per-user scoping).
+ * @param email     User email (unused in query, kept for bootstrap path).
+ * @param options   Pagination options.
+ */
+export async function getSignalHistoryForUser(
+  userId: string,
+  email: string | undefined,
+  options: { pageSize: number; pair?: string; cursor?: string },
+): Promise<SignalHistoryResult> {
+  // Bootstrap to ensure user record exists (consistent with other service functions).
+  await getOrCreateUserRecord(userId, email);
+
+  const { pageSize, pair, cursor } = options;
+
+  // Decode opaque cursor → DDB ExclusiveStartKey.
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  if (cursor) {
+    try {
+      exclusiveStartKey = JSON.parse(Buffer.from(cursor, "base64").toString("utf-8")) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      // Malformed cursor — ignore and start from beginning.
+      exclusiveStartKey = undefined;
+    }
+  }
+
+  // If pair filter is specified, query by pair PK; otherwise scan all pairs sequentially.
+  // Phase 8 writes signal-outcomes with PK=pair, SK=signalId.
+  let items: Record<string, unknown>[] = [];
+  let lastEvaluatedKey: Record<string, unknown> | undefined;
+
+  if (pair) {
+    const result = await client.send(
+      new QueryCommand({
+        TableName: SIGNAL_OUTCOMES_TABLE,
+        KeyConditionExpression: "#pair = :pair",
+        ExpressionAttributeNames: { "#pair": "pair" },
+        ExpressionAttributeValues: { ":pair": pair },
+        ScanIndexForward: false,
+        Limit: pageSize,
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+    items = (result.Items ?? []) as Record<string, unknown>[];
+    lastEvaluatedKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } else {
+    // No pair filter: iterate over all known pairs, collecting up to pageSize items total.
+    // This is not efficient for large result sets but sufficient for the UI history view
+    // which defaults to pageSize=20. Future improvement: add a GSI on resolvedAt.
+    for (const p of PAIRS) {
+      if (items.length >= pageSize) break;
+
+      const remaining = pageSize - items.length;
+      const result = await client.send(
+        new QueryCommand({
+          TableName: SIGNAL_OUTCOMES_TABLE,
+          KeyConditionExpression: "#pair = :pair",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: { ":pair": p },
+          ScanIndexForward: false,
+          Limit: remaining,
+          ExclusiveStartKey: exclusiveStartKey,
+        }),
+      );
+
+      const pairItems = (result.Items ?? []) as Record<string, unknown>[];
+      items = items.concat(pairItems);
+      // Only track cursor for the last pair with a non-null LastEvaluatedKey.
+      if (result.LastEvaluatedKey) {
+        lastEvaluatedKey = result.LastEvaluatedKey as Record<string, unknown>;
+      } else {
+        lastEvaluatedKey = undefined;
+      }
+    }
+  }
+
+  // Map OutcomeRecord → SignalHistoryEntry.
+  const history: SignalHistoryEntryType[] = items.map((item) => ({
+    signalId: item["signalId"] as string,
+    pair: item["pair"] as string,
+    type: item["type"] as "buy" | "sell" | "hold",
+    confidence: item["confidence"] as number,
+    createdAt: item["createdAt"] as string,
+    outcome: item["outcome"] as "correct" | "incorrect" | "neutral" | "pending",
+    priceAtSignal: item["priceAtSignal"] as number,
+    priceAtResolution: (item["priceAtResolution"] as number | null | undefined) ?? null,
+  }));
+
+  // Encode cursor for client.
+  const nextCursor = lastEvaluatedKey
+    ? Buffer.from(JSON.stringify(lastEvaluatedKey)).toString("base64")
+    : undefined;
+
+  return {
+    history,
+    total: history.length,
+    hasMore: nextCursor !== undefined,
+    nextCursor,
+  };
 }
