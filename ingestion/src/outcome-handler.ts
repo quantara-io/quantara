@@ -42,8 +42,7 @@ import type { OutcomeRecord } from "./outcomes/resolver.js";
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const TABLE_PREFIX = process.env.TABLE_PREFIX ?? "quantara-dev-";
-const SIGNALS_V2_TABLE =
-  process.env.TABLE_SIGNALS_V2 ?? `${TABLE_PREFIX}signals-v2`;
+const SIGNALS_V2_TABLE = process.env.TABLE_SIGNALS_V2 ?? `${TABLE_PREFIX}signals-v2`;
 
 const MAX_BATCH = 200;
 
@@ -115,9 +114,7 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
   }
 
   // Step 3: Recompute accuracy aggregates for affected (pair, TF) buckets.
-  const affectedPairTf = new Set(
-    resolvedOutcomes.map((o) => `${o.pair}#${o.emittingTimeframe}`),
-  );
+  const affectedPairTf = new Set(resolvedOutcomes.map((o) => `${o.pair}#${o.emittingTimeframe}`));
 
   for (const key of affectedPairTf) {
     const [pair, timeframe] = key.split("#") as [string, string];
@@ -246,8 +243,7 @@ async function markSignalOutcomeResolved(
 
   const { DynamoDBDocumentClient: DDC, PutCommand: PC } = await import("@aws-sdk/lib-dynamodb");
   const metaClient = DDC.from(new DynamoDBClient({}));
-  const METADATA_TABLE =
-    process.env.TABLE_METADATA ?? `${TABLE_PREFIX}ingestion-metadata`;
+  const METADATA_TABLE = process.env.TABLE_METADATA ?? `${TABLE_PREFIX}ingestion-metadata`;
 
   await metaClient.send(
     new PC({
@@ -346,9 +342,7 @@ async function recomputeRuleAttribution(
   const since = new Date(new Date(now).getTime() - 86400 * 90 * 1000).toISOString();
   const outcomes = await queryOutcomesByRule(rule, since);
   // Further filter to this pair/timeframe.
-  const filtered = outcomes.filter(
-    (o) => o.pair === pair && o.emittingTimeframe === timeframe,
-  );
+  const filtered = outcomes.filter((o) => o.pair === pair && o.emittingTimeframe === timeframe);
 
   const attr = buildRuleAttribution(rule, pair, timeframe, window, filtered, now);
   await putRuleAttribution(attr);

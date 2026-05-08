@@ -28,7 +28,7 @@ export const AuthConfigResponse = z
           "Enabled auth methods: email_password, oauth_google, oauth_apple, magic_link, passkey",
         ),
       mfaPolicy: z.enum(["optional", "required", "disabled"]),
-      mfaMethods: z.array(z.enum(["totp", "email"])),
+      mfaMethods: z.array(z.enum(["totp", "email", "sms"])),
       passkeyEnabled: z.boolean(),
       oauthProviders: z.array(z.string()),
     }),
@@ -162,7 +162,7 @@ export const MfaMethodsResponse = z
     success: z.literal(true),
     data: z.object({
       available: z
-        .array(z.enum(["totp", "email"]))
+        .array(z.enum(["totp", "email", "sms"]))
         .describe("MFA methods available for enrollment"),
       enrolled: z
         .array(
@@ -176,6 +176,26 @@ export const MfaMethodsResponse = z
     }),
   })
   .openapi("MfaMethodsResponse");
+
+export const MfaSmsSetupRequest = z
+  .object({
+    phone: z
+      .string()
+      .min(4)
+      .max(20)
+      .describe("Mobile phone number in E.164 format (e.g. +15550109911)"),
+  })
+  .openapi("MfaSmsSetupRequest");
+
+export const MfaSmsSetupResponse = z
+  .object({
+    success: z.literal(true),
+    data: z.object({
+      message: z.string(),
+      phone: z.string().describe("Normalized E.164 phone number"),
+    }),
+  })
+  .openapi("MfaSmsSetupResponse");
 
 export const MfaTotpSetupResponse = z
   .object({
@@ -206,7 +226,7 @@ export const MfaVerifyRequest = z
   .object({
     mfaToken: z.string().describe("MFA token from login response"),
     code: z.string().describe("Verification code"),
-    method: z.enum(["totp", "email", "recovery_code"]).describe("MFA method"),
+    method: z.enum(["totp", "email", "sms", "recovery_code"]).describe("MFA method"),
     trustDevice: z.boolean().optional().describe("Trust this device for 30 days"),
   })
   .openapi("MfaVerifyRequest");

@@ -118,9 +118,7 @@ export function buildAccuracyAggregate(
   const windowStart = new Date(nowMs - WINDOW_MS[window]).toISOString();
 
   // Filter to window.
-  const inWindow = outcomes.filter(
-    (o) => !o.invalidatedExcluded && o.resolvedAt >= windowStart,
-  );
+  const inWindow = outcomes.filter((o) => !o.invalidatedExcluded && o.resolvedAt >= windowStart);
 
   const invalidatedExcluded = outcomes.filter(
     (o) => o.invalidatedExcluded && o.resolvedAt >= windowStart,

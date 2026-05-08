@@ -350,6 +350,13 @@
               >
                 Email Code
               </button>
+              <button
+                id="mfa-tab-sms"
+                onclick="selectMfaMethod('sms')"
+                class="flex-1 px-3 py-2 text-xs font-medium text-center transition border-l border-gray-200"
+              >
+                SMS Code
+              </button>
             </div>
 
             <button
@@ -358,6 +365,14 @@
               class="hidden w-full mb-4 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition"
             >
               Send Code to Email
+            </button>
+
+            <button
+              id="mfa-send-sms-btn"
+              onclick="doSendMfaSms()"
+              class="hidden w-full mb-4 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition"
+            >
+              Send Code via SMS
             </button>
 
             <div class="flex justify-center gap-2 mb-4" id="mfa-code-boxes">
@@ -664,6 +679,20 @@
                   </svg>
                   Email Code
                 </button>
+                <button
+                  onclick="doSmsMfaSetup()"
+                  class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition flex items-center justify-center gap-1"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"
+                    />
+                  </svg>
+                  SMS Code
+                </button>
               </div>
               <div id="mfa-qr-area" class="hidden text-center">
                 <div class="inline-block bg-white border border-gray-200 rounded-lg p-3">
@@ -739,6 +768,54 @@
                     />
                     <button
                       onclick="doEmailMfaConfirm()"
+                      class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition"
+                    >
+                      Confirm
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- SMS MFA setup -->
+              <div id="sms-mfa-area" class="hidden">
+                <p class="text-sm text-gray-600 mb-2">
+                  Enter your mobile number. We'll text a 6-digit code to confirm.
+                </p>
+                <p class="text-xs text-gray-400 mb-3">
+                  Codes are sent by Aldero, our authentication provider, on behalf of Quantara.
+                  Reply STOP to opt out, HELP for help. Message and data rates may apply.
+                </p>
+                <div id="sms-mfa-phone-area" class="flex gap-2 mb-3">
+                  <input
+                    type="tel"
+                    id="sms-mfa-phone"
+                    placeholder="+15550109911"
+                    class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                  />
+                  <button
+                    onclick="doSendSmsMfaCode()"
+                    id="send-sms-mfa-btn"
+                    class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition"
+                  >
+                    Send Code
+                  </button>
+                </div>
+                <div id="sms-mfa-confirm" class="hidden">
+                  <label class="block text-xs font-medium text-gray-600 mb-1"
+                    >Enter code from text message</label
+                  >
+                  <div class="flex gap-2">
+                    <input
+                      type="text"
+                      id="sms-mfa-code"
+                      maxlength="6"
+                      inputmode="numeric"
+                      autocomplete="one-time-code"
+                      placeholder="123456"
+                      class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                    />
+                    <button
+                      onclick="doSmsMfaConfirm()"
                       class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition"
                     >
                       Confirm
@@ -993,6 +1070,8 @@
           document
             .getElementById("mfa-tab-email")
             .classList.toggle("hidden", !mfaAvailableMethods.includes("email"));
+          const smsTab = document.getElementById("mfa-tab-sms");
+          if (smsTab) smsTab.classList.toggle("hidden", !mfaAvailableMethods.includes("sms"));
         } else {
           tabs.classList.add("hidden");
         }
@@ -1004,6 +1083,7 @@
         // Update tab styles
         const totpTab = document.getElementById("mfa-tab-totp");
         const emailTab = document.getElementById("mfa-tab-email");
+        const smsTab = document.getElementById("mfa-tab-sms");
         if (totpTab) {
           totpTab.className =
             "flex-1 px-3 py-2 text-xs font-medium text-center transition " +
@@ -1014,15 +1094,27 @@
             "flex-1 px-3 py-2 text-xs font-medium text-center transition border-l border-gray-200 " +
             (method === "email" ? "bg-indigo-600 text-white" : "text-gray-500 hover:bg-gray-50");
         }
-        // Update description and show/hide send button for email
+        if (smsTab) {
+          smsTab.className =
+            "flex-1 px-3 py-2 text-xs font-medium text-center transition border-l border-gray-200 " +
+            (method === "sms" ? "bg-indigo-600 text-white" : "text-gray-500 hover:bg-gray-50");
+        }
+        // Update description and show/hide send buttons per method
         const desc = document.getElementById("mfa-step-description");
-        const sendBtn = document.getElementById("mfa-send-email-btn");
+        const sendEmail = document.getElementById("mfa-send-email-btn");
+        const sendSms = document.getElementById("mfa-send-sms-btn");
         if (method === "email") {
           desc.textContent = "We'll send a 6-digit code to your email";
-          sendBtn.classList.remove("hidden");
+          sendEmail.classList.remove("hidden");
+          if (sendSms) sendSms.classList.add("hidden");
+        } else if (method === "sms") {
+          desc.textContent = "We'll text a 6-digit code to your verified phone";
+          sendEmail.classList.add("hidden");
+          if (sendSms) sendSms.classList.remove("hidden");
         } else {
           desc.textContent = "Enter the 6-digit code from your authenticator app";
-          sendBtn.classList.add("hidden");
+          sendEmail.classList.add("hidden");
+          if (sendSms) sendSms.classList.add("hidden");
         }
         // Clear and focus code boxes
         const boxes = document.querySelectorAll("#mfa-code-boxes input");
@@ -1040,7 +1132,7 @@
           const res = await fetch("/api/auth/mfa/challenge", {
             method: "POST",
             headers: headers(),
-            body: JSON.stringify({ mfaToken }),
+            body: JSON.stringify({ mfaToken, channel: "email" }),
           });
           const data = await res.json();
           if (data.success) {
@@ -1048,6 +1140,33 @@
             btn.textContent = "Resend Code";
             document.getElementById("mfa-step-description").textContent =
               "Enter the 6-digit code sent to your email";
+          } else {
+            toast(data.error?.message || "Failed to send code", "error");
+            btn.textContent = "Retry";
+          }
+        } catch {
+          toast("Failed to send code", "error");
+          btn.textContent = "Retry";
+        }
+        btn.disabled = false;
+      }
+
+      async function doSendMfaSms() {
+        const btn = document.getElementById("mfa-send-sms-btn");
+        btn.textContent = "Sending...";
+        btn.disabled = true;
+        try {
+          const res = await fetch("/api/auth/mfa/challenge", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({ mfaToken, channel: "sms" }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            toast("Code sent via SMS");
+            btn.textContent = "Resend Code";
+            document.getElementById("mfa-step-description").textContent =
+              "Enter the 6-digit code we texted you";
           } else {
             toast(data.error?.message || "Failed to send code", "error");
             btn.textContent = "Retry";
@@ -1530,22 +1649,31 @@
             enrolledList.innerHTML = enrolled
               .map((m) => {
                 const isTotp = m.type === "otp" || m.type === "totp";
-                const isEmail = m.type === "oob" || m.type === "email";
+                // The auth service returns id like "sms|app#user" or "email|app#user".
+                // For oob types, look at the id prefix to disambiguate email vs sms.
+                const idPrefix = String(m.id || "").split("|")[0];
+                const isSms = idPrefix === "sms" || m.type === "sms";
+                const isEmail =
+                  !isSms && (m.type === "oob" || m.type === "email" || idPrefix === "email");
                 const isRecovery = m.type === "recovery-code";
                 const icon = isTotp
                   ? '<svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>'
-                  : isEmail
-                    ? '<svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>'
-                    : isRecovery
-                      ? '<svg class="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>'
-                      : '<svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>';
+                  : isSms
+                    ? '<svg class="w-4 h-4 text-purple-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>'
+                    : isEmail
+                      ? '<svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>'
+                      : isRecovery
+                        ? '<svg class="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>'
+                        : '<svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>';
                 const label = isTotp
                   ? "Authenticator App"
-                  : isEmail
-                    ? "Email Code"
-                    : isRecovery
-                      ? "Recovery Codes"
-                      : m.type;
+                  : isSms
+                    ? "SMS Code"
+                    : isEmail
+                      ? "Email Code"
+                      : isRecovery
+                        ? "Recovery Codes"
+                        : m.type;
                 const date = m.enrolledAt ? new Date(m.enrolledAt).toLocaleDateString() : "";
                 const extra =
                   isRecovery && m.remaining_codes != null
@@ -1578,12 +1706,14 @@
         if (isHidden) {
           document.getElementById("mfa-qr-area").classList.add("hidden");
           document.getElementById("email-mfa-area").classList.add("hidden");
+          document.getElementById("sms-mfa-area")?.classList.add("hidden");
         }
       }
 
       async function doTotpSetup() {
         document.getElementById("mfa-qr-area").classList.remove("hidden");
         document.getElementById("email-mfa-area").classList.add("hidden");
+        document.getElementById("sms-mfa-area")?.classList.add("hidden");
         const res = await fetch("/api/auth/mfa/totp/setup", { method: "POST", headers: headers() });
         const data = await res.json();
         if (data.success && data.data) {
@@ -1639,6 +1769,7 @@
       async function doEmailMfaSetup() {
         document.getElementById("email-mfa-area").classList.remove("hidden");
         document.getElementById("mfa-qr-area").classList.add("hidden");
+        document.getElementById("sms-mfa-area")?.classList.add("hidden");
         // Immediately send the code
         await doSendEmailMfaCode();
       }
@@ -1680,6 +1811,67 @@
         if (data.success) {
           toast("Email MFA enabled!");
           document.getElementById("email-mfa-area").classList.add("hidden");
+          if (data.data?.recoveryCodes) {
+            document.getElementById("recovery-codes").classList.remove("hidden");
+            document.getElementById("recovery-list").textContent =
+              data.data.recoveryCodes.join("\n");
+          }
+          doMfaSetupFlow(); // refresh status
+        } else {
+          toast(data.error?.message || "Invalid code", "error");
+        }
+      }
+
+      // SMS MFA setup
+      async function doSmsMfaSetup() {
+        document.getElementById("sms-mfa-area").classList.remove("hidden");
+        document.getElementById("mfa-qr-area").classList.add("hidden");
+        document.getElementById("email-mfa-area").classList.add("hidden");
+        document.getElementById("sms-mfa-confirm").classList.add("hidden");
+        document.getElementById("sms-mfa-phone").focus();
+      }
+
+      async function doSendSmsMfaCode() {
+        const phone = document.getElementById("sms-mfa-phone").value.trim();
+        if (!phone) return toast("Enter your mobile number", "error");
+        const btn = document.getElementById("send-sms-mfa-btn");
+        btn.textContent = "Sending...";
+        btn.disabled = true;
+        try {
+          const res = await fetch("/api/auth/mfa/sms/setup", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({ phone }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            toast("Verification code sent via SMS");
+            document.getElementById("sms-mfa-confirm").classList.remove("hidden");
+            document.getElementById("sms-mfa-code").focus();
+            btn.textContent = "Resend";
+          } else {
+            toast(data.error?.message || "Failed to send code", "error");
+            btn.textContent = "Send Code";
+          }
+        } catch (e) {
+          toast("Network error: " + e.message, "error");
+          btn.textContent = "Send Code";
+        }
+        btn.disabled = false;
+      }
+
+      async function doSmsMfaConfirm() {
+        const code = document.getElementById("sms-mfa-code").value;
+        if (!code || code.length < 6) return toast("Enter the 6-digit code", "error");
+        const res = await fetch("/api/auth/mfa/sms/confirm", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ code }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          toast("SMS MFA enabled!");
+          document.getElementById("sms-mfa-area").classList.add("hidden");
           if (data.data?.recoveryCodes) {
             document.getElementById("recovery-codes").classList.remove("hidden");
             document.getElementById("recovery-list").textContent =

@@ -68,10 +68,7 @@ export function buildRuleAttribution(
 
   // Filter to non-invalidated outcomes in window where this rule fired.
   const inWindow = outcomes.filter(
-    (o) =>
-      !o.invalidatedExcluded &&
-      o.resolvedAt >= windowStart &&
-      o.rulesFired.includes(rule),
+    (o) => !o.invalidatedExcluded && o.resolvedAt >= windowStart && o.rulesFired.includes(rule),
   );
 
   const correctCount = inWindow.filter((o) => o.outcome === "correct").length;

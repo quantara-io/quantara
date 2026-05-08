@@ -19,10 +19,7 @@ import type { OutcomeRecord } from "./resolver.js";
 
 const NOW_ISO = "2026-01-01T12:00:00.000Z";
 
-function makeOutcome(
-  overrides: Partial<OutcomeRecord> = {},
-  resolvedAt = NOW_ISO,
-): OutcomeRecord {
+function makeOutcome(overrides: Partial<OutcomeRecord> = {}, resolvedAt = NOW_ISO): OutcomeRecord {
   return {
     pair: "BTC",
     signalId: `sig-${Math.random().toString(36).slice(2, 8)}`,
@@ -56,10 +53,7 @@ describe("computeBrier", () => {
   });
 
   it("returns 0 when all outcomes are neutral (filtered)", () => {
-    const outcomes = [
-      makeOutcome({ outcome: "neutral" }),
-      makeOutcome({ outcome: "neutral" }),
-    ];
+    const outcomes = [makeOutcome({ outcome: "neutral" }), makeOutcome({ outcome: "neutral" })];
     expect(computeBrier(outcomes)).toBe(0);
   });
 

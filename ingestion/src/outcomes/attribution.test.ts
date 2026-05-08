@@ -10,10 +10,7 @@ import type { OutcomeRecord } from "./resolver.js";
 
 const NOW_ISO = "2026-01-01T12:00:00.000Z";
 
-function makeOutcome(
-  overrides: Partial<OutcomeRecord> = {},
-  resolvedAt = NOW_ISO,
-): OutcomeRecord {
+function makeOutcome(overrides: Partial<OutcomeRecord> = {}, resolvedAt = NOW_ISO): OutcomeRecord {
   return {
     pair: "BTC",
     signalId: `sig-${Math.random().toString(36).slice(2, 8)}`,
@@ -66,9 +63,7 @@ describe("buildRuleAttribution", () => {
   });
 
   it("contribution is null when all outcomes are neutral", () => {
-    const outcomes = [
-      makeOutcome({ outcome: "neutral", rulesFired: ["rsi_oversold"] }),
-    ];
+    const outcomes = [makeOutcome({ outcome: "neutral", rulesFired: ["rsi_oversold"] })];
     const attr = buildRuleAttribution("rsi_oversold", "BTC", "1h", "30d", outcomes, NOW_ISO);
     expect(attr.contribution).toBeNull();
   });

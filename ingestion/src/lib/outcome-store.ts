@@ -29,14 +29,12 @@ const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const TABLE_PREFIX = process.env.TABLE_PREFIX ?? "quantara-dev-";
 
-const OUTCOMES_TABLE =
-  process.env.TABLE_SIGNAL_OUTCOMES ?? `${TABLE_PREFIX}signal-outcomes`;
+const OUTCOMES_TABLE = process.env.TABLE_SIGNAL_OUTCOMES ?? `${TABLE_PREFIX}signal-outcomes`;
 
 const ACCURACY_TABLE =
   process.env.TABLE_ACCURACY_AGGREGATES ?? `${TABLE_PREFIX}accuracy-aggregates`;
 
-const ATTRIBUTION_TABLE =
-  process.env.TABLE_RULE_ATTRIBUTION ?? `${TABLE_PREFIX}rule-attribution`;
+const ATTRIBUTION_TABLE = process.env.TABLE_RULE_ATTRIBUTION ?? `${TABLE_PREFIX}rule-attribution`;
 
 // ---------------------------------------------------------------------------
 // signal-outcomes writes
@@ -139,8 +137,7 @@ export async function queryOutcomesByPairTimeframe(
       new QueryCommand({
         TableName: OUTCOMES_TABLE,
         KeyConditionExpression: "#pair = :pair",
-        FilterExpression:
-          "#emittingTimeframe = :tf AND #resolvedAt >= :since",
+        FilterExpression: "#emittingTimeframe = :tf AND #resolvedAt >= :since",
         ExpressionAttributeNames: {
           "#pair": "pair",
           "#emittingTimeframe": "emittingTimeframe",
@@ -171,10 +168,7 @@ export async function queryOutcomesByPairTimeframe(
  * @param rule    Rule identifier.
  * @param since   ISO8601 lower bound.
  */
-export async function queryOutcomesByRule(
-  rule: string,
-  since: string,
-): Promise<OutcomeRecord[]> {
+export async function queryOutcomesByRule(rule: string, since: string): Promise<OutcomeRecord[]> {
   const results: OutcomeRecord[] = [];
   let lastKey: Record<string, unknown> | undefined;
 
@@ -308,10 +302,7 @@ export interface KellyStats {
  *
  * Returns null when no aggregate is available or there are no directional outcomes.
  */
-export async function getKellyStats(
-  pair: string,
-  timeframe: string,
-): Promise<KellyStats | null> {
+export async function getKellyStats(pair: string, timeframe: string): Promise<KellyStats | null> {
   const pk = `${pair}#${timeframe}`;
   const windows: AccuracyWindow[] = ["90d", "30d", "7d"];
 
