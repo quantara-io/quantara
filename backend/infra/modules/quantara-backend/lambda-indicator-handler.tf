@@ -65,7 +65,7 @@ resource "aws_lambda_function" "indicator_handler" {
   memory_size   = 512
   timeout       = 60
 
-  filename         = "${local.ingestion_source_dir}/dist/indicator-handler.js"
+  filename         = "${local.ingestion_source_dir}/dist/indicator-handler.zip"
   source_code_hash = local.ingestion_source_hash
 
   environment {

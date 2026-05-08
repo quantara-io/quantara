@@ -31,6 +31,11 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
 // Module mocks — pure-function and store layers
 // ---------------------------------------------------------------------------
 
+const tryClaimProcessedCloseMock = vi.fn();
+vi.mock("./lib/processed-close-store.js", () => ({
+  tryClaimProcessedClose: tryClaimProcessedCloseMock,
+}));
+
 const getCandles = vi.fn();
 vi.mock("./lib/candle-store.js", () => ({ getCandles }));
 
@@ -86,14 +91,19 @@ vi.mock("./signals/gates.js", () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeCandle(overrides = {}) {
+// The test pins time to 2023-01-01T00:15:10.000Z (1672532110000).
+// A 15m bar closes at 2023-01-01T00:15:00.000Z (1672532100000).
+// Candle closeTime must match lastClose for the freshness check to pass.
+const TEST_LAST_CLOSE_15M = 1672532100000;
+
+function makeCandle(overrides: Record<string, unknown> = {}) {
   return {
     exchange: "binanceus",
     symbol: "BTC/USDT",
     pair: "BTC/USDT",
     timeframe: "15m",
-    openTime: 1700000000000,
-    closeTime: 1700000900000,
+    openTime: TEST_LAST_CLOSE_15M - 15 * 60 * 1000,
+    closeTime: TEST_LAST_CLOSE_15M,
     open: 30000,
     high: 30500,
     low: 29800,
@@ -176,6 +186,7 @@ function makeState() {
 beforeEach(() => {
   vi.resetModules();
   send.mockReset();
+  tryClaimProcessedCloseMock.mockReset();
   getCandles.mockReset();
   canonicalizeCandleMock.mockReset();
   getLastFireBarsMock.mockReset();
@@ -192,6 +203,7 @@ beforeEach(() => {
   narrowPairMock.mockReset();
 
   // Default mocks.
+  tryClaimProcessedCloseMock.mockResolvedValue(true);
   getCandles.mockResolvedValue([makeCandle()]);
   canonicalizeCandleMock.mockReturnValue({ consensus: makeCandle({ exchange: "consensus" }), dispersion: 0.002 });
   getLastFireBarsMock.mockResolvedValue({});
@@ -404,6 +416,151 @@ describe("cooldown integration", () => {
     // 5 PAIRS × 1 closed TF = 5 tickCooldowns calls.
     expect(tickCooldownsMock).toHaveBeenCalledTimes(5);
     expect(getLastFireBarsMock).toHaveBeenCalledTimes(5);
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idempotency — processed-close marker
+// ---------------------------------------------------------------------------
+
+describe("idempotency via processed-close marker", () => {
+  it("skips indicator state and cooldown processing when tryClaimProcessedClose returns false (duplicate invocation)", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    // Simulate all claims failing — another invocation already processed these closes.
+    tryClaimProcessedCloseMock.mockResolvedValue(false);
+    // Blend step reads stored votes; with no new indicator state we still blend existing.
+    blendTimeframeVotesMock.mockReturnValue(null);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // Indicator state and cooldown work must be skipped (idempotency guard fired).
+    expect(putIndicatorStateMock).not.toHaveBeenCalled();
+    expect(tickCooldownsMock).not.toHaveBeenCalled();
+    // putSignal is not called because blend returned null.
+    expect(putSignalMock).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it("processes work when tryClaimProcessedClose returns true (first invocation)", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    tryClaimProcessedCloseMock.mockResolvedValue(true);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    expect(putIndicatorStateMock).toHaveBeenCalled();
+    expect(putSignalMock).toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it("calls tryClaimProcessedClose with correct pair, tf, and lastClose", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    tryClaimProcessedCloseMock.mockResolvedValue(true);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // Should be called once per pair (5 pairs) × 1 closed TF.
+    expect(tryClaimProcessedCloseMock).toHaveBeenCalledTimes(5);
+    // The lastClose for the 15m bar should be exactly 2023-01-01T00:15:00.000Z.
+    expect(tryClaimProcessedCloseMock).toHaveBeenCalledWith(
+      expect.any(String),
+      "15m",
+      TEST_LAST_CLOSE_15M,
+    );
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Candle freshness check
+// ---------------------------------------------------------------------------
+
+describe("candle freshness check", () => {
+  it("skips processing when candle closeTime doesn't match lastClose (stale candle)", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    // Return a candle with a closeTime that doesn't match lastClose (previous bar).
+    const staleCandle = makeCandle({ closeTime: TEST_LAST_CLOSE_15M - 15 * 60 * 1000 });
+    getCandles.mockResolvedValue([staleCandle]);
+
+    // All exchanges return stale candles → canonicalize returns null → sentinel vote
+    canonicalizeCandleMock.mockReturnValue(null);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // buildIndicatorState should NOT have been called (all pairs had no fresh candles).
+    expect(buildIndicatorStateMock).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it("processes normally when candle closeTime exactly matches lastClose", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    // makeCandle defaults to closeTime = TEST_LAST_CLOSE_15M which matches lastClose.
+    getCandles.mockResolvedValue([makeCandle()]);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    expect(buildIndicatorStateMock).toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale-vote sentinel (P2 #2)
+// ---------------------------------------------------------------------------
+
+describe("stale-vote sentinel on consensus skip", () => {
+  it("writes a sentinel null vote when canonicalize returns null (≥2/3 stale)", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    canonicalizeCandleMock.mockReturnValue(null);
+    blendTimeframeVotesMock.mockReturnValue(null);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // send should have been called with PutCommand for the sentinel vote per pair.
+    const putCallCount = send.mock.calls.filter(
+      (call) => call[0]?.__cmd === "Put",
+    ).length;
+    expect(putCallCount).toBeGreaterThanOrEqual(1);
+
+    vi.useRealTimers();
+  });
+
+  it("does NOT early-return sentinel when canonicalize succeeds", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    // canonicalizeCandleMock returns a valid canon (default).
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // buildIndicatorState should have been called, meaning we proceeded normally.
+    expect(buildIndicatorStateMock).toHaveBeenCalled();
+    // Indicator state was processed and persisted.
+    expect(putIndicatorStateMock).toHaveBeenCalled();
 
     vi.useRealTimers();
   });
