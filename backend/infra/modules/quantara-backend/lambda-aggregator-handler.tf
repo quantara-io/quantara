@@ -94,7 +94,7 @@ resource "aws_lambda_function" "aggregator" {
   memory_size   = 256
   timeout       = 300
 
-  filename         = "${local.ingestion_source_dir}/dist/aggregator.zip"
+  filename         = "${local.ingestion_source_dir}/dist/aggregator-handler.zip"
   source_code_hash = local.ingestion_source_hash
 
   environment {

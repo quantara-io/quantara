@@ -47,7 +47,7 @@ resource "aws_sqs_queue" "enriched_news_dlq" {
 
 resource "aws_sqs_queue" "enriched_news" {
   name                       = "${local.prefix}-enriched-news"
-  visibility_timeout_seconds = 60
+  visibility_timeout_seconds = 360 # must be >= Lambda timeout (300s) × 1.2
   message_retention_seconds  = 345600
 
   redrive_policy = jsonencode({

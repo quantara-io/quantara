@@ -19,7 +19,14 @@ import {
   DynamoDBDocumentClient,
   BatchWriteCommand,
   QueryCommand,
+  type NativeAttributeValue,
 } from "@aws-sdk/lib-dynamodb";
+
+/** A single write-request entry as expected by `BatchWriteCommand` (lib-dynamodb). */
+type DocumentWriteRequest = {
+  PutRequest?: { Item: Record<string, NativeAttributeValue> };
+  DeleteRequest?: { Key: Record<string, NativeAttributeValue> };
+};
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -29,6 +36,31 @@ const NEWS_BY_PAIR_TABLE =
 
 /** 30-day TTL — matches the issue spec */
 const TTL_SECONDS = 86400 * 30;
+
+/**
+ * Retry a single batch of ≤25 write requests, handling DynamoDB's
+ * `UnprocessedItems` response (throttling / capacity backoff).
+ *
+ * Up to 5 attempts with exponential backoff: 100 → 200 → 400 → 800 → 1600 ms.
+ * Throws if items remain unprocessed after all attempts.
+ */
+async function batchWriteWithRetry(items: DocumentWriteRequest[], table: string): Promise<void> {
+  let unprocessed = items;
+  let backoff = 100; // ms
+  for (let attempt = 0; attempt < 5 && unprocessed.length > 0; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, backoff));
+    const res = await client.send(
+      new BatchWriteCommand({ RequestItems: { [table]: unprocessed } })
+    );
+    unprocessed = (res.UnprocessedItems?.[table] as DocumentWriteRequest[] | undefined) ?? [];
+    backoff *= 2;
+  }
+  if (unprocessed.length > 0) {
+    throw new Error(
+      `BatchWrite failed: ${unprocessed.length} items remain unprocessed after 5 attempts`
+    );
+  }
+}
 
 export interface NewsByPairRecord {
   pair: string;
@@ -59,29 +91,24 @@ export async function writePairFanout(records: NewsByPairRecord[]): Promise<void
   }
 
   for (const batch of batches) {
-    await client.send(
-      new BatchWriteCommand({
-        RequestItems: {
-          [NEWS_BY_PAIR_TABLE]: batch.map((r) => ({
-            PutRequest: {
-              Item: {
-                pair: r.pair,
-                sk: `${r.publishedAt}#${r.articleId}`,
-                articleId: r.articleId,
-                publishedAt: r.publishedAt,
-                title: r.title,
-                sentimentScore: r.sentimentScore,
-                sentimentMagnitude: r.sentimentMagnitude,
-                source: r.source,
-                url: r.url,
-                duplicateOf: r.duplicateOf ?? null,
-                ttl: now + TTL_SECONDS,
-              },
-            },
-          })),
+    const writeRequests: DocumentWriteRequest[] = batch.map((r) => ({
+      PutRequest: {
+        Item: {
+          pair: r.pair,
+          sk: `${r.publishedAt}#${r.articleId}`,
+          articleId: r.articleId,
+          publishedAt: r.publishedAt,
+          title: r.title,
+          sentimentScore: r.sentimentScore,
+          sentimentMagnitude: r.sentimentMagnitude,
+          source: r.source,
+          url: r.url,
+          duplicateOf: r.duplicateOf ?? null,
+          ttl: now + TTL_SECONDS,
         },
-      })
-    );
+      },
+    }));
+    await batchWriteWithRetry(writeRequests, NEWS_BY_PAIR_TABLE);
   }
 }
 
