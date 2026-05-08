@@ -1,9 +1,11 @@
 import type { SQSEvent, Context } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { enrichNewsItem } from "./bedrock.js";
+
 import { enrichArticle } from "../news/enrich.js";
 import { publish } from "../lib/sqs-publisher.js";
+
+import { enrichNewsItem } from "./bedrock.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const NEWS_TABLE = process.env.TABLE_NEWS_EVENTS!;
@@ -21,7 +23,7 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
       new GetCommand({
         TableName: NEWS_TABLE,
         Key: { newsId, publishedAt },
-      })
+      }),
     );
 
     const newsRecord = result.Item;
@@ -39,14 +41,14 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
       // Phase 1 (existing): Bedrock entity/event enrichment
       const enrichment = await enrichNewsItem(
         newsRecord.title as string,
-        (newsRecord.currencies as string[]) ?? []
+        (newsRecord.currencies as string[]) ?? [],
       );
 
       // Phase 5a: pair-tagging, sentiment classifier, embedding dedup
       const phase5a = await enrichArticle({
         id: newsId,
         title: newsRecord.title as string,
-        body: (newsRecord.body as string | undefined) ?? newsRecord.title as string,
+        body: (newsRecord.body as string | undefined) ?? (newsRecord.title as string),
         publishedAt,
       });
 
@@ -74,7 +76,7 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
             ":duplicateOf": phase5a.duplicateOf ?? null,
             ":embeddingModel": phase5a.embeddingModel,
           },
-        })
+        }),
       );
 
       // Publish enriched event for downstream analysis
@@ -89,7 +91,7 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
       });
 
       console.log(
-        `[Enrichment] Success: ${newsId} → ${enrichment.sentiment} (${enrichment.confidence}), pairs=${phase5a.mentionedPairs.join(",")}, sentiment.score=${phase5a.sentiment.score}`
+        `[Enrichment] Success: ${newsId} → ${enrichment.sentiment} (${enrichment.confidence}), pairs=${phase5a.mentionedPairs.join(",")}, sentiment.score=${phase5a.sentiment.score}`,
       );
     } catch (err) {
       console.error(`[Enrichment] Failed: ${newsId}: ${(err as Error).message}`);
@@ -102,7 +104,7 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
           UpdateExpression: "SET #status = :status",
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: { ":status": "failed" },
-        })
+        }),
       );
 
       throw err; // Let SQS retry

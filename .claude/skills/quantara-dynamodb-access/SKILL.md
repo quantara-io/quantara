@@ -9,20 +9,20 @@ All Quantara persistence is DynamoDB. There are 12 tables, all defined in `backe
 
 ## Table inventory
 
-| Table | Hash / Range | GSIs | TTL | Purpose |
-|---|---|---|---|---|
-| `users` | `userId` | `email-index` (email) | — | User profile cache (auth lives in Aldero) |
-| `signals` | `pair` / `createdAt` | — | `expiresAt` | Live trading signals |
-| `signal-history` | `pair` / `signalId` | — | — | Signal audit trail |
-| `coach-sessions` | `userId` / `sessionId` | — | — | AI coach sessions |
-| `coach-messages` | `sessionId` / `messageId` | — | — | Messages within a session |
-| `deals` | `dealId` | `author-index` (authorId/createdAt) | — | Dealflow listings |
-| `deal-interests` | `dealId` / `userId` | — | — | "I'm interested" join table |
-| `campaigns` | `userId` / `campaignId` | — | — | Marketing campaigns |
-| `prices` | `pair` / `timestamp` | — | `ttl` (7d) | Real-time price snapshots from ccxt |
-| `candles` | `pair` / `sk` (`exchange#timeframe#iso`) | `exchange-index` | `ttl` (per timeframe) | OHLCV candles |
-| `news-events` | `newsId` / `publishedAt` | `currency-index` | `ttl` | News articles |
-| `ingestion-metadata` | `metaKey` | — | — | Ingestion cursors |
+| Table                | Hash / Range                             | GSIs                                | TTL                   | Purpose                                   |
+| -------------------- | ---------------------------------------- | ----------------------------------- | --------------------- | ----------------------------------------- |
+| `users`              | `userId`                                 | `email-index` (email)               | —                     | User profile cache (auth lives in Aldero) |
+| `signals`            | `pair` / `createdAt`                     | —                                   | `expiresAt`           | Live trading signals                      |
+| `signal-history`     | `pair` / `signalId`                      | —                                   | —                     | Signal audit trail                        |
+| `coach-sessions`     | `userId` / `sessionId`                   | —                                   | —                     | AI coach sessions                         |
+| `coach-messages`     | `sessionId` / `messageId`                | —                                   | —                     | Messages within a session                 |
+| `deals`              | `dealId`                                 | `author-index` (authorId/createdAt) | —                     | Dealflow listings                         |
+| `deal-interests`     | `dealId` / `userId`                      | —                                   | —                     | "I'm interested" join table               |
+| `campaigns`          | `userId` / `campaignId`                  | —                                   | —                     | Marketing campaigns                       |
+| `prices`             | `pair` / `timestamp`                     | —                                   | `ttl` (7d)            | Real-time price snapshots from ccxt       |
+| `candles`            | `pair` / `sk` (`exchange#timeframe#iso`) | `exchange-index`                    | `ttl` (per timeframe) | OHLCV candles                             |
+| `news-events`        | `newsId` / `publishedAt`                 | `currency-index`                    | `ttl`                 | News articles                             |
+| `ingestion-metadata` | `metaKey`                                | —                                   | —                     | Ingestion cursors                         |
 
 The `signals` table has TTL on `expiresAt`; `prices` / `candles` / `news-events` have TTL on `ttl` (Unix seconds — `Math.floor(Date.now() / 1000) + N`).
 
@@ -31,19 +31,20 @@ The `signals` table has TTL on `expiresAt`; `prices` / `candles` / `news-events`
 Always read `process.env.TABLE_<NAME>` with a `TABLE_PREFIX` fallback — never hardcode the table name:
 
 ```ts
-const PRICES_TABLE = process.env.TABLE_PRICES ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}prices`;
+const PRICES_TABLE =
+  process.env.TABLE_PRICES ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}prices`;
 ```
 
 The fallback is for local `npm run dev` (which sets `TABLE_PREFIX=quantara-dev-`). In Lambda and ECS, the explicit `TABLE_<NAME>` env var is set by Terraform (see `lambda.tf` and `ingestion-fargate.tf`).
 
 ## Existing store helpers — use these, don't reimplement
 
-| Store | Operations |
-|---|---|
-| `ingestion/src/lib/store.ts` | `storePriceSnapshots`, `getLatestPrices` |
-| `ingestion/src/lib/candle-store.ts` | `storeCandles`, `getCandles` |
-| `ingestion/src/lib/metadata-store.ts` | `getCursor`, `saveCursor` |
-| `ingestion/src/news/news-store.ts` | `storeNewsRecords` (dedupes) |
+| Store                                 | Operations                               |
+| ------------------------------------- | ---------------------------------------- |
+| `ingestion/src/lib/store.ts`          | `storePriceSnapshots`, `getLatestPrices` |
+| `ingestion/src/lib/candle-store.ts`   | `storeCandles`, `getCandles`             |
+| `ingestion/src/lib/metadata-store.ts` | `getCursor`, `saveCursor`                |
+| `ingestion/src/news/news-store.ts`    | `storeNewsRecords` (dedupes)             |
 
 The backend has no equivalent helpers yet — read/write from route handlers via the AWS SDK directly (or factor a `backend/src/lib/<table>-store.ts` if the access pattern is non-trivial). Same conventions apply.
 
@@ -51,7 +52,13 @@ The backend has no equivalent helpers yet — read/write from route handlers via
 
 ```ts
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, BatchWriteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  BatchWriteCommand,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+} from "@aws-sdk/lib-dynamodb";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 ```
@@ -66,9 +73,11 @@ DynamoDB caps BatchWrite at **25 items per request**. The pattern (from `candle-
 const batches: Item[][] = [];
 for (let i = 0; i < items.length; i += 25) batches.push(items.slice(i, i + 25));
 for (const batch of batches) {
-  await client.send(new BatchWriteCommand({
-    RequestItems: { [TABLE]: batch.map((item) => ({ PutRequest: { Item: { ...item } } })) },
-  }));
+  await client.send(
+    new BatchWriteCommand({
+      RequestItems: { [TABLE]: batch.map((item) => ({ PutRequest: { Item: { ...item } } })) },
+    }),
+  );
 }
 ```
 
@@ -96,11 +105,13 @@ For lookup by email (users table), use the GSI: `IndexName: "email-index"`, hash
 If your insert has a natural unique key but no upsert semantics, dedupe with a `GetCommand` ProjectionExpression check first (cheap):
 
 ```ts
-const existing = await client.send(new GetCommand({
-  TableName: NEWS_TABLE,
-  Key: { newsId: r.newsId, publishedAt: r.publishedAt },
-  ProjectionExpression: "newsId",
-}));
+const existing = await client.send(
+  new GetCommand({
+    TableName: NEWS_TABLE,
+    Key: { newsId: r.newsId, publishedAt: r.publishedAt },
+    ProjectionExpression: "newsId",
+  }),
+);
 if (!existing.Item) newRecords.push(r);
 ```
 

@@ -6,26 +6,26 @@ Crypto AI prediction engine, coaching, deal flow, and marketing platform.
 
 ## Workspaces
 
-| Package | Description | Tests |
-|---------|-------------|-------|
-| `backend` | Hono API on Lambda — auth, OpenAPI docs | [![Backend](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/nch3ng/f40b69a9ed2a76e6a8f9888d1f552bad/raw/backend-coverage.json)](backend/) |
-| `ingestion` | Market data streaming + news pipeline | [![Ingestion](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/nch3ng/f40b69a9ed2a76e6a8f9888d1f552bad/raw/ingestion-coverage.json)](ingestion/) |
-| `web` | Next.js landing page | — |
-| `packages/shared` | Shared TypeScript types + constants | — |
+| Package           | Description                             | Tests                                                                                                                                                                  |
+| ----------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backend`         | Hono API on Lambda — auth, OpenAPI docs | [![Backend](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/nch3ng/f40b69a9ed2a76e6a8f9888d1f552bad/raw/backend-coverage.json)](backend/)       |
+| `ingestion`       | Market data streaming + news pipeline   | [![Ingestion](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/nch3ng/f40b69a9ed2a76e6a8f9888d1f552bad/raw/ingestion-coverage.json)](ingestion/) |
+| `web`             | Next.js landing page                    | —                                                                                                                                                                      |
+| `packages/shared` | Shared TypeScript types + constants     | —                                                                                                                                                                      |
 
 ## Architecture
 
 Diagram: [`docs/diagrams/architecture.svg`](docs/diagrams/architecture.svg) — source [`architecture.excalidraw`](docs/diagrams/architecture.excalidraw) (open in [excalidraw.com](https://excalidraw.com)) — standalone HTML view [`architecture.html`](docs/diagrams/architecture.html).
 
-| Layer | Tech | Status |
-|-------|------|--------|
-| **Frontend** | Next.js (landing), React+Vite (dashboard), Flutter (mobile) | Planned |
-| **Backend API** | Node.js / TypeScript, Hono, OpenAPIHono + Zod | Deployed |
-| **Auth** | Email/password, Google/Apple OAuth, MFA (TOTP/email), passkeys | Deployed |
-| **Ingestion** | Fargate WebSocket (CCXT Pro), Alpaca News, RSS, Fear & Greed | Deployed |
-| **Database** | DynamoDB (12 tables) | Deployed |
-| **AI** | Amazon Bedrock (Claude Haiku) — news sentiment enrichment | Deployed |
-| **Infrastructure** | AWS (Lambda, Fargate, API Gateway, CloudFront, SQS, S3) | Deployed |
+| Layer              | Tech                                                           | Status   |
+| ------------------ | -------------------------------------------------------------- | -------- |
+| **Frontend**       | Next.js (landing), React+Vite (dashboard), Flutter (mobile)    | Planned  |
+| **Backend API**    | Node.js / TypeScript, Hono, OpenAPIHono + Zod                  | Deployed |
+| **Auth**           | Email/password, Google/Apple OAuth, MFA (TOTP/email), passkeys | Deployed |
+| **Ingestion**      | Fargate WebSocket (CCXT Pro), Alpaca News, RSS, Fear & Greed   | Deployed |
+| **Database**       | DynamoDB (12 tables)                                           | Deployed |
+| **AI**             | Amazon Bedrock (Claude Haiku) — news sentiment enrichment      | Deployed |
+| **Infrastructure** | AWS (Lambda, Fargate, API Gateway, CloudFront, SQS, S3)        | Deployed |
 
 ## Quick Start
 
@@ -89,6 +89,7 @@ Inside Claude Code:
 ```
 
 For unattended runs:
+
 ```
 /loop 10m /dispatch-next     # poll every 10 minutes (uses the loop skill)
 ```
@@ -111,18 +112,18 @@ For automatic background cleanup on macOS, register the LaunchAgent described in
 
 ### Files that define the workflow
 
-| Path | Purpose |
-|---|---|
-| `.claude/agents/quantara-worker.md` | Worker subagent (claim → implement → PR) |
-| `.claude/agents/quantara-reviewer.md` | Reviewer subagent (diff-blind review) |
-| `.claude/commands/dispatch.md` | `/dispatch <issue#>` |
-| `.claude/commands/dispatch-next.md` | `/dispatch-next` |
-| `.claude/commands/agent-status.md` | `/agent-status` |
-| `.claude/commands/review.md` | `/review <pr#>` — manually trigger reviewer on any PR |
-| `.github/pull_request_template.md` | PR template (used by agents and humans) |
-| `.github/ISSUE_TEMPLATE/` | Issue templates |
-| `tools/agent-sweep.sh` | Worktree cleanup |
-| `docs/AGENT_WORKFLOW.md` | Full protocol + setup checklist |
+| Path                                  | Purpose                                               |
+| ------------------------------------- | ----------------------------------------------------- |
+| `.claude/agents/quantara-worker.md`   | Worker subagent (claim → implement → PR)              |
+| `.claude/agents/quantara-reviewer.md` | Reviewer subagent (diff-blind review)                 |
+| `.claude/commands/dispatch.md`        | `/dispatch <issue#>`                                  |
+| `.claude/commands/dispatch-next.md`   | `/dispatch-next`                                      |
+| `.claude/commands/agent-status.md`    | `/agent-status`                                       |
+| `.claude/commands/review.md`          | `/review <pr#>` — manually trigger reviewer on any PR |
+| `.github/pull_request_template.md`    | PR template (used by agents and humans)               |
+| `.github/ISSUE_TEMPLATE/`             | Issue templates                                       |
+| `tools/agent-sweep.sh`                | Worktree cleanup                                      |
+| `docs/AGENT_WORKFLOW.md`              | Full protocol + setup checklist                       |
 
 ### One-time setup
 

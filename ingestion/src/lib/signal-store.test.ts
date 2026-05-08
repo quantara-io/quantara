@@ -44,9 +44,9 @@ function makeSignal(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
     },
     weightsUsed: {
       "15m": 0.25,
-      "1h": 0.30,
+      "1h": 0.3,
       "4h": 0.25,
-      "1d": 0.20,
+      "1d": 0.2,
       "1m": 0,
       "5m": 0,
     },

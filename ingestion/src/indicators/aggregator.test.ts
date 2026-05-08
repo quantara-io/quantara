@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Candle } from "@quantara/shared";
+
 import { buildIndicatorState } from "./index.js";
 
 // Build 250 deterministic candles (more than enough for all warm-ups).
@@ -12,7 +13,7 @@ function makeCandles(n = 250, seed = 42): Candle[] {
 
   for (let i = 0; i < n; i++) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 200;
+    const move = (((s >>> 0) % 201) - 100) / 200;
     val = Math.max(1, val + move);
     const spread = 0.5;
     const openTime = DAY_START + i * HOUR_MS;
@@ -81,10 +82,7 @@ describe("buildIndicatorState — golden fixture", () => {
     expect(state.macdSignal).not.toBeNull();
     expect(state.macdHist).not.toBeNull();
     // hist = line - signal
-    expect(state.macdHist).toBeCloseTo(
-      state.macdLine! - state.macdSignal!,
-      8,
-    );
+    expect(state.macdHist).toBeCloseTo(state.macdLine! - state.macdSignal!, 8);
   });
 
   it("atr14 is positive", () => {

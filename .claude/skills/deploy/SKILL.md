@@ -14,17 +14,21 @@ Target: $target (default: all)
 ## Steps
 
 1. **SSO check** — verify AWS credentials are valid
+
    ```bash
    aws sts get-caller-identity --profile quantara-dev --region us-west-2
    ```
+
    If this fails, ask the user to run `aws sso login`.
 
 2. **Typecheck**
+
    ```bash
    cd /Users/nate/aldero.io/quantara && npm run typecheck --workspaces
    ```
 
 3. **Deploy via Terraform**
+
    ```bash
    cd /Users/nate/aldero.io/quantara/backend/infra/dev && terraform apply -auto-approve
    ```
@@ -35,6 +39,7 @@ Target: $target (default: all)
    ```
 
 If $target is "docker" or "fargate", also rebuild and push the Docker image:
+
 ```bash
 cd /Users/nate/aldero.io/quantara
 aws ecr get-login-password --region us-west-2 --profile quantara-dev | docker login --username AWS --password-stdin 442725244722.dkr.ecr.us-west-2.amazonaws.com

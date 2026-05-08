@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
+
 import { requireAdmin } from "./require-admin.js";
 
 function buildApp(auth: unknown) {

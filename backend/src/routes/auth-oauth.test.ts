@@ -4,9 +4,8 @@ const alderoPostMock = vi.fn();
 const getRedirectUrlMock = vi.fn();
 
 vi.mock("../lib/aldero-client.js", async () => {
-  const actual = await vi.importActual<typeof import("../lib/aldero-client.js")>(
-    "../lib/aldero-client.js",
-  );
+  const actual =
+    await vi.importActual<typeof import("../lib/aldero-client.js")>("../lib/aldero-client.js");
   return {
     ...actual,
     alderoPost: alderoPostMock,
@@ -101,10 +100,10 @@ describe("GET /oauth/:provider/callback", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data.accessToken).toBe("at");
-    expect(alderoPostMock).toHaveBeenCalledWith(
-      "/v1/auth/oauth/google/callback",
-      { code: "auth_code", state: "s" },
-    );
+    expect(alderoPostMock).toHaveBeenCalledWith("/v1/auth/oauth/google/callback", {
+      code: "auth_code",
+      state: "s",
+    });
     // Cookie is single-use; should be cleared on the response
     const clearCookie = res.headers.get("Set-Cookie") ?? "";
     expect(clearCookie).toMatch(/qoauth_cs=;/);
@@ -122,10 +121,9 @@ describe("GET /oauth/:provider/callback", () => {
   it("returns 400 INVALID_STATE when cookie state and cs don't match", async () => {
     const app = await loadApp();
     const { cookieHeader } = await initAndCapture(app);
-    const res = await app.request(
-      "/oauth/google/callback?code=c&state=s&cs=wrong-value",
-      { headers: { Cookie: cookieHeader } },
-    );
+    const res = await app.request("/oauth/google/callback?code=c&state=s&cs=wrong-value", {
+      headers: { Cookie: cookieHeader },
+    });
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error.code).toBe("INVALID_STATE");
@@ -173,15 +171,17 @@ describe("POST /oauth/:provider/native", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data.accessToken).toBe("at");
-    expect(alderoPostMock).toHaveBeenCalledWith(
-      "/v1/auth/oauth/google/native",
-      { idToken: "google-id-token", displayName: "Nate" },
-    );
+    expect(alderoPostMock).toHaveBeenCalledWith("/v1/auth/oauth/google/native", {
+      idToken: "google-id-token",
+      displayName: "Nate",
+    });
   });
 
   it("translates AlderoError into 401 OAUTH_FAILED", async () => {
     const { AlderoError } = await import("../lib/aldero-client.js");
-    alderoPostMock.mockRejectedValue(new AlderoError(401, { error: { message: "invalid id token" } }));
+    alderoPostMock.mockRejectedValue(
+      new AlderoError(401, { error: { message: "invalid id token" } }),
+    );
     const app = await loadApp();
     const res = await app.request("/oauth/google/native", {
       method: "POST",

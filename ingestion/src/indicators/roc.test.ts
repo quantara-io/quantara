@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { roc } from "./roc.js";
 
 function makeCloses(n = 200, seed = 55): number[] {
@@ -7,7 +8,7 @@ function makeCloses(n = 200, seed = 55): number[] {
   let s = seed;
   for (let i = 0; i < n; i++) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 200;
+    const move = (((s >>> 0) % 201) - 100) / 200;
     val = Math.max(1, val + move);
     closes.push(val);
   }

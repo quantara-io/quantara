@@ -46,7 +46,7 @@ describe("ipWhitelist", () => {
     const app = await buildApp();
     const res = await app.request("/", withClientIp("68.4.160.1"));
     expect(res.status).toBe(403);
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     expect(body.error.code).toBe("FORBIDDEN");
   });
 

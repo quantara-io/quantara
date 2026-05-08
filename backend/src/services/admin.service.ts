@@ -1,9 +1,18 @@
 import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  ScanCommand,
+  GetCommand,
+  QueryCommand,
+} from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal, IndicatorState } from "@quantara/shared";
 import { ECSClient, DescribeServicesCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
-import { CloudWatchLogsClient, GetLogEventsCommand, DescribeLogStreamsCommand } from "@aws-sdk/client-cloudwatch-logs";
+import {
+  CloudWatchLogsClient,
+  GetLogEventsCommand,
+  DescribeLogStreamsCommand,
+} from "@aws-sdk/client-cloudwatch-logs";
 import { LambdaClient, GetFunctionCommand } from "@aws-sdk/client-lambda";
 import { SSMClient, GetParameterCommand, PutParameterCommand } from "@aws-sdk/client-ssm";
 
@@ -12,8 +21,11 @@ const PREFIX = (process.env.TABLE_PREFIX ?? "quantara-dev-").replace(/-$/, "");
 const ACCOUNT_ID = process.env.AWS_ACCOUNT_ID ?? "";
 const ENVIRONMENT = process.env.ENVIRONMENT ?? "dev";
 
-const SIGNALS_V2_TABLE = process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
-const INDICATOR_STATE_TABLE = process.env.TABLE_INDICATOR_STATE ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
+const SIGNALS_V2_TABLE =
+  process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+const INDICATOR_STATE_TABLE =
+  process.env.TABLE_INDICATOR_STATE ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const dynamoRaw = new DynamoDBClient({ region: REGION });
@@ -24,48 +36,78 @@ const lambda = new LambdaClient({ region: REGION });
 const ssm = new SSMClient({ region: REGION });
 
 const TABLES = [
-  "prices", "candles", "news-events", "ingestion-metadata",
-  "signals", "signal-history", "users", "deals",
-  "deal-interests", "coach-sessions", "coach-messages", "campaigns",
+  "prices",
+  "candles",
+  "news-events",
+  "ingestion-metadata",
+  "signals",
+  "signal-history",
+  "users",
+  "deals",
+  "deal-interests",
+  "coach-sessions",
+  "coach-messages",
+  "campaigns",
 ];
 
 const SQS_QUEUES = [
-  "enrichment", "enrichment-dlq",
-  "market-events", "market-events-dlq",
-  "enriched-news", "enriched-news-dlq",
+  "enrichment",
+  "enrichment-dlq",
+  "market-events",
+  "market-events-dlq",
+  "enriched-news",
+  "enriched-news-dlq",
 ];
 
 const LAMBDAS = ["api", "ingestion", "backfill", "news-backfill", "enrichment"];
 
 async function getTableCount(table: string): Promise<number> {
   try {
-    const result = await dynamo.send(new ScanCommand({ TableName: `${PREFIX}-${table}`, Select: "COUNT" }));
+    const result = await dynamo.send(
+      new ScanCommand({ TableName: `${PREFIX}-${table}`, Select: "COUNT" }),
+    );
     return result.Count ?? 0;
-  } catch { return -1; }
+  } catch {
+    return -1;
+  }
 }
 
 async function getTableSize(table: string): Promise<number> {
   try {
-    const result = await dynamoRaw.send(new DescribeTableCommand({ TableName: `${PREFIX}-${table}` }));
+    const result = await dynamoRaw.send(
+      new DescribeTableCommand({ TableName: `${PREFIX}-${table}` }),
+    );
     return result.Table?.TableSizeBytes ?? 0;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
 }
 
 async function getFearGreed(): Promise<{ value: number; classification: string } | null> {
   try {
-    const result = await dynamo.send(new GetCommand({
-      TableName: `${PREFIX}-ingestion-metadata`,
-      Key: { metaKey: "market:fear-greed" },
-    }));
+    const result = await dynamo.send(
+      new GetCommand({
+        TableName: `${PREFIX}-ingestion-metadata`,
+        Key: { metaKey: "market:fear-greed" },
+      }),
+    );
     if (!result.Item) return null;
-    return { value: result.Item.value as number, classification: result.Item.classification as string };
+    return {
+      value: result.Item.value as number,
+      classification: result.Item.classification as string,
+    };
   } catch (err) {
     console.error("[admin.service] getFearGreed failed:", err);
     return null;
   }
 }
 
-async function getEcsStatus(): Promise<{ status: string; running: number; desired: number; taskId?: string }> {
+async function getEcsStatus(): Promise<{
+  status: string;
+  running: number;
+  desired: number;
+  taskId?: string;
+}> {
   try {
     const cluster = `${PREFIX}-ingestion`;
     const [svc, tasks] = await Promise.all([
@@ -79,47 +121,63 @@ async function getEcsStatus(): Promise<{ status: string; running: number; desire
       desired: service?.desiredCount ?? 0,
       taskId: tasks.taskArns?.[0]?.split("/").pop(),
     };
-  } catch { return { status: "ERROR", running: 0, desired: 0 }; }
+  } catch {
+    return { status: "ERROR", running: 0, desired: 0 };
+  }
 }
 
-async function getQueueDepth(queue: string): Promise<{ name: string; messages: number; inflight: number; dlq: boolean }> {
+async function getQueueDepth(
+  queue: string,
+): Promise<{ name: string; messages: number; inflight: number; dlq: boolean }> {
   try {
     const url = `https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/${PREFIX}-${queue}`;
-    const result = await sqs.send(new GetQueueAttributesCommand({
-      QueueUrl: url,
-      AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
-    }));
+    const result = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: url,
+        AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
+      }),
+    );
     return {
       name: queue,
       messages: parseInt(result.Attributes?.ApproximateNumberOfMessages ?? "0"),
       inflight: parseInt(result.Attributes?.ApproximateNumberOfMessagesNotVisible ?? "0"),
       dlq: queue.endsWith("-dlq"),
     };
-  } catch { return { name: queue, messages: -1, inflight: 0, dlq: queue.endsWith("-dlq") }; }
+  } catch {
+    return { name: queue, messages: -1, inflight: 0, dlq: queue.endsWith("-dlq") };
+  }
 }
 
 async function getRecentLogs(limit = 20): Promise<string[]> {
   try {
     const logGroupName = `/ecs/${PREFIX}-ingestion`;
-    const streams = await cwLogs.send(new DescribeLogStreamsCommand({
-      logGroupName,
-      orderBy: "LastEventTime",
-      descending: true,
-      limit: 1,
-    }));
+    const streams = await cwLogs.send(
+      new DescribeLogStreamsCommand({
+        logGroupName,
+        orderBy: "LastEventTime",
+        descending: true,
+        limit: 1,
+      }),
+    );
     const logStreamName = streams.logStreams?.[0]?.logStreamName;
     if (!logStreamName) return ["No log streams found"];
-    const events = await cwLogs.send(new GetLogEventsCommand({
-      logGroupName,
-      logStreamName,
-      limit,
-      startFromHead: false,
-    }));
+    const events = await cwLogs.send(
+      new GetLogEventsCommand({
+        logGroupName,
+        logStreamName,
+        limit,
+        startFromHead: false,
+      }),
+    );
     return (events.events ?? []).map((e) => e.message ?? "").filter(Boolean);
-  } catch (err) { return [`Error: ${(err as Error).message}`]; }
+  } catch (err) {
+    return [`Error: ${(err as Error).message}`];
+  }
 }
 
-async function getLambdaStatus(name: string): Promise<{ name: string; state: string; lastModified: string; size: number }> {
+async function getLambdaStatus(
+  name: string,
+): Promise<{ name: string; state: string; lastModified: string; size: number }> {
   try {
     const result = await lambda.send(new GetFunctionCommand({ FunctionName: `${PREFIX}-${name}` }));
     return {
@@ -128,19 +186,36 @@ async function getLambdaStatus(name: string): Promise<{ name: string; state: str
       lastModified: result.Configuration?.LastModified ?? "",
       size: result.Configuration?.CodeSize ?? 0,
     };
-  } catch { return { name, state: "NOT FOUND", lastModified: "", size: 0 }; }
+  } catch {
+    return { name, state: "NOT FOUND", lastModified: "", size: 0 };
+  }
 }
 
 export async function getStatus() {
-  const [tableCounts, fearGreed, ecsStatus, queueDepths, recentLogs, lambdaStatuses] = await Promise.all([
-    Promise.all(TABLES.map(async (t) => ({ name: t, count: await getTableCount(t), size: await getTableSize(t) }))),
-    getFearGreed(),
-    getEcsStatus(),
-    Promise.all(SQS_QUEUES.map((q) => getQueueDepth(q))),
-    getRecentLogs(20),
-    Promise.all(LAMBDAS.map((l) => getLambdaStatus(l))),
-  ]);
-  return { tableCounts, fearGreed, ecsStatus, queueDepths, recentLogs, lambdaStatuses, timestamp: new Date().toISOString() };
+  const [tableCounts, fearGreed, ecsStatus, queueDepths, recentLogs, lambdaStatuses] =
+    await Promise.all([
+      Promise.all(
+        TABLES.map(async (t) => ({
+          name: t,
+          count: await getTableCount(t),
+          size: await getTableSize(t),
+        })),
+      ),
+      getFearGreed(),
+      getEcsStatus(),
+      Promise.all(SQS_QUEUES.map((q) => getQueueDepth(q))),
+      getRecentLogs(20),
+      Promise.all(LAMBDAS.map((l) => getLambdaStatus(l))),
+    ]);
+  return {
+    tableCounts,
+    fearGreed,
+    ecsStatus,
+    queueDepths,
+    recentLogs,
+    lambdaStatuses,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
@@ -150,14 +225,16 @@ async function getLatestPrices() {
   const results: Array<Record<string, unknown>> = [];
   for (const pair of PAIRS) {
     try {
-      const result = await dynamo.send(new QueryCommand({
-        TableName: `${PREFIX}-prices`,
-        KeyConditionExpression: "#pair = :pair",
-        ExpressionAttributeNames: { "#pair": "pair" },
-        ExpressionAttributeValues: { ":pair": pair },
-        ScanIndexForward: false,
-        Limit: 3,
-      }));
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: `${PREFIX}-prices`,
+          KeyConditionExpression: "#pair = :pair",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: { ":pair": pair },
+          ScanIndexForward: false,
+          Limit: 3,
+        }),
+      );
       for (const item of result.Items ?? []) {
         const timestamp = item.timestamp as string | undefined;
         const ageSeconds = timestamp
@@ -172,21 +249,27 @@ async function getLatestPrices() {
   return results;
 }
 
-async function getIndicatorState(pair: string, exchange: string, timeframe = "1m"): Promise<IndicatorState | null> {
+async function getIndicatorState(
+  pair: string,
+  exchange: string,
+  timeframe = "1m",
+): Promise<IndicatorState | null> {
   // Indicator snapshots are always written with exchange="consensus" by the indicator handler.
   // Per-exchange indicator state is not produced, so hard-code "consensus" here regardless of
   // the requested exchange parameter.
   void exchange; // intentionally ignored — consensus is the only valid key
   try {
     const pk = `${pair}#consensus#${timeframe}`;
-    const result = await dynamo.send(new QueryCommand({
-      TableName: INDICATOR_STATE_TABLE,
-      KeyConditionExpression: "#pk = :pk",
-      ExpressionAttributeNames: { "#pk": "pk" },
-      ExpressionAttributeValues: { ":pk": pk },
-      ScanIndexForward: false,
-      Limit: 1,
-    }));
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: INDICATOR_STATE_TABLE,
+        KeyConditionExpression: "#pk = :pk",
+        ExpressionAttributeNames: { "#pk": "pk" },
+        ExpressionAttributeValues: { ":pk": pk },
+        ScanIndexForward: false,
+        Limit: 1,
+      }),
+    );
     const item = result.Items?.[0];
     if (!item) return null;
     return {
@@ -247,17 +330,22 @@ function computeDispersion(prices: Array<Record<string, unknown>>, pair: string)
 async function getRecentCandles(pair: string, exchange: string, timeframe: string, limit = 60) {
   try {
     const prefix = `${exchange}#${timeframe}#`;
-    const result = await dynamo.send(new QueryCommand({
-      TableName: `${PREFIX}-candles`,
-      KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :prefix)",
-      ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
-      ExpressionAttributeValues: { ":pair": pair, ":prefix": prefix },
-      ScanIndexForward: false,
-      Limit: limit,
-    }));
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: `${PREFIX}-candles`,
+        KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :prefix)",
+        ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+        ExpressionAttributeValues: { ":pair": pair, ":prefix": prefix },
+        ScanIndexForward: false,
+        Limit: limit,
+      }),
+    );
     return ((result.Items ?? []) as Record<string, unknown>[]).reverse();
   } catch (err) {
-    console.error(`[admin.service] getRecentCandles failed for ${pair}/${exchange}/${timeframe}:`, err);
+    console.error(
+      `[admin.service] getRecentCandles failed for ${pair}/${exchange}/${timeframe}:`,
+      err,
+    );
     return [];
   }
 }
@@ -281,14 +369,16 @@ export async function getSignals(
   try {
     const sinceIso = since.toISOString();
     const sinceSk = `${sinceIso}#`;
-    const result = await dynamo.send(new QueryCommand({
-      TableName: SIGNALS_V2_TABLE,
-      KeyConditionExpression: "#pair = :pair AND #sk >= :sinceSk",
-      ExpressionAttributeNames: { "#pair": "pair", "#sk": "emittedAtSignalId" },
-      ExpressionAttributeValues: { ":pair": pair, ":sinceSk": sinceSk },
-      ScanIndexForward: false,
-      Limit: limit,
-    }));
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: SIGNALS_V2_TABLE,
+        KeyConditionExpression: "#pair = :pair AND #sk >= :sinceSk",
+        ExpressionAttributeNames: { "#pair": "pair", "#sk": "emittedAtSignalId" },
+        ExpressionAttributeValues: { ":pair": pair, ":sinceSk": sinceSk },
+        ScanIndexForward: false,
+        Limit: limit,
+      }),
+    );
     return (result.Items ?? []).map((item) => ({
       pair: item.pair as string,
       type: item.type as BlendedSignal["type"],
@@ -330,9 +420,14 @@ const WHITELIST_PARAM = `/quantara/${ENVIRONMENT}/docs-allowed-ips`;
 
 export async function getWhitelist(): Promise<{ ips: string[] }> {
   try {
-    const result = await ssm.send(new GetParameterCommand({ Name: WHITELIST_PARAM, WithDecryption: false }));
+    const result = await ssm.send(
+      new GetParameterCommand({ Name: WHITELIST_PARAM, WithDecryption: false }),
+    );
     const raw = result.Parameter?.Value ?? "";
-    const ips = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const ips = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     return { ips };
   } catch (err: unknown) {
     if ((err as { name?: string }).name === "ParameterNotFound") return { ips: [] };
@@ -342,11 +437,13 @@ export async function getWhitelist(): Promise<{ ips: string[] }> {
 
 export async function setWhitelist(ips: string[]): Promise<{ ips: string[] }> {
   const value = ips.join(",");
-  await ssm.send(new PutParameterCommand({
-    Name: WHITELIST_PARAM,
-    Value: value,
-    Type: "String",
-    Overwrite: true,
-  }));
+  await ssm.send(
+    new PutParameterCommand({
+      Name: WHITELIST_PARAM,
+      Value: value,
+      Type: "String",
+      Overwrite: true,
+    }),
+  );
   return { ips };
 }

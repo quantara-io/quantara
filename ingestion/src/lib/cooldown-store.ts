@@ -54,10 +54,7 @@ export async function getLastFireBars(
  * Represents one bar having passed without those rules firing.
  * If no entry exists yet, this is a no-op (nothing to increment).
  */
-export async function tickCooldowns(
-  pair: string,
-  timeframe: Timeframe,
-): Promise<void> {
+export async function tickCooldowns(pair: string, timeframe: Timeframe): Promise<void> {
   const existing = await getLastFireBars(pair, timeframe);
   if (Object.keys(existing).length === 0) return;
 

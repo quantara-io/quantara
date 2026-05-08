@@ -17,11 +17,7 @@ export interface OBVSeries {
  * obv is always fully populated (no warm-up nulls).
  * obvSlope has null for bars 0..8.
  */
-export function obv(
-  close: number[],
-  volume: number[],
-  slopePeriod = 10,
-): OBVSeries {
+export function obv(close: number[], volume: number[], slopePeriod = 10): OBVSeries {
   const len = close.length;
   const obvArr: number[] = new Array(len).fill(0);
 

@@ -4,9 +4,8 @@ const alderoPostMock = vi.fn();
 const alderoGetMock = vi.fn();
 
 vi.mock("../lib/aldero-client.js", async () => {
-  const actual = await vi.importActual<typeof import("../lib/aldero-client.js")>(
-    "../lib/aldero-client.js",
-  );
+  const actual =
+    await vi.importActual<typeof import("../lib/aldero-client.js")>("../lib/aldero-client.js");
   return {
     ...actual,
     alderoPost: alderoPostMock,

@@ -81,7 +81,13 @@ describe("GET /status", () => {
 
 describe("GET /market", () => {
   it("uses default pair and exchange when no query params are given", async () => {
-    getMarketMock.mockResolvedValue({ pair: "BTC/USDT", exchange: "binanceus", prices: [], candles: [], fearGreed: null });
+    getMarketMock.mockResolvedValue({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      prices: [],
+      candles: [],
+      fearGreed: null,
+    });
     const app = await loadApp();
     const res = await app.request("/market");
     expect(res.status).toBe(200);
@@ -89,7 +95,13 @@ describe("GET /market", () => {
   });
 
   it("forwards pair and exchange query params", async () => {
-    getMarketMock.mockResolvedValue({ pair: "ETH/USDT", exchange: "kraken", prices: [], candles: [], fearGreed: null });
+    getMarketMock.mockResolvedValue({
+      pair: "ETH/USDT",
+      exchange: "kraken",
+      prices: [],
+      candles: [],
+      fearGreed: null,
+    });
     const app = await loadApp();
     const res = await app.request("/market?pair=ETH/USDT&exchange=kraken");
     expect(res.status).toBe(200);
@@ -299,7 +311,15 @@ describe("GET /market (extended)", () => {
     getMarketMock.mockResolvedValue({
       pair: "BTC/USDT",
       exchange: "binanceus",
-      prices: [{ pair: "BTC/USDT", exchange: "binanceus", price: 42000, stale: false, timestamp: "2025-01-01T00:00:00Z" }],
+      prices: [
+        {
+          pair: "BTC/USDT",
+          exchange: "binanceus",
+          price: 42000,
+          stale: false,
+          timestamp: "2025-01-01T00:00:00Z",
+        },
+      ],
       candles: [],
       fearGreed: null,
       indicators: null,
@@ -318,8 +338,20 @@ describe("GET /market (extended)", () => {
       pair: "BTC/USDT",
       exchange: "binanceus",
       prices: [
-        { pair: "BTC/USDT", exchange: "binanceus", price: 43000, stale: false, timestamp: "2025-01-01T00:00:00Z" },
-        { pair: "BTC/USDT", exchange: "kraken", price: 41000, stale: false, timestamp: "2025-01-01T00:00:00Z" },
+        {
+          pair: "BTC/USDT",
+          exchange: "binanceus",
+          price: 43000,
+          stale: false,
+          timestamp: "2025-01-01T00:00:00Z",
+        },
+        {
+          pair: "BTC/USDT",
+          exchange: "kraken",
+          price: 41000,
+          stale: false,
+          timestamp: "2025-01-01T00:00:00Z",
+        },
       ],
       candles: [],
       fearGreed: null,

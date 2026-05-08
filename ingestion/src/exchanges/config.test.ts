@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { getSymbol, EXCHANGES, PAIRS } from "./config.js";
 
 describe("getSymbol", () => {

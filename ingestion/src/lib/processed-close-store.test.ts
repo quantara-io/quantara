@@ -61,7 +61,9 @@ describe("tryClaimProcessedClose", () => {
   });
 
   it("returns false when ConditionalCheckFailedException is thrown (marker already exists)", async () => {
-    sendMock.mockRejectedValue(new ConditionalCheckFailedException("The conditional request failed"));
+    sendMock.mockRejectedValue(
+      new ConditionalCheckFailedException("The conditional request failed"),
+    );
 
     const { tryClaimProcessedClose } = await import("./processed-close-store.js");
     const result = await tryClaimProcessedClose("BTC/USDT", "15m", 1700000900000);

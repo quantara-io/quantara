@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { buildEnrichmentMessage, NEWS_ENRICHMENT_PROMPT } from "./prompts.js";
 
 describe("buildEnrichmentMessage", () => {

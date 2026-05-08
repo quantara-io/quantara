@@ -20,6 +20,9 @@ import type { Timeframe } from "@quantara/shared";
 import { PAIRS } from "@quantara/shared";
 import { RULES } from "@quantara/shared";
 import type { TimeframeVote } from "@quantara/shared";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+
 import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
@@ -31,8 +34,6 @@ import { blendTimeframeVotes, isTrivialChange } from "./signals/blend.js";
 import { evaluateGates, narrowPair } from "./signals/gates.js";
 import { EXCHANGES } from "./exchanges/config.js";
 import { tryClaimProcessedClose } from "./lib/processed-close-store.js";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 // ---------------------------------------------------------------------------
 // DDB client for vote persistence (ingestion-metadata table)
@@ -41,8 +42,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dyn
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const METADATA_TABLE =
-  process.env.TABLE_METADATA ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
+  process.env.TABLE_METADATA ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
 
 // ---------------------------------------------------------------------------
 // Timeframe bar durations
@@ -69,10 +69,7 @@ function dispersionHistoryKey(pair: string, tf: SignalTimeframe): string {
   return `dispersion-history#${pair}#${tf}`;
 }
 
-async function getDispersionHistory(
-  pair: string,
-  tf: SignalTimeframe,
-): Promise<number[]> {
+async function getDispersionHistory(pair: string, tf: SignalTimeframe): Promise<number[]> {
   const result = await client.send(
     new GetCommand({
       TableName: METADATA_TABLE,
@@ -152,10 +149,7 @@ async function persistVote(
   );
 }
 
-async function readLatestVote(
-  pair: string,
-  tf: SignalTimeframe,
-): Promise<TimeframeVote | null> {
+async function readLatestVote(pair: string, tf: SignalTimeframe): Promise<TimeframeVote | null> {
   const result = await client.send(
     new GetCommand({
       TableName: METADATA_TABLE,
@@ -239,9 +233,7 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
     try {
       await blendAndPersist(pair, emittingTf);
     } catch (err) {
-      console.error(
-        `[IndicatorHandler] Error blending ${pair}: ${(err as Error).message}`,
-      );
+      console.error(`[IndicatorHandler] Error blending ${pair}: ${(err as Error).message}`);
     }
   }
 }
@@ -317,8 +309,7 @@ async function processTimeframePair(
   // Build consensus candle series: use the exchange with the most candles as base
   // series, replacing the most recent candle with the consensus candle.
   const longestExchange = EXCHANGES.reduce((best, ex) => {
-    return (perExchangeHistory[ex]?.length ?? 0) >
-      (perExchangeHistory[best]?.length ?? 0)
+    return (perExchangeHistory[ex]?.length ?? 0) > (perExchangeHistory[best]?.length ?? 0)
       ? ex
       : best;
   }, EXCHANGES[0]!);

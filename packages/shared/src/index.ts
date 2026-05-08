@@ -18,6 +18,12 @@ export { DEAL_TYPES, DEAL_SORT_OPTIONS } from "./types/deals.js";
 export { TIMEFRAMES } from "./types/ingestion.js";
 
 export { TIER_DEFINITIONS } from "./constants/tiers.js";
-export { SIGNAL_COLORS, ADVISORY_DISCLAIMER, VOLATILITY_BANNER, RULES, MIN_CONFLUENCE } from "./constants/signals.js";
+export {
+  SIGNAL_COLORS,
+  ADVISORY_DISCLAIMER,
+  VOLATILITY_BANNER,
+  RULES,
+  MIN_CONFLUENCE,
+} from "./constants/signals.js";
 export { PAIRS, type TradingPair } from "./constants/pairs.js";
 export { VOL_GATE_THRESHOLDS } from "./constants/vol-gates.js";

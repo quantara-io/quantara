@@ -1,10 +1,12 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+
 import type { PriceSnapshot } from "../exchanges/fetcher.js";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
-const PRICES_TABLE = process.env.TABLE_PRICES ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}prices`;
+const PRICES_TABLE =
+  process.env.TABLE_PRICES ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}prices`;
 
 export async function storePriceSnapshots(snapshots: PriceSnapshot[]): Promise<void> {
   // DynamoDB BatchWrite max 25 items per request
@@ -34,7 +36,7 @@ export async function storePriceSnapshots(snapshots: PriceSnapshot[]): Promise<v
             },
           })),
         },
-      })
+      }),
     );
   }
 
@@ -50,7 +52,7 @@ export async function getLatestPrices(pair: string): Promise<PriceSnapshot[]> {
       ExpressionAttributeValues: { ":pair": pair },
       ScanIndexForward: false,
       Limit: 15, // latest 15 snapshots (3 exchanges × 5 ticks)
-    })
+    }),
   );
 
   return (result.Items ?? []) as PriceSnapshot[];

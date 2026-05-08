@@ -22,19 +22,25 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
 
 vi.mock("@aws-sdk/client-ecs", () => ({
   ECSClient: vi.fn().mockImplementation(() => ({ send: ecsSend })),
-  DescribeServicesCommand: vi.fn().mockImplementation((input) => ({ __cmd: "DescribeServices", input })),
+  DescribeServicesCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ __cmd: "DescribeServices", input })),
   ListTasksCommand: vi.fn().mockImplementation((input) => ({ __cmd: "ListTasks", input })),
 }));
 
 vi.mock("@aws-sdk/client-sqs", () => ({
   SQSClient: vi.fn().mockImplementation(() => ({ send: sqsSend })),
-  GetQueueAttributesCommand: vi.fn().mockImplementation((input) => ({ __cmd: "GetQueueAttributes", input })),
+  GetQueueAttributesCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ __cmd: "GetQueueAttributes", input })),
 }));
 
 vi.mock("@aws-sdk/client-cloudwatch-logs", () => ({
   CloudWatchLogsClient: vi.fn().mockImplementation(() => ({ send: cwLogsSend })),
   GetLogEventsCommand: vi.fn().mockImplementation((input) => ({ __cmd: "GetLogEvents", input })),
-  DescribeLogStreamsCommand: vi.fn().mockImplementation((input) => ({ __cmd: "DescribeLogStreams", input })),
+  DescribeLogStreamsCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ __cmd: "DescribeLogStreams", input })),
 }));
 
 vi.mock("@aws-sdk/client-lambda", () => ({
@@ -148,19 +154,24 @@ describe("getNews", () => {
 
 describe("getMarket", () => {
   it("aggregates prices, candles, and fear-greed in parallel", async () => {
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } } }) => {
-      if (cmd.__cmd === "Get") return { Item: { value: 30, classification: "Fear" } };
-      if (cmd.__cmd === "Query") {
-        const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
-        const prefix = ev?.[":prefix"];
-        if (prefix === "binanceus#1m#") {
-          return { Items: [{ pair: "BTC/USDT", openTime: 1, close: 100 }] };
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown>; Key?: { metaKey?: string } };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: { value: 30, classification: "Fear" } };
+        if (cmd.__cmd === "Query") {
+          const ev = cmd.input?.ExpressionAttributeValues as Record<string, string> | undefined;
+          const prefix = ev?.[":prefix"];
+          if (prefix === "binanceus#1m#") {
+            return { Items: [{ pair: "BTC/USDT", openTime: 1, close: 100 }] };
+          }
+          // Latest prices query (no :prefix)
+          return { Items: [{ pair: ev?.[":pair"], price: 50000 }] };
         }
-        // Latest prices query (no :prefix)
-        return { Items: [{ pair: ev?.[":pair"], price: 50000 }] };
-      }
-      return {};
-    });
+        return {};
+      },
+    );
 
     const { getMarket } = await importService();
     const result = await getMarket("BTC/USDT", "binanceus");
@@ -351,7 +362,8 @@ describe("getStatus", () => {
       Attributes: { ApproximateNumberOfMessages: "5", ApproximateNumberOfMessagesNotVisible: "1" },
     });
     cwLogsSend.mockImplementation(async (cmd: { __cmd: string }) => {
-      if (cmd.__cmd === "DescribeLogStreams") return { logStreams: [{ logStreamName: "stream-1" }] };
+      if (cmd.__cmd === "DescribeLogStreams")
+        return { logStreams: [{ logStreamName: "stream-1" }] };
       return { events: [{ message: "log line A" }, { message: "log line B" }] };
     });
     lambdaSend.mockResolvedValue({

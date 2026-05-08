@@ -15,6 +15,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { BlendedSignal, IndicatorState, KellyStats } from "@quantara/shared";
+
 import {
   computeRiskRecommendation,
   kellyUnlocked,
@@ -45,7 +46,7 @@ function makeSignal(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
       "4h": null,
       "1d": null,
     },
-    weightsUsed: { "1m": 0, "5m": 0, "15m": 0.15, "1h": 0.20, "4h": 0.30, "1d": 0.35 },
+    weightsUsed: { "1m": 0, "5m": 0, "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35 },
     asOf: 1700000000000,
     emittingTimeframe: "1h",
     risk: null,
@@ -67,7 +68,7 @@ function makeState(overrides: Partial<IndicatorState> = {}): IndicatorState {
     macdLine: 100,
     macdSignal: 80,
     macdHist: 20,
-    atr14: 500,        // $500 ATR on a ~$46000 BTC → atrPct ≈ 0.01087
+    atr14: 500, // $500 ATR on a ~$46000 BTC → atrPct ≈ 0.01087
     bbUpper: 47500,
     bbMid: 46000,
     bbLower: 44500,

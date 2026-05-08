@@ -1,5 +1,6 @@
-import type { RiskProfileMap, RiskProfile } from "./risk.js";
 import { PAIRS } from "../constants/pairs.js";
+
+import type { RiskProfileMap, RiskProfile } from "./risk.js";
 
 export const USER_TYPES = ["retail", "institutional", "admin"] as const;
 export type UserType = (typeof USER_TYPES)[number];

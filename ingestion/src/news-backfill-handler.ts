@@ -1,4 +1,5 @@
 import type { Context } from "aws-lambda";
+
 import { fetchAlpacaNews, alpacaToNewsRecord } from "./news/alpaca.js";
 import { storeNewsRecords } from "./news/news-store.js";
 import { saveCursor, getCursor } from "./lib/metadata-store.js";
@@ -11,7 +12,10 @@ interface BackfillEvent {
   daysBack?: number;
 }
 
-export async function handler(event: BackfillEvent, context: Context): Promise<{ totalStored: number; pages: number }> {
+export async function handler(
+  event: BackfillEvent,
+  context: Context,
+): Promise<{ totalStored: number; pages: number }> {
   const maxPages = event.maxPages ?? 20;
   const symbols = event.symbols ?? "BTC,ETH,SOL,XRP,DOGE";
   const daysBack = event.daysBack ?? 90;
@@ -24,7 +28,9 @@ export async function handler(event: BackfillEvent, context: Context): Promise<{
 
   const startDate = new Date(Date.now() - daysBack * 86400 * 1000).toISOString();
 
-  console.log(`[NewsBackfill] Starting, maxPages=${maxPages}, symbols=${symbols}, start=${startDate}`);
+  console.log(
+    `[NewsBackfill] Starting, maxPages=${maxPages}, symbols=${symbols}, start=${startDate}`,
+  );
 
   while (pages < maxPages) {
     const { articles, nextPageToken } = await fetchAlpacaNews({

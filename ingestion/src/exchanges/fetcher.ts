@@ -1,4 +1,5 @@
 import ccxt from "ccxt";
+
 import { EXCHANGES, PAIRS, getSymbol, type ExchangeId, type TradingPair } from "./config.js";
 
 export interface PriceSnapshot {

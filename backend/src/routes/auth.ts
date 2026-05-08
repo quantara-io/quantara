@@ -1,8 +1,15 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+
 import { alderoPost, alderoGet, AlderoError } from "../lib/aldero-client.js";
 import {
-  SignupRequest, LoginRequest, AuthSuccessResponse, RefreshRequest, RefreshResponse,
-  AuthConfigResponse, UpdateProfileRequest, SuccessResponse,
+  SignupRequest,
+  LoginRequest,
+  AuthSuccessResponse,
+  RefreshRequest,
+  RefreshResponse,
+  AuthConfigResponse,
+  UpdateProfileRequest,
+  SuccessResponse,
 } from "../lib/schemas/auth.js";
 import { ErrorResponse } from "../lib/schemas/common.js";
 import { requireAuth } from "../middleware/require-auth.js";
@@ -20,9 +27,13 @@ const configRoute = createRoute({
   path: "/config",
   tags: ["Auth"],
   summary: "Get supported auth methods",
-  description: "Returns which auth methods, MFA policies, and OAuth providers are enabled. No authentication required.",
+  description:
+    "Returns which auth methods, MFA policies, and OAuth providers are enabled. No authentication required.",
   responses: {
-    200: { content: { "application/json": { schema: AuthConfigResponse } }, description: "Auth configuration" },
+    200: {
+      content: { "application/json": { schema: AuthConfigResponse } },
+      description: "Auth configuration",
+    },
   },
 });
 
@@ -62,20 +73,32 @@ const signupRoute = createRoute({
   summary: "Sign up with email and password",
   request: { body: { content: { "application/json": { schema: SignupRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "Account created" },
-    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Validation error" },
-    409: { content: { "application/json": { schema: ErrorResponse } }, description: "Email already exists" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "Account created",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Validation error",
+    },
+    409: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Email already exists",
+    },
   },
 });
 
 auth.openapi(signupRoute, async (c) => {
   const body = c.req.valid("json");
   try {
-    const result = await alderoPost("/v1/auth/signup", body) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/signup", body)) as Record<string, unknown>;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "SIGNUP_FAILED", message: err.message } }, err.statusCode as 400);
+      return c.json(
+        { success: false as const, error: { code: "SIGNUP_FAILED", message: err.message } },
+        err.statusCode as 400,
+      );
     }
     throw err;
   }
@@ -87,19 +110,29 @@ const loginRoute = createRoute({
   path: "/login",
   tags: ["Auth"],
   summary: "Login with email and password",
-  description: "Returns tokens on success. If MFA is enrolled, returns mfaRequired=true with mfaToken for the next step.",
+  description:
+    "Returns tokens on success. If MFA is enrolled, returns mfaRequired=true with mfaToken for the next step.",
   request: { body: { content: { "application/json": { schema: LoginRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "Login successful or MFA required" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid credentials" },
-    423: { content: { "application/json": { schema: ErrorResponse } }, description: "Account locked" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "Login successful or MFA required",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid credentials",
+    },
+    423: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Account locked",
+    },
   },
 });
 
 auth.openapi(loginRoute, async (c) => {
   const body = c.req.valid("json");
   try {
-    const result = await alderoPost("/v1/auth/login", body) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/login", body)) as Record<string, unknown>;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
@@ -116,7 +149,10 @@ auth.openapi(loginRoute, async (c) => {
         } as any);
       }
       const code = err.statusCode === 423 ? "ACCOUNT_LOCKED" : "INVALID_CREDENTIALS";
-      return c.json({ success: false as const, error: { code, message: err.message } }, err.statusCode as 401);
+      return c.json(
+        { success: false as const, error: { code, message: err.message } },
+        err.statusCode as 401,
+      );
     }
     throw err;
   }
@@ -130,7 +166,10 @@ const logoutRoute = createRoute({
   summary: "Logout and revoke session",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Logged out" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Logged out",
+    },
   },
 });
 
@@ -152,19 +191,28 @@ const refreshRoute = createRoute({
   summary: "Refresh access token",
   request: { body: { content: { "application/json": { schema: RefreshRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: RefreshResponse } }, description: "New tokens" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid refresh token" },
+    200: {
+      content: { "application/json": { schema: RefreshResponse } },
+      description: "New tokens",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid refresh token",
+    },
   },
 });
 
 auth.openapi(refreshRoute, async (c) => {
   const body = c.req.valid("json");
   try {
-    const result = await alderoPost("/v1/auth/token/refresh", body) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/token/refresh", body)) as Record<string, unknown>;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "INVALID_TOKEN", message: err.message } }, 401);
+      return c.json(
+        { success: false as const, error: { code: "INVALID_TOKEN", message: err.message } },
+        401,
+      );
     }
     throw err;
   }
@@ -178,8 +226,14 @@ const meRoute = createRoute({
   summary: "Get current user profile",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "User profile" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Not authenticated" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "User profile",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Not authenticated",
+    },
   },
 });
 
@@ -209,8 +263,14 @@ const updateMeRoute = createRoute({
   security: [{ Bearer: [] }],
   request: { body: { content: { "application/json": { schema: UpdateProfileRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Profile updated" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Not authenticated" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Profile updated",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Not authenticated",
+    },
   },
 });
 
@@ -222,7 +282,10 @@ auth.openapi(updateMeRoute, async (c) => {
     return c.json({ success: true as const, data: { message: "Profile updated" } }, 200);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "UPDATE_FAILED", message: err.message } }, 401);
+      return c.json(
+        { success: false as const, error: { code: "UPDATE_FAILED", message: err.message } },
+        401,
+      );
     }
     throw err;
   }

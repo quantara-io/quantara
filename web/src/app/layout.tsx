@@ -32,9 +32,7 @@ export default function RootLayout({
       lang="en"
       className={`${inter.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable} h-full antialiased dark`}
     >
-      <body className="min-h-full flex flex-col bg-surface-base text-text-primary">
-        {children}
-      </body>
+      <body className="min-h-full flex flex-col bg-surface-base text-text-primary">{children}</body>
     </html>
   );
 }

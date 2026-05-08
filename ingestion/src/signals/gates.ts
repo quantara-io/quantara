@@ -18,9 +18,7 @@ export function narrowPair(input: string): TradingPair {
   if ((PAIRS as readonly string[]).includes(input)) {
     return input as TradingPair;
   }
-  throw new Error(
-    `Unknown trading pair: "${input}". Valid pairs are: ${PAIRS.join(", ")}`,
-  );
+  throw new Error(`Unknown trading pair: "${input}". Valid pairs are: ${PAIRS.join(", ")}`);
 }
 
 /**
@@ -37,11 +35,7 @@ export function gateVolatility(state: IndicatorState, pair: TradingPair): GateRe
   const vol = state.realizedVolAnnualized;
 
   // Reject null, NaN, Infinity, and negative values — do not gate on bad data
-  if (
-    vol === null ||
-    !Number.isFinite(vol) ||
-    vol < 0
-  ) {
+  if (vol === null || !Number.isFinite(vol) || vol < 0) {
     return NOT_FIRED;
   }
 
@@ -66,18 +60,11 @@ export function gateVolatility(state: IndicatorState, pair: TradingPair): GateRe
  *
  * Returns { fired: false } when state.dispersion is null, NaN, Infinity, or negative.
  */
-export function gateDispersion(
-  state: IndicatorState,
-  dispersionHistory: number[],
-): GateResult {
+export function gateDispersion(state: IndicatorState, dispersionHistory: number[]): GateResult {
   const disp = state.dispersion;
 
   // Reject null, NaN, Infinity, and negative values — do not gate on bad data
-  if (
-    disp === null ||
-    !Number.isFinite(disp) ||
-    disp < 0
-  ) {
+  if (disp === null || !Number.isFinite(disp) || disp < 0) {
     return NOT_FIRED;
   }
 
@@ -102,9 +89,7 @@ export function gateDispersion(
  * Throws if the input map does not have exactly 3 entries — keeps the
  * ">= 2 of 3" semantic explicit.
  */
-export function gateStale(
-  exchangeStaleness: Record<string, boolean>,
-): GateResult {
+export function gateStale(exchangeStaleness: Record<string, boolean>): GateResult {
   const keys = Object.keys(exchangeStaleness);
   if (keys.length !== 3) {
     throw new Error(

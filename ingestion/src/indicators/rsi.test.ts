@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { rsi, rsiUpdate } from "./rsi.js";
 
 // Deterministic 200-bar close series: seeded random walk starting at 100.
@@ -9,7 +10,7 @@ function makeCloses(n = 200, seed = 42): number[] {
   for (let i = 0; i < n; i++) {
     // LCG pseudo-random: gives deterministic +/- moves
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 100; // [-1, +1]
+    const move = (((s >>> 0) % 201) - 100) / 100; // [-1, +1]
     val = Math.max(1, val + move);
     closes.push(val);
   }
@@ -121,8 +122,7 @@ describe("rsi — single-bar-update parity", () => {
     }
 
     // The incremental RSI at bar 80.
-    const incrRsi =
-      avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    const incrRsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
 
     expect(incrRsi).toBeCloseTo(fullSeries[80]!, 4);
   });

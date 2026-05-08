@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
 import type { CryptoPanicPost } from "./types.js";
 
 const ssmSend = vi.fn();
@@ -103,7 +104,10 @@ describe("fetchNews", () => {
 
   it("throws when the API responds non-2xx", async () => {
     process.env.CRYPTOPANIC_API_KEY = "env-key";
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 502, statusText: "Bad Gateway" }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 502, statusText: "Bad Gateway" }),
+    );
     const { fetchNews } = await import("./cryptopanic.js");
     await expect(fetchNews()).rejects.toThrow(/CryptoPanic API error: 502/);
     vi.unstubAllGlobals();

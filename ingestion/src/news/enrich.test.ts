@@ -214,9 +214,7 @@ describe("regexTags", () => {
 
 describe("llmTags", () => {
   it("returns pairs from Haiku JSON response", async () => {
-    bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ affectedPairs: ["ETH", "BTC"] })
-    );
+    bedrockSendMock.mockResolvedValue(bedrockJsonResponse({ affectedPairs: ["ETH", "BTC"] }));
     const { llmTags } = await import("./enrich.js");
     const tags = await llmTags("Coinbase halts ETH staking", "");
     expect(tags).toContain("ETH");
@@ -225,7 +223,7 @@ describe("llmTags", () => {
 
   it("filters out invalid symbols from LLM response", async () => {
     bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ affectedPairs: ["ETH", "SHIB", "PEPE"] })
+      bedrockJsonResponse({ affectedPairs: ["ETH", "SHIB", "PEPE"] }),
     );
     const { llmTags } = await import("./enrich.js");
     const tags = await llmTags("Some article", "");
@@ -233,9 +231,7 @@ describe("llmTags", () => {
   });
 
   it("returns empty array when affectedPairs is empty", async () => {
-    bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ affectedPairs: [] })
-    );
+    bedrockSendMock.mockResolvedValue(bedrockJsonResponse({ affectedPairs: [] }));
     const { llmTags } = await import("./enrich.js");
     const tags = await llmTags("Unrelated market news", "");
     expect(tags).toEqual([]);
@@ -249,9 +245,7 @@ describe("llmTags", () => {
   });
 
   it("truncates body to 2000 chars in the Bedrock request", async () => {
-    bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ affectedPairs: ["SOL"] })
-    );
+    bedrockSendMock.mockResolvedValue(bedrockJsonResponse({ affectedPairs: ["SOL"] }));
     const { llmTags } = await import("./enrich.js");
     const longBody = "x".repeat(5000);
     await llmTags("Title", longBody);
@@ -268,9 +262,7 @@ describe("llmTags", () => {
 describe("tagPairs", () => {
   it("deduplicates overlapping regex and LLM results", async () => {
     // Regex will match BTC; LLM returns BTC and ETH
-    bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ affectedPairs: ["BTC", "ETH"] })
-    );
+    bedrockSendMock.mockResolvedValue(bedrockJsonResponse({ affectedPairs: ["BTC", "ETH"] }));
     const { tagPairs } = await import("./enrich.js");
     const pairs = await tagPairs("BTC market update", "");
     expect(pairs).toContain("BTC");
@@ -294,7 +286,7 @@ describe("tagPairs", () => {
 describe("classifySentiment", () => {
   it("returns score and magnitude from Haiku JSON response", async () => {
     bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ score: 0.8, magnitude: 0.9, topic: "ETF approval" })
+      bedrockJsonResponse({ score: 0.8, magnitude: 0.9, topic: "ETF approval" }),
     );
     const { classifySentiment } = await import("./enrich.js");
     const result = await classifySentiment("Bitcoin ETF approved", "");
@@ -305,7 +297,7 @@ describe("classifySentiment", () => {
 
   it("clamps score above +1 to +1", async () => {
     bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ score: 2.5, magnitude: 0.5, topic: "test" })
+      bedrockJsonResponse({ score: 2.5, magnitude: 0.5, topic: "test" }),
     );
     const { classifySentiment } = await import("./enrich.js");
     const result = await classifySentiment("Article", "");
@@ -314,7 +306,7 @@ describe("classifySentiment", () => {
 
   it("clamps score below -1 to -1", async () => {
     bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ score: -3, magnitude: 0.5, topic: "test" })
+      bedrockJsonResponse({ score: -3, magnitude: 0.5, topic: "test" }),
     );
     const { classifySentiment } = await import("./enrich.js");
     const result = await classifySentiment("Article", "");
@@ -323,7 +315,7 @@ describe("classifySentiment", () => {
 
   it("clamps magnitude above 1 to 1", async () => {
     bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ score: 0, magnitude: 5, topic: "test" })
+      bedrockJsonResponse({ score: 0, magnitude: 5, topic: "test" }),
     );
     const { classifySentiment } = await import("./enrich.js");
     const result = await classifySentiment("Article", "");
@@ -332,7 +324,7 @@ describe("classifySentiment", () => {
 
   it("clamps magnitude below 0 to 0", async () => {
     bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ score: 0, magnitude: -0.5, topic: "test" })
+      bedrockJsonResponse({ score: 0, magnitude: -0.5, topic: "test" }),
     );
     const { classifySentiment } = await import("./enrich.js");
     const result = await classifySentiment("Article", "");
@@ -348,7 +340,7 @@ describe("classifySentiment", () => {
 
   it("model tag is always claude-haiku-4-5", async () => {
     bedrockSendMock.mockResolvedValue(
-      bedrockJsonResponse({ score: 0, magnitude: 0, topic: "test" })
+      bedrockJsonResponse({ score: 0, magnitude: 0, topic: "test" }),
     );
     const { classifySentiment } = await import("./enrich.js");
     const result = await classifySentiment("Article", "");
