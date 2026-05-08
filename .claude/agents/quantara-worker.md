@@ -75,7 +75,9 @@ This is your contract with the human. Keep it tight — 3-5 bullets max.
 
 ```bash
 cd "$WORKTREE"
+npm run format:fix                         # always — prevents lint failures in CI
 npm run typecheck --workspaces
+npm run lint                               # catch remaining lint errors before push
 npm run test --workspace=quantara-backend  # if backend changed
 ```
 
@@ -150,9 +152,9 @@ EOF
 )"
 ```
 
-### 9. Wait for CI, iterate on failures (do not skip)
+### 9. Wait for CI to pass (unconditional — do not skip, even on tripwires)
 
-After pushing, **wait for all required checks to complete**. If any fails, fix and iterate before labeling the PR ready. The reviewer should never see a PR with red CI.
+**This step runs regardless of what step 10 will decide.** Even if the PR will eventually be labeled `needs-human-review` due to a tripwire, a reviewer or human must never see a PR with red CI. Run `npm run format:fix` before committing (step 5) to avoid the most common failure.
 
 ```bash
 PR_NUMBER=$(gh pr view --json number -q .number)
@@ -175,7 +177,7 @@ Common failures and fixes:
 |---|---|---|
 | `npm ci` lockfile mismatch | Added a dep to `package.json` without regenerating `package-lock.json` | `npm install` locally; commit the lockfile delta |
 | Typecheck failure on a downstream test fixture | Type widening (e.g. new required field on a shared interface) hits fixtures in workspaces this PR didn't touch | Update those fixtures with the new field; merge `origin/main` first if your branch is behind |
-| Lint failure | New rule fires on existing code | Auto-fix with `npm run lint:fix`; if rule is too aggressive, soften it (warning vs error) |
+| Lint / Prettier format check | `npm run format:fix` was not run before committing | Run `npm run format:fix` and push the fix commit |
 | Test failure on a previously-green test | Cross-cutting change broke an unrelated test | Read the test, understand the dependency, fix the test or the change |
 
 Cap at **3 fix attempts**. If CI is still red after 3 iterations:
@@ -185,18 +187,30 @@ Cap at **3 fix attempts**. If CI is still red after 3 iterations:
 - Set `STATUS: agent-blocked` in your final report
 - Stop. Do not push more attempts.
 
-### 10. Probe auto-merge capability, then merge or label
+### 10. Apply final labels and decide STATUS
+
+**Only reach this step after CI is green (or capped at 3 attempts).** Now decide:
 
 ```bash
 AUTO_MERGE_OK=$(gh api repos/quantara-io/quantara --jq '.allow_auto_merge')
-if [ "$AUTO_MERGE_OK" = "true" ]; then
+
+if [ -n "$TRIPWIRE" ]; then
+  # Tripwire was set in step 6 self-review — human must review
+  gh pr edit --add-label needs-human-review
+  gh pr comment --body "Tripwire: $TRIPWIRE — marking needs-human-review. CI is green."
+  # STATUS: needs-human-review
+elif [ "$AUTO_MERGE_OK" = "true" ]; then
   gh pr merge --auto --squash
+  # STATUS: merged-pending
 else
   gh pr edit --add-label awaiting-review
+  # STATUS: awaiting-review
 fi
 ```
 
 If `allow_auto_merge` is `false` (GitHub Free plan / private repo without branch protection), skip auto-merge and add the `awaiting-review` label instead. Set `STATUS: awaiting-review` in your report.
+
+Note: `needs-human-review` does **not** bypass CI iteration. CI must be green before this label is applied.
 
 ### 11. Stop
 
@@ -206,13 +220,15 @@ Report back: PR URL, branch, task ID. **Do not** start a new task. **Do not** de
 
 When any of these happens, label and stop. Do not iterate past the cap.
 
-| Situation                                                | Action                                                                                                             |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Tripwire crossed                                         | Add label `needs-human-review` to the PR. Comment the specific tripwire. Do NOT enable auto-merge.                 |
-| Diff > 400 LOC                                           | Same as tripwire. Note the LOC count in the comment.                                                               |
-| Tests failing after 3 attempts                           | Add label `agent-blocked` to the issue. Comment the failure. Push WIP commits so the human can see. Unassign self. |
-| Conflict with main on push                               | Try `git rebase origin/main` once. If conflicts, escalate as `agent-blocked`.                                      |
-| Issue underspecified (no acceptance criteria, ambiguous) | Comment on issue with specific questions. Add label `agent-blocked`. Do not guess.                                 |
+**Tripwire / oversized diff escalation still goes through step 9 (CI).** Complete CI iteration before applying `needs-human-review`. A reviewer must not open a PR with red CI.
+
+| Situation                                                | Action                                                                                                                                        |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tripwire crossed                                         | Complete step 9 (CI) first. Then add label `needs-human-review` to the PR. Comment the specific tripwire. Do NOT enable auto-merge.           |
+| Diff > 400 LOC                                           | Same as tripwire — complete CI before labeling. Note the LOC count in the comment.                                                            |
+| Tests failing after 3 attempts                           | Add label `agent-blocked` to the issue. Comment the failure. Push WIP commits so the human can see. Unassign self.                            |
+| Conflict with main on push                               | Try `git rebase origin/main` once. If conflicts, escalate as `agent-blocked`.                                                                 |
+| Issue underspecified (no acceptance criteria, ambiguous) | Comment on issue with specific questions. Add label `agent-blocked`. Do not guess.                                                            |
 
 ## Hard rules (non-negotiable)
 
