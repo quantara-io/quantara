@@ -30,20 +30,20 @@
 
 > **v4 update (codex finding Fix #4 / PR #123):** Non-ratified p99 raised from 6s → 7s (Option B) to match the realistic per-segment sum. Ratified p99 stays at 10s.
 
-| Path                             | p50   | p99    |
-| -------------------------------- | ----- | ------ |
-| Non-ratified (algo only)         | < 2s  | **7s** |
-| Ratified (algo + LLM)            | < 5s  | 10s    |
+| Path                     | p50  | p99    |
+| ------------------------ | ---- | ------ |
+| Non-ratified (algo only) | < 2s | **7s** |
+| Ratified (algo + LLM)    | < 5s | 10s    |
 
 Per-segment budget (non-ratified):
 
-| Segment                               | Budget  |
-| ------------------------------------- | ------- |
-| Candle write → DDB Streams emit       | ≤ 2s    |
-| Streams → Lambda invoke (cold + warm) | ≤ 2s    |
-| Indicator compute + scoring           | ≤ 1.5s  |
-| Blended signal write to DDB           | ≤ 0.2s  |
-| Push channel (WebSocket emit)         | ≤ 1s    |
+| Segment                               | Budget   |
+| ------------------------------------- | -------- |
+| Candle write → DDB Streams emit       | ≤ 2s     |
+| Streams → Lambda invoke (cold + warm) | ≤ 2s     |
+| Indicator compute + scoring           | ≤ 1.5s   |
+| Blended signal write to DDB           | ≤ 0.2s   |
+| Push channel (WebSocket emit)         | ≤ 1s     |
 | **Total**                             | **6.7s** |
 
 The sum is 6.7s, rounded up to 7s p99 to give realistic headroom. Raising to 7s is more honest than tightening individual segments to produce a contractual 6s target that real infrastructure will miss.
@@ -613,10 +613,10 @@ ttl: Math.floor(closeTimeMs / 1000) + 86_400   // epoch SECONDS (Fix #3 — see 
 
 ```ts
 // Option A — explicit:
-ttl: Math.floor((closeTimeMs + 86_400_000) / 1000)
+ttl: Math.floor((closeTimeMs + 86_400_000) / 1000);
 
 // Option B — equivalent, clearer intent:
-ttl: Math.floor(closeTimeMs / 1000) + 86_400
+ttl: Math.floor(closeTimeMs / 1000) + 86_400;
 ```
 
 Both are correct. Do NOT write `closeTimeMs + 86_400_000` as the TTL value — that produces a value ~1000× too large (year ~57000) and the row will never expire.
@@ -1619,10 +1619,10 @@ The monitor Lambda is a small, single-purpose function (~30 lines). It does not 
 
 **Alternative options considered and rejected:**
 
-| Option | Why rejected |
-|---|---|
+| Option                    | Why rejected                                                                                                                       |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | **B — Scheduled scanner** | Scans for stale rows every 5 min — lossy (misses closes that expired between scans), adds a DDB scan on a table with no GSI-by-age |
-| **C — Drop the metric** | Unacceptable for debugging "why no signal?"; the missed-close case is exactly the failure mode Fix #1 was designed to prevent |
+| **C — Drop the metric**   | Unacceptable for debugging "why no signal?"; the missed-close case is exactly the failure mode Fix #1 was designed to prevent      |
 
 ---
 
@@ -1732,17 +1732,17 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 
 > **v4 update (codex findings Fix #1, Fix #6 / PR #123):** Quorum non-recovery entry replaced with v4 race-window entry. WebSocket capacity entry corrected to reflect 500/sec rate quota, not 500 concurrent connections.
 
-| Risk                                                                          | Mitigation                                                                                                                                             |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Indicator off-by-one bugs propagate silently into bad signals.                | Phase 1's TradingView-fixture acceptance bar; replay tests.                                                                                            |
-| LLM hallucinates a `buy` from a `hold`.                                       | Server-side guardrail validates allowed transformations; logs breaches.                                                                                |
-| Sentiment classification misreads sarcasm/satire.                             | Aggregated over many articles; single bad classification has bounded impact.                                                                           |
-| Volatility gate fires too often, suppressing all signals.                     | Threshold tunable; backtested to balance suppression vs noise.                                                                                         |
-| User over-trusts confidence numbers.                                          | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.                                                                   |
-| Cross-exchange price disagreement on flash events.                            | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale.                                                                 |
-| **Quorum race window (v4) — 2+ handlers compute for same slot concurrently.** | **Rare: DDB Streams mostly serializes per-slot events. Wasted compute bounded to 500ms–2s. Conditional Put guarantees exactly-once signal write.**     |
+| Risk                                                                          | Mitigation                                                                                                                                          |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Indicator off-by-one bugs propagate silently into bad signals.                | Phase 1's TradingView-fixture acceptance bar; replay tests.                                                                                         |
+| LLM hallucinates a `buy` from a `hold`.                                       | Server-side guardrail validates allowed transformations; logs breaches.                                                                             |
+| Sentiment classification misreads sarcasm/satire.                             | Aggregated over many articles; single bad classification has bounded impact.                                                                        |
+| Volatility gate fires too often, suppressing all signals.                     | Threshold tunable; backtested to balance suppression vs noise.                                                                                      |
+| User over-trusts confidence numbers.                                          | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.                                                                |
+| Cross-exchange price disagreement on flash events.                            | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale.                                                              |
+| **Quorum race window (v4) — 2+ handlers compute for same slot concurrently.** | **Rare: DDB Streams mostly serializes per-slot events. Wasted compute bounded to 500ms–2s. Conditional Put guarantees exactly-once signal write.**  |
 | **Close-quorum row expires (TTL) without a signal written (missed close).**   | **`close-quorum-monitor` Lambda emits `CloseMissed` metric on TTL REMOVE; downstream alarm fires when no signal for pair/TF > N minutes (§11.5).**  |
-| **WebSocket concurrent connection cap reached.**                              | **AWS API Gateway default is 500 new connections/second (rate), not 500 concurrent. Steady-state capacity ~600K concurrent per region. See §16.6.**  |
+| **WebSocket concurrent connection cap reached.**                              | **AWS API Gateway default is 500 new connections/second (rate), not 500 concurrent. Steady-state capacity ~600K concurrent per region. See §16.6.** |
 
 ---
 
