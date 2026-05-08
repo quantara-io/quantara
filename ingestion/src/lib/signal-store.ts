@@ -70,6 +70,8 @@ export async function putSignal(
         weightsUsed: signal.weightsUsed,
         asOf: signal.asOf,
         emittingTimeframe: signal.emittingTimeframe,
+        // risk: null is persisted explicitly so reads can distinguish "no risk" from "old record"
+        risk: signal.risk ?? null,
         ttl,
       },
     })
@@ -118,6 +120,7 @@ export async function getRecentSignals(
     weightsUsed: item.weightsUsed as BlendedSignal["weightsUsed"],
     asOf: item.asOf as number,
     emittingTimeframe: item.emittingTimeframe as BlendedSignal["emittingTimeframe"],
+    risk: (item.risk ?? null) as BlendedSignal["risk"],
     signalId: item.signalId as string,
     emittedAt: item.emittedAt as string,
   }));

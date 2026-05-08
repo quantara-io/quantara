@@ -52,6 +52,7 @@ function makeSignal(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
     },
     asOf: 1700000000000,
     emittingTimeframe: "15m",
+    risk: null,
     ...overrides,
   };
 }
@@ -123,6 +124,39 @@ describe("putSignal", () => {
     expect(item.perTimeframe).toEqual(signal.perTimeframe);
     expect(item.weightsUsed).toEqual(signal.weightsUsed);
   });
+
+  it("persists risk: null when no risk recommendation", async () => {
+    send.mockResolvedValue({});
+    const signal = makeSignal({ risk: null });
+    const { putSignal } = await import("./signal-store.js");
+    await putSignal(signal);
+    const item = send.mock.calls[0][0].input.Item;
+    expect(item.risk).toBeNull();
+  });
+
+  it("persists a RiskRecommendation when present", async () => {
+    send.mockResolvedValue({});
+    const riskRec = {
+      pair: "BTC/USDT",
+      profile: "moderate" as const,
+      positionSizePct: 0.5,
+      positionSizeModel: "vol-targeted" as const,
+      stopLoss: 45000,
+      stopDistance: 1000,
+      takeProfit: [
+        { price: 46000, closePct: 0.5, rMultiple: 1 },
+        { price: 47000, closePct: 0.25, rMultiple: 2 },
+        { price: 50000, closePct: 0.25, rMultiple: 5 },
+      ],
+      invalidationCondition: "Setup invalid if BTC/USDT crosses below $45000.00",
+      trailingStopAfterTP2: { multiplier: 2, reference: "ATR" as const },
+    };
+    const signal = makeSignal({ risk: riskRec });
+    const { putSignal } = await import("./signal-store.js");
+    await putSignal(signal);
+    const item = send.mock.calls[0][0].input.Item;
+    expect(item.risk).toEqual(riskRec);
+  });
 });
 
 describe("getLatestSignal", () => {
@@ -144,6 +178,7 @@ describe("getLatestSignal", () => {
       weightsUsed: signal.weightsUsed,
       asOf: signal.asOf,
       emittingTimeframe: signal.emittingTimeframe,
+      risk: signal.risk,
       ttl: Math.floor(Date.now() / 1000) + 86400 * 90,
     };
     send.mockResolvedValue({ Items: [storedItem] });
@@ -169,6 +204,7 @@ describe("getLatestSignal", () => {
     expect(result!.asOf).toBe(signal.asOf);
     expect(result!.signalId).toBe(signalId);
     expect(result!.emittedAt).toBe(emittedAt);
+    expect(result!.risk).toBeNull();
   });
 
   it("returns null when no signals exist", async () => {
