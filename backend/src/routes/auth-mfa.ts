@@ -7,6 +7,8 @@ import {
   MfaTotpSetupResponse,
   MfaConfirmRequest,
   MfaConfirmResponse,
+  MfaSmsSetupRequest,
+  MfaSmsSetupResponse,
   MfaVerifyRequest,
   AuthSuccessResponse,
   SuccessResponse,
@@ -20,6 +22,7 @@ const authMfa = new OpenAPIHono();
 authMfa.use("/mfa/methods", requireAuth);
 authMfa.use("/mfa/totp/*", requireAuth);
 authMfa.use("/mfa/email/*", requireAuth);
+authMfa.use("/mfa/sms/*", requireAuth);
 authMfa.use("/mfa/recovery/*", requireAuth);
 authMfa.use("/mfa/authenticators", requireAuth);
 authMfa.use("/mfa/authenticators/*", requireAuth);
@@ -55,15 +58,97 @@ authMfa.openapi(methodsRoute, async (c) => {
     return c.json({
       success: true as const,
       data: {
-        available: ["totp", "email"] as const,
+        available: ["totp", "email", "sms"] as const,
         enrolled,
       },
     });
   } catch {
     return c.json({
       success: true as const,
-      data: { available: ["totp", "email"] as const, enrolled: [] },
+      data: { available: ["totp", "email", "sms"] as const, enrolled: [] },
     });
+  }
+});
+
+// --- POST /mfa/sms/setup ---
+const smsSetupRoute = createRoute({
+  method: "post",
+  path: "/mfa/sms/setup",
+  tags: ["MFA"],
+  summary: "Setup SMS OTP MFA",
+  description: "Send a verification code to the user's mobile phone to start SMS MFA enrollment.",
+  security: [{ Bearer: [] }],
+  request: { body: { content: { "application/json": { schema: MfaSmsSetupRequest } } } },
+  responses: {
+    200: {
+      content: { "application/json": { schema: MfaSmsSetupResponse } },
+      description: "SMS code sent",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid phone or setup state",
+    },
+  },
+});
+
+authMfa.openapi(smsSetupRoute, async (c) => {
+  const token = c.req.header("Authorization")?.slice(7);
+  const body = c.req.valid("json");
+  try {
+    const result = (await alderoPost("/v1/auth/mfa/sms/setup", body, token)) as Record<
+      string,
+      unknown
+    >;
+    return c.json({ success: true as const, data: result } as any);
+  } catch (err) {
+    if (err instanceof AlderoError) {
+      return c.json(
+        { success: false as const, error: { code: "SMS_SETUP_FAILED", message: err.message } },
+        400,
+      );
+    }
+    throw err;
+  }
+});
+
+// --- POST /mfa/sms/confirm ---
+const smsConfirmRoute = createRoute({
+  method: "post",
+  path: "/mfa/sms/confirm",
+  tags: ["MFA"],
+  summary: "Confirm SMS OTP enrollment",
+  description: "Verify the SMS code to complete enrollment. Returns one-time recovery codes.",
+  security: [{ Bearer: [] }],
+  request: { body: { content: { "application/json": { schema: MfaConfirmRequest } } } },
+  responses: {
+    200: {
+      content: { "application/json": { schema: MfaConfirmResponse } },
+      description: "Enrolled with recovery codes",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid code",
+    },
+  },
+});
+
+authMfa.openapi(smsConfirmRoute, async (c) => {
+  const token = c.req.header("Authorization")?.slice(7);
+  const body = c.req.valid("json");
+  try {
+    const result = (await alderoPost("/v1/auth/mfa/sms/confirm", body, token)) as Record<
+      string,
+      unknown
+    >;
+    return c.json({ success: true as const, data: result } as any);
+  } catch (err) {
+    if (err instanceof AlderoError) {
+      return c.json(
+        { success: false as const, error: { code: "INVALID_CODE", message: err.message } },
+        400,
+      );
+    }
+    throw err;
   }
 });
 
@@ -255,20 +340,24 @@ authMfa.openapi(verifyRoute, async (c) => {
   }
 });
 
-// --- POST /mfa/challenge --- (send email OTP during login)
+// --- POST /mfa/challenge --- (send email or SMS OTP during login)
 const challengeRoute = createRoute({
   method: "post",
   path: "/mfa/challenge",
   tags: ["MFA"],
-  summary: "Send email OTP code for MFA login",
+  summary: "Send an email or SMS OTP code for MFA login",
   description:
-    "Triggers an email code send during MFA login challenge. Use the mfaToken from the login response.",
+    "Triggers an out-of-band code send during MFA login challenge. Use the mfaToken from the login response. Defaults to email; pass channel: 'sms' to send via SMS.",
   request: {
     body: {
       content: {
         "application/json": {
           schema: z.object({
             mfaToken: z.string().describe("MFA token from login response"),
+            channel: z
+              .enum(["email", "sms"])
+              .optional()
+              .describe("OOB channel — defaults to 'email'"),
           }),
         },
       },
@@ -285,13 +374,23 @@ const challengeRoute = createRoute({
 
 authMfa.openapi(challengeRoute, async (c) => {
   const body = c.req.valid("json");
+  const channel = body.channel ?? "email";
   try {
     await alderoPost("/v1/auth/mfa/challenge", {
       mfa_token: body.mfaToken,
       challenge_type: "oob",
+      oob_channel: channel,
     });
     return c.json(
-      { success: true as const, data: { message: "Verification code sent to your email" } },
+      {
+        success: true as const,
+        data: {
+          message:
+            channel === "sms"
+              ? "Verification code sent via SMS"
+              : "Verification code sent to your email",
+        },
+      },
       200,
     );
   } catch (err) {
