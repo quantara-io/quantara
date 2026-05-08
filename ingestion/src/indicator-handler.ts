@@ -20,9 +20,6 @@ import type { Timeframe } from "@quantara/shared";
 import { PAIRS } from "@quantara/shared";
 import { RULES } from "@quantara/shared";
 import type { TimeframeVote } from "@quantara/shared";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-
 import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
@@ -33,6 +30,9 @@ import { scoreTimeframe } from "./signals/score.js";
 import { blendTimeframeVotes, isTrivialChange } from "./signals/blend.js";
 import { evaluateGates, narrowPair } from "./signals/gates.js";
 import { EXCHANGES } from "./exchanges/config.js";
+import { tryClaimProcessedClose } from "./lib/processed-close-store.js";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 // ---------------------------------------------------------------------------
 // DDB client for vote persistence (ingestion-metadata table)
@@ -203,11 +203,11 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
   const now = Date.now();
 
   // Step 1: Determine which TFs just closed (bar closed within last 60s).
-  const closedTfs: SignalTimeframe[] = [];
+  const closedTfs: Array<{ tf: SignalTimeframe; lastClose: number }> = [];
   for (const tf of SIGNAL_TIMEFRAMES) {
     const barMs = TIMEFRAME_BAR_MS[tf];
     const lastClose = Math.floor(now / barMs) * barMs;
-    if (now - lastClose < 60_000) closedTfs.push(tf);
+    if (now - lastClose < 60_000) closedTfs.push({ tf, lastClose });
   }
 
   if (closedTfs.length === 0) {
@@ -215,15 +215,15 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
     return;
   }
 
-  console.log(`[IndicatorHandler] Closed TFs: ${closedTfs.join(", ")}`);
+  console.log(`[IndicatorHandler] Closed TFs: ${closedTfs.map((c) => c.tf).join(", ")}`);
 
   const fearGreed = await getFearGreed();
 
   // Step 2: For each closed TF × each pair.
-  for (const tf of closedTfs) {
+  for (const { tf, lastClose } of closedTfs) {
     for (const pair of PAIRS) {
       try {
-        await processTimeframePair(pair, tf, fearGreed, now);
+        await processTimeframePair(pair, tf, fearGreed, lastClose);
       } catch (err) {
         console.error(
           `[IndicatorHandler] Error processing ${pair}/${tf}: ${(err as Error).message}`,
@@ -234,7 +234,7 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
   }
 
   // Step 3: For each pair, blend all 4 TF votes and persist the BlendedSignal.
-  const emittingTf = closedTfs[closedTfs.length - 1]! as Timeframe;
+  const emittingTf = closedTfs[closedTfs.length - 1]!.tf as Timeframe;
   for (const pair of PAIRS) {
     try {
       await blendAndPersist(pair, emittingTf);
@@ -254,8 +254,18 @@ async function processTimeframePair(
   pair: string,
   tf: SignalTimeframe,
   fearGreed: number | null,
-  _now: number,
+  lastClose: number,
 ): Promise<void> {
+  // Idempotency: claim this (pair, tf, lastClose) — if another invocation already
+  // processed it (EventBridge at-least-once), skip all work.
+  const claimed = await tryClaimProcessedClose(pair, tf, lastClose);
+  if (!claimed) {
+    console.log(
+      `[IndicatorHandler] ${pair}/${tf} close@${new Date(lastClose).toISOString()} already processed — skipping (duplicate invocation).`,
+    );
+    return;
+  }
+
   // 2a. Pull recent candles per exchange (250 for warm-up).
   const CANDLE_LIMIT = 250;
   const perExchangeLatest: Record<string, import("@quantara/shared").Candle | null> = {};
@@ -266,7 +276,18 @@ async function processTimeframePair(
       const candles = await getCandles(pair, ex, tf, CANDLE_LIMIT);
       perExchangeHistory[ex] = candles;
       // "Latest candle" = most recent closed candle (index 0 = newest from QueryCommand with ScanIndexForward=false).
-      perExchangeLatest[ex] = candles.length > 0 ? candles[0]! : null;
+      // Candle freshness: only use if it belongs to the bar that just closed.
+      const latest = candles.length > 0 ? candles[0]! : null;
+      if (latest && Math.abs(latest.closeTime - lastClose) <= 1) {
+        perExchangeLatest[ex] = latest;
+      } else {
+        perExchangeLatest[ex] = null;
+        if (latest) {
+          console.log(
+            `[IndicatorHandler] ${pair}/${tf}@${ex}: candle closeTime ${latest.closeTime} doesn't match lastClose ${lastClose} — treating exchange as stale.`,
+          );
+        }
+      }
     }),
   );
 
@@ -274,17 +295,22 @@ async function processTimeframePair(
   const exchangeStaleness = await getExchangeStaleness(pair);
 
   // Ensure exactly 3 entries for gateStale (which requires exactly 3).
+  // An exchange is stale if (a) the streamer reported it stale, OR (b) its candle
+  // wasn't fresh for this bar close.
   const stalenessMap: Record<string, boolean> = {};
   for (const ex of EXCHANGES) {
-    stalenessMap[ex] = exchangeStaleness[ex] ?? false;
+    stalenessMap[ex] = (exchangeStaleness[ex] ?? false) || perExchangeLatest[ex] === null;
   }
 
   // 2b (cont). Canonicalize → consensus candle.
   const canon = canonicalizeCandle(perExchangeLatest, stalenessMap);
   if (!canon) {
     console.log(
-      `[IndicatorHandler] ≥2/3 stale for ${pair}/${tf} — skipping (no consensus).`,
+      `[IndicatorHandler] ≥2/3 stale for ${pair}/${tf} — writing sentinel vote and skipping.`,
     );
+    // P2 #2: Write a sentinel null vote so the blender doesn't pick up a stale
+    // previous-bar vote for this TF.
+    await persistVote(pair, tf, null);
     return;
   }
 

@@ -605,6 +605,7 @@ describe("isTrivialChange", () => {
       weightsUsed: DEFAULT_TIMEFRAME_WEIGHTS,
       asOf: 1_700_000_000_000,
       emittingTimeframe: "1h",
+      risk: null,
       ...overrides,
     };
   }

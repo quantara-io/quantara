@@ -1,5 +1,6 @@
 import type { TimeframeVote } from "./rules.js";
 import type { Timeframe } from "./ingestion.js";
+import type { RiskRecommendation } from "./risk.js";
 
 export const SIGNAL_TYPES = ["buy", "sell", "hold"] as const;
 export type SignalType = (typeof SIGNAL_TYPES)[number];
@@ -58,4 +59,7 @@ export interface BlendedSignal {
   // Identifying / lifecycle
   asOf: number; // unix ms — latest TF close that triggered this blend
   emittingTimeframe: Timeframe; // which TF's close drove this blend run
+
+  // Risk recommendation — null when type === "hold" (§9.9 / Fix 2)
+  risk: RiskRecommendation | null;
 }

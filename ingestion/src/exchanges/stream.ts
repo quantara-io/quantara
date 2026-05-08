@@ -6,6 +6,8 @@ import { storePriceSnapshots } from "../lib/store.js";
 
 import { EXCHANGES, PAIRS, getSymbol, type ExchangeId, type TradingPair } from "./config.js";
 import type { PriceSnapshot } from "./fetcher.js";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 const WATCHDOG_INTERVAL_MS = 60_000;
 const STALE_THRESHOLD_MS = 5 * 60_000;
@@ -16,6 +18,12 @@ interface StreamState {
   lastDataAt: number;
   running: boolean;
 }
+
+const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+const METADATA_TABLE =
+  process.env.TABLE_METADATA ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
 
 export class MarketStreamManager {
   private streams: Map<string, StreamState> = new Map();
@@ -187,11 +195,39 @@ export class MarketStreamManager {
 
   private watchdog(): void {
     const now = Date.now();
+
+    // Build a per-pair staleness map: exchange -> boolean.
+    // A stream is stale if it has never received data, or hasn't received data
+    // within STALE_THRESHOLD_MS.
+    const pairStaleness: Map<TradingPair, Record<ExchangeId, boolean>> = new Map();
+    for (const pair of PAIRS) {
+      pairStaleness.set(pair, {} as Record<ExchangeId, boolean>);
+    }
+
     for (const [key, state] of this.streams) {
-      const stale = state.lastDataAt && now - state.lastDataAt > STALE_THRESHOLD_MS;
-      if (stale) {
-        console.warn(`[Watchdog] Stream ${key} stale (last data ${Math.round((now - state.lastDataAt) / 1000)}s ago)`);
+      const isStale = !state.lastDataAt || now - state.lastDataAt > STALE_THRESHOLD_MS;
+      if (isStale) {
+        console.warn(`[Watchdog] Stream ${key} stale (last data ${state.lastDataAt ? Math.round((now - state.lastDataAt) / 1000) + "s ago" : "never"})`);
       }
+      const map = pairStaleness.get(state.pair);
+      if (map) map[state.exchange] = isStale;
+    }
+
+    // Persist staleness to ingestion-metadata so the indicator handler's gateStale
+    // check has a live producer (P2 #1 fix).
+    for (const [pair, stalenessMap] of pairStaleness) {
+      ddbClient.send(
+        new PutCommand({
+          TableName: METADATA_TABLE,
+          Item: {
+            metaKey: `exchange-staleness#${pair}`,
+            staleness: stalenessMap,
+            updatedAt: new Date().toISOString(),
+          },
+        }),
+      ).catch((err: Error) => {
+        console.error(`[Watchdog] Failed to persist staleness for ${pair}: ${err.message}`);
+      });
     }
   }
 }
