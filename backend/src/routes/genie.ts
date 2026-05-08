@@ -3,7 +3,11 @@ import { z } from "@hono/zod-openapi";
 import { ADVISORY_DISCLAIMER, PAIRS } from "@quantara/shared";
 
 import { requireAuth } from "../middleware/require-auth.js";
-import { getSignalForUser, getAllSignalsForUser, getSignalHistoryForUser } from "../lib/signal-service.js";
+import {
+  getSignalForUser,
+  getAllSignalsForUser,
+  getSignalHistoryForUser,
+} from "../lib/signal-service.js";
 import {
   SignalsResponse,
   SignalByPairResponse,

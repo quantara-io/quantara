@@ -29,9 +29,7 @@ export { PAIRS, type TradingPair } from "./constants/pairs.js";
 export { VOL_GATE_THRESHOLDS } from "./constants/vol-gates.js";
 
 // Risk helpers (Gap 1 — moved from ingestion/src/risk/ so backend can import)
-export {
-  attachRiskRecommendation,
-} from "./risk/attach.js";
+export { attachRiskRecommendation } from "./risk/attach.js";
 export {
   computeRiskRecommendation,
   kellyUnlocked,

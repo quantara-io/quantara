@@ -22,9 +22,14 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal, IndicatorState, Timeframe } from "@quantara/shared";
-import { PAIRS, type TradingPair, attachRiskRecommendation, defaultRiskProfiles } from "@quantara/shared";
+import {
+  PAIRS,
+  type TradingPair,
+  attachRiskRecommendation,
+  defaultRiskProfiles,
+} from "@quantara/shared";
 
 import { BlendedSignalSchema } from "./schemas/genie.js";
 import { getOrCreateUserRecord } from "./user-store.js";

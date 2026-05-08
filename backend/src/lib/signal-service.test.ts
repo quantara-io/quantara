@@ -287,9 +287,7 @@ describe("getSignalForUser", () => {
   });
 
   it("returns signal without enrichment when IndicatorState is unavailable (warm-up)", async () => {
-    sendMock
-      .mockResolvedValueOnce({ Items: [fixtureItem] })
-      .mockResolvedValueOnce({ Items: [] }); // no indicator state
+    sendMock.mockResolvedValueOnce({ Items: [fixtureItem] }).mockResolvedValueOnce({ Items: [] }); // no indicator state
 
     const { getSignalForUser } = await loadService();
     const result = await getSignalForUser("user_1", "BTC/USDT");
@@ -418,9 +416,9 @@ describe("getSignalHistoryForUser", () => {
   });
 
   it("accepts and decodes a cursor from a previous page", async () => {
-    const cursor = Buffer.from(
-      JSON.stringify({ pair: "BTC/USDT", signalId: "sig-001" }),
-    ).toString("base64");
+    const cursor = Buffer.from(JSON.stringify({ pair: "BTC/USDT", signalId: "sig-001" })).toString(
+      "base64",
+    );
     sendMock.mockResolvedValue({ Items: [] });
     const { getSignalHistoryForUser } = await loadService();
     // Should not throw on valid cursor

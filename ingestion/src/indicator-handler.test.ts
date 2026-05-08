@@ -261,7 +261,13 @@ beforeEach(() => {
       "4h": { articleCount: 0, avgScore: 0, avgMagnitude: 0, windowStart: "", windowEnd: "" },
       "24h": { articleCount: 0, avgScore: 0, avgMagnitude: 0, windowStart: "", windowEnd: "" },
     },
-    fearGreed: { value: 50, classification: "Neutral", lastTimestamp: null, history: [], trend24h: 0 },
+    fearGreed: {
+      value: 50,
+      classification: "Neutral",
+      lastTimestamp: null,
+      history: [],
+      trend24h: 0,
+    },
   });
 
   // DDB send for handler's own GetCommand calls (fear-greed + staleness + dispersion + votes).
