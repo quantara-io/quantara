@@ -13,8 +13,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
+    "lint": "eslint . && npm run lint --workspace=web",
+    "lint:fix": "eslint . --fix && npm run lint --workspace=web -- --fix",
     "format": "prettier --check .",
     "format:fix": "prettier --write ."
   },
