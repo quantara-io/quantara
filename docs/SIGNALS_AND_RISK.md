@@ -1796,10 +1796,10 @@ PK: connectionId  (from $connect event)
 Attributes:
   userId: string           // from JWT, validated in $connect
   subscribedPairs: String Set   // e.g. {"BTC/USDT", "ETH/USDT"}
-  connectedAt: ISO8601
-  ttl: number              // epoch SECONDS — connectedAt / 1000 + 7_200
-                           // (2h max session; matches API GW WebSocket max idle)
-                           // TTL conversion: same pattern as §5.9 — NOT milliseconds
+  connectedAt: number      // epoch milliseconds (consistent with Candle.closeTime)
+  ttl: number              // epoch SECONDS — Math.floor(connectedAt / 1000) + 7_200
+                           // (2h max session; matches API GW WebSocket max session duration)
+                           // TTL conversion: same pattern as §5.9 — value is seconds, NOT milliseconds
 ```
 
 ### 16.5 Fan-out on signal emit
@@ -1821,9 +1821,9 @@ Correct AWS API Gateway WebSocket quotas (as of 2026):
 
 - **500 new connections/second** per account per region (soft quota — raisable via AWS Support)
 - **200 concurrent frames/message per connection** (hard)
-- No explicit concurrent connection limit — bounded by `new_conn_rate × max_idle_duration`
-- Default idle timeout: 10 minutes; maximum connection duration: 2 hours
-- Steady-state concurrent capacity estimate: `500 conn/s × 600s idle → ~300,000 concurrent connections per region` (conservative; actual capacity higher with the 2h max duration)
+- No explicit concurrent connection limit — bounded by `new_conn_rate × avg_session_duration`
+- Default idle timeout: 10 minutes; maximum connection duration: 2 hours (a session ends at the earlier of the two)
+- Steady-state concurrent capacity estimate: `500 conn/s × 1200s avg session → ~600,000 concurrent connections per region`. Lower bound `500 × 600s = 300K` if every session idles out at 10 min; upper bound `500 × 7200s = 3.6M` if every session lives the full 2h. Use **~600K** as the planning number; matches the §15 risk-register row.
 
 **IoT Core migration threshold:** not driven by concurrent connection count — driven by needing MQTT-level features (retained messages, QoS, device shadow, multi-region fan-out). Trigger: WebSocket connection rate approaches 500/sec sustained, or fan-out latency degrades beyond the 1s SLO at scale.
 
