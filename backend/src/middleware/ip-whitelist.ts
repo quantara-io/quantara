@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import ipaddr from "ipaddr.js";
+
 import { logger } from "../lib/logger.js";
 
 const ssm = new SSMClient({});
@@ -73,10 +74,7 @@ export const ipWhitelist: MiddlewareHandler = async (c, next) => {
   const allowed = clientIp !== "" && allowedIps.some((entry) => matchesEntry(clientIp, entry));
 
   if (!allowed) {
-    return c.json(
-      { success: false, error: { code: "FORBIDDEN", message: "Access denied" } },
-      403,
-    );
+    return c.json({ success: false, error: { code: "FORBIDDEN", message: "Access denied" } }, 403);
   }
 
   await next();

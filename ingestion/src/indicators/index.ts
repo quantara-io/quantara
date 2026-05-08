@@ -11,10 +11,7 @@ import { obv } from "./obv.js";
 import { vwap } from "./vwap.js";
 import { volumeZscore } from "./volume-zscore.js";
 
-export {
-  rsi,
-  rsiUpdate,
-} from "./rsi.js";
+export { rsi, rsiUpdate } from "./rsi.js";
 export { macd, macdUpdate } from "./macd.js";
 export { stochastic } from "./stochastic.js";
 export { roc } from "./roc.js";
@@ -24,12 +21,7 @@ export { realizedVol, BARS_PER_YEAR } from "./realized-vol.js";
 export { obv, obvUpdate } from "./obv.js";
 export { vwap } from "./vwap.js";
 export { volumeZscore } from "./volume-zscore.js";
-export {
-  sma,
-  ema,
-  wilderSmooth,
-  linearRegressionSlope,
-} from "./helpers.js";
+export { sma, ema, wilderSmooth, linearRegressionSlope } from "./helpers.js";
 
 /** History ring buffer size — last N bars, most recent first. */
 const HISTORY_SIZE = 5;

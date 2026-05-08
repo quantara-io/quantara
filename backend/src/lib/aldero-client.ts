@@ -21,7 +21,7 @@ async function getM2MClientId(): Promise<string> {
       new GetParameterCommand({
         Name: `/quantara/${ENVIRONMENT}/aldero-m2m-client-id`,
         WithDecryption: false,
-      })
+      }),
     );
     cachedClientId = result.Parameter?.Value ?? "";
     return cachedClientId;
@@ -43,7 +43,7 @@ async function getClientSecret(): Promise<string> {
       new GetParameterCommand({
         Name: `/quantara/${ENVIRONMENT}/aldero-client-secret`,
         WithDecryption: true,
-      })
+      }),
     );
     cachedSecret = result.Parameter?.Value ?? "";
     return cachedSecret;
@@ -60,7 +60,11 @@ async function buildAuthHeader(): Promise<Record<string, string>> {
   return { Authorization: `Basic ${encoded}` };
 }
 
-export async function alderoPost(path: string, body: unknown, bearerToken?: string): Promise<unknown> {
+export async function alderoPost(
+  path: string,
+  body: unknown,
+  bearerToken?: string,
+): Promise<unknown> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -132,16 +136,24 @@ export class AlderoError extends Error {
   body: unknown;
 
   constructor(statusCode: number, body: unknown) {
-    const raw = (body as Record<string, any>)?.error?.message
-      ?? (body as Record<string, string>)?.message
-      ?? "";
+    const raw =
+      (body as Record<string, any>)?.error?.message ??
+      (body as Record<string, string>)?.message ??
+      "";
     // Strip internal service name from error messages
-    const msg = raw || (statusCode === 401 ? "Invalid credentials"
-      : statusCode === 403 ? "Access denied"
-      : statusCode === 404 ? "Not found"
-      : statusCode === 409 ? "Already exists or in progress"
-      : statusCode === 429 ? "Too many requests"
-      : "Something went wrong");
+    const msg =
+      raw ||
+      (statusCode === 401
+        ? "Invalid credentials"
+        : statusCode === 403
+          ? "Access denied"
+          : statusCode === 404
+            ? "Not found"
+            : statusCode === 409
+              ? "Already exists or in progress"
+              : statusCode === 429
+                ? "Too many requests"
+                : "Something went wrong");
     super(msg);
     this.statusCode = statusCode;
     this.body = body;

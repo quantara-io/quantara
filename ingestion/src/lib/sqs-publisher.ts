@@ -5,7 +5,7 @@ const sqs = new SQSClient({});
 export async function publish(
   queueUrl: string,
   type: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): Promise<void> {
   await sqs.send(
     new SendMessageCommand({
@@ -15,6 +15,6 @@ export async function publish(
         data: payload,
         timestamp: new Date().toISOString(),
       }),
-    })
+    }),
   );
 }

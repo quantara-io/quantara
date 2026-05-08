@@ -2,7 +2,7 @@ import type { SignalType } from "../types/signals.js";
 import type { Rule } from "../types/rules.js";
 
 export const SIGNAL_COLORS: Record<SignalType, { themeA: string; themeB: string }> = {
-  buy:  { themeA: "#2EE6A8", themeB: "#7FD494" },
+  buy: { themeA: "#2EE6A8", themeB: "#7FD494" },
   sell: { themeA: "#FF5C7A", themeB: "#E56B5F" },
   hold: { themeA: "#FFB547", themeB: "#F0B94A" },
 };

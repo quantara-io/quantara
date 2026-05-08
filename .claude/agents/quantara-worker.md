@@ -20,6 +20,7 @@ You are a worker agent on the Quantara monorepo. Your job is to take **one** Git
 ## The contract — execute in order, do not skip steps
 
 ### 1. Claim
+
 ```bash
 ISSUE=<issue-number>
 SLUG=$(gh issue view $ISSUE --json title -q .title | sed 's/[^a-zA-Z0-9]/-/g' | tr A-Z a-z | cut -c1-40 | sed 's/-*$//')
@@ -35,6 +36,7 @@ gh issue edit $ISSUE --add-assignee @me
 If the claim fails (branch already exists, or the issue isn't `agent-ready`), **stop and report**. Do not pick a different issue.
 
 ### 2. Worktree
+
 ```bash
 WORKTREE="$HOME/.quantara-worktrees/${TASK_ID}"
 cd /Users/nate/aldero.io/quantara
@@ -46,6 +48,7 @@ cd "$WORKTREE"
 All implementation happens inside `$WORKTREE`. Never `cd` back to the main checkout.
 
 ### 3. Plan as a PR comment, before coding
+
 ```bash
 gh issue comment $ISSUE --body "Worker plan ($TASK_ID):
 1. <one-line step>
@@ -55,36 +58,45 @@ gh issue comment $ISSUE --body "Worker plan ($TASK_ID):
 Branch: $BRANCH
 Worktree: $WORKTREE"
 ```
+
 This is your contract with the human. Keep it tight — 3-5 bullets max.
 
 ### 4. Read context before editing
+
 - The issue body, including acceptance criteria and out-of-scope.
 - The relevant `quantara-*` skill (e.g. `quantara-add-hono-route`, `quantara-tests`, `quantara-dynamodb-access`).
 - The files you intend to change. Never edit a file you haven't read.
 
 ### 5. Implement, then verify locally
+
 - Make the smallest diff that satisfies the acceptance criteria.
 - Tests are mandatory for new logic in `backend/`. Use vitest, follow `quantara-tests` conventions.
 - Run **before** committing:
+
 ```bash
 cd "$WORKTREE"
 npm run typecheck --workspaces
 npm run test --workspace=quantara-backend  # if backend changed
 ```
+
 - If tests fail after 3 fix attempts, **stop and escalate** (see Escalation below).
 
 ### 6. Self-review (mandatory)
+
 ```bash
 cd "$WORKTREE"
 git diff main...HEAD
 ```
+
 Check, against the issue's acceptance criteria:
+
 - Does every changed file map to a stated criterion?
 - Are there unrelated changes? Revert them.
 - Diff total > 400 LOC? Escalate.
 - Did you touch a tripwire? Escalate.
 
 **Tripwires** (any of these → escalate, do not auto-merge):
+
 - `backend/infra/**` (Terraform / IaC)
 - `.github/workflows/**` (CI/CD)
 - `package.json` dependency add/remove/upgrade (any workspace)
@@ -92,6 +104,7 @@ Check, against the issue's acceptance criteria:
 - DynamoDB table or GSI schema changes
 
 ### 7. Commit + push
+
 ```bash
 cd "$WORKTREE"
 git add <specific files>  # never `git add -A`
@@ -110,6 +123,7 @@ git push -u origin "$BRANCH"
 ```
 
 ### 8. Open the PR
+
 ```bash
 gh pr create --title "<conventional commit title>" --body "$(cat <<'EOF'
 ## Issue
@@ -165,12 +179,14 @@ Common failures and fixes:
 | Test failure on a previously-green test | Cross-cutting change broke an unrelated test | Read the test, understand the dependency, fix the test or the change |
 
 Cap at **3 fix attempts**. If CI is still red after 3 iterations:
+
 - Label the PR `agent-blocked`
 - Comment with the specific failure and the iterations attempted
 - Set `STATUS: agent-blocked` in your final report
 - Stop. Do not push more attempts.
 
 ### 10. Probe auto-merge capability, then merge or label
+
 ```bash
 AUTO_MERGE_OK=$(gh api repos/quantara-io/quantara --jq '.allow_auto_merge')
 if [ "$AUTO_MERGE_OK" = "true" ]; then
@@ -183,19 +199,20 @@ fi
 If `allow_auto_merge` is `false` (GitHub Free plan / private repo without branch protection), skip auto-merge and add the `awaiting-review` label instead. Set `STATUS: awaiting-review` in your report.
 
 ### 11. Stop
+
 Report back: PR URL, branch, task ID. **Do not** start a new task. **Do not** delete the worktree — that happens on PR close (cleanup script in `/agent-status`).
 
 ## Escalation paths
 
 When any of these happens, label and stop. Do not iterate past the cap.
 
-| Situation | Action |
-|---|---|
-| Tripwire crossed | Add label `needs-human-review` to the PR. Comment the specific tripwire. Do NOT enable auto-merge. |
-| Diff > 400 LOC | Same as tripwire. Note the LOC count in the comment. |
-| Tests failing after 3 attempts | Add label `agent-blocked` to the issue. Comment the failure. Push WIP commits so the human can see. Unassign self. |
-| Conflict with main on push | Try `git rebase origin/main` once. If conflicts, escalate as `agent-blocked`. |
-| Issue underspecified (no acceptance criteria, ambiguous) | Comment on issue with specific questions. Add label `agent-blocked`. Do not guess. |
+| Situation                                                | Action                                                                                                             |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Tripwire crossed                                         | Add label `needs-human-review` to the PR. Comment the specific tripwire. Do NOT enable auto-merge.                 |
+| Diff > 400 LOC                                           | Same as tripwire. Note the LOC count in the comment.                                                               |
+| Tests failing after 3 attempts                           | Add label `agent-blocked` to the issue. Comment the failure. Push WIP commits so the human can see. Unassign self. |
+| Conflict with main on push                               | Try `git rebase origin/main` once. If conflicts, escalate as `agent-blocked`.                                      |
+| Issue underspecified (no acceptance criteria, ambiguous) | Comment on issue with specific questions. Add label `agent-blocked`. Do not guess.                                 |
 
 ## Hard rules (non-negotiable)
 
@@ -211,6 +228,7 @@ When any of these happens, label and stop. Do not iterate past the cap.
 ## Reporting back
 
 When you stop (success or escalation), output exactly this and nothing else:
+
 ```
 TASK_ID: <id>
 ISSUE: #<n>

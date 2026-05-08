@@ -69,11 +69,6 @@ export function rsiUpdate(
   const avgLoss = (prevAvgLoss * (n - 1) + loss) / n;
   // Flat window guard: if no losses, return 100 only when there are gains;
   // if both are 0 (identical closes), return 50 (neutral).
-  const rsiVal =
-    avgLoss === 0
-      ? avgGain > 0
-        ? 100
-        : 50
-      : 100 - 100 / (1 + avgGain / avgLoss);
+  const rsiVal = avgLoss === 0 ? (avgGain > 0 ? 100 : 50) : 100 - 100 / (1 + avgGain / avgLoss);
   return { rsi: rsiVal, avgGain, avgLoss };
 }

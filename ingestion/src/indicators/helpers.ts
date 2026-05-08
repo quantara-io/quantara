@@ -82,10 +82,7 @@ export function wilderSmooth(values: number[], n: number): (number | null)[] {
  * Uses x = [0, 1, ..., n-1] as the independent variable so the slope
  * has units of (y-units per bar).
  */
-export function linearRegressionSlope(
-  values: number[],
-  n: number,
-): (number | null)[] {
+export function linearRegressionSlope(values: number[], n: number): (number | null)[] {
   const result: (number | null)[] = new Array(values.length).fill(null);
 
   // Pre-compute x-mean and sum-of-squared deviations (constant for fixed n).

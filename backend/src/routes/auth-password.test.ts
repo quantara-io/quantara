@@ -3,9 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const alderoPostMock = vi.fn();
 
 vi.mock("../lib/aldero-client.js", async () => {
-  const actual = await vi.importActual<typeof import("../lib/aldero-client.js")>(
-    "../lib/aldero-client.js",
-  );
+  const actual =
+    await vi.importActual<typeof import("../lib/aldero-client.js")>("../lib/aldero-client.js");
   return { ...actual, alderoPost: alderoPostMock };
 });
 

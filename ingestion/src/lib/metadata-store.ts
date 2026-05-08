@@ -19,7 +19,7 @@ export async function getCursor(metaKey: string): Promise<IngestionCursor | null
     new GetCommand({
       TableName: METADATA_TABLE,
       Key: { metaKey },
-    })
+    }),
   );
   return (result.Item as IngestionCursor) ?? null;
 }
@@ -32,6 +32,6 @@ export async function saveCursor(cursor: IngestionCursor): Promise<void> {
         ...cursor,
         updatedAt: new Date().toISOString(),
       },
-    })
+    }),
   );
 }

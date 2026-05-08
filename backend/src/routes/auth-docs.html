@@ -1,148 +1,277 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en" class="h-full bg-white">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Quantara — Auth API Guide</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-<style>
-  html { scroll-behavior: smooth; scroll-padding-top: 1rem; }
-  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  pre { background: #0b1020; color: #e5e7eb; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
-  pre code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  code.inline { background: #f3f4f6; color: #111827; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.875em; }
-  .anchor:target { background: #fef9c3; transition: background 0.6s; }
-  .method { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em; }
-  .method-get { background: #dcfce7; color: #166534; }
-  .method-post { background: #dbeafe; color: #1e40af; }
-  .method-patch { background: #fef3c7; color: #92400e; }
-  .method-delete { background: #fee2e2; color: #991b1b; }
-  .mermaid { background: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; }
-  .toc a { color: #4b5563; }
-  .toc a:hover { color: #4f46e5; }
-  .toc a.active { color: #4f46e5; font-weight: 600; }
-  .callout { border-left: 3px solid; padding: 0.75rem 1rem; border-radius: 0 0.375rem 0.375rem 0; }
-  .callout-info { background: #eff6ff; border-color: #3b82f6; }
-  .callout-warn { background: #fffbeb; border-color: #f59e0b; }
-  .callout-tip { background: #f0fdf4; border-color: #10b981; }
-  table.endpoint { border-collapse: collapse; width: 100%; font-size: 13px; }
-  table.endpoint th, table.endpoint td { border: 1px solid #e5e7eb; padding: 6px 10px; text-align: left; }
-  table.endpoint th { background: #f9fafb; font-weight: 600; }
-  table.endpoint code.inline { font-size: 12px; }
-</style>
-</head>
-<body class="text-gray-800">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quantara — Auth API Guide</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 1rem;
+      }
+      body {
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+      }
+      pre {
+        background: #0b1020;
+        color: #e5e7eb;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        overflow-x: auto;
+        font-size: 12.5px;
+        line-height: 1.55;
+      }
+      pre code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      code.inline {
+        background: #f3f4f6;
+        color: #111827;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.875em;
+      }
+      .anchor:target {
+        background: #fef9c3;
+        transition: background 0.6s;
+      }
+      .method {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0.02em;
+      }
+      .method-get {
+        background: #dcfce7;
+        color: #166534;
+      }
+      .method-post {
+        background: #dbeafe;
+        color: #1e40af;
+      }
+      .method-patch {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      .method-delete {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+      .mermaid {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        padding: 1rem;
+      }
+      .toc a {
+        color: #4b5563;
+      }
+      .toc a:hover {
+        color: #4f46e5;
+      }
+      .toc a.active {
+        color: #4f46e5;
+        font-weight: 600;
+      }
+      .callout {
+        border-left: 3px solid;
+        padding: 0.75rem 1rem;
+        border-radius: 0 0.375rem 0.375rem 0;
+      }
+      .callout-info {
+        background: #eff6ff;
+        border-color: #3b82f6;
+      }
+      .callout-warn {
+        background: #fffbeb;
+        border-color: #f59e0b;
+      }
+      .callout-tip {
+        background: #f0fdf4;
+        border-color: #10b981;
+      }
+      table.endpoint {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 13px;
+      }
+      table.endpoint th,
+      table.endpoint td {
+        border: 1px solid #e5e7eb;
+        padding: 6px 10px;
+        text-align: left;
+      }
+      table.endpoint th {
+        background: #f9fafb;
+        font-weight: 600;
+      }
+      table.endpoint code.inline {
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body class="text-gray-800">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-12">
+      <div class="lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-12">
+        <!-- ============== Sidebar TOC ============== -->
+        <aside class="hidden lg:block">
+          <nav class="sticky top-6 toc text-sm">
+            <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+              Contents
+            </p>
+            <ul class="space-y-1.5">
+              <li><a href="#overview">Overview</a></li>
+              <li><a href="#architecture">Architecture</a></li>
+              <li><a href="#concepts">Concepts</a></li>
+              <li class="pt-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                Flows
+              </li>
+              <li><a href="#signup">Signup</a></li>
+              <li><a href="#login">Login</a></li>
+              <li><a href="#mfa-challenge">MFA challenge</a></li>
+              <li><a href="#oauth">OAuth (Google / Apple)</a></li>
+              <li><a href="#magic-link">Magic link</a></li>
+              <li><a href="#forgot-password">Forgot password</a></li>
+              <li><a href="#reset-password">Reset password</a></li>
+              <li><a href="#mfa-totp">Set up TOTP MFA</a></li>
+              <li><a href="#mfa-email">Set up Email MFA</a></li>
+              <li><a href="#mfa-recovery">Recovery codes</a></li>
+              <li><a href="#passkey-register">Passkey — register</a></li>
+              <li><a href="#passkey-login">Passkey — login</a></li>
+              <li><a href="#passkey-manage">Passkey — list / remove</a></li>
+              <li><a href="#refresh">Token refresh</a></li>
+              <li><a href="#logout">Logout</a></li>
+              <li><a href="#me">Profile</a></li>
+              <li class="pt-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                Reference
+              </li>
+              <li><a href="#state-machine">UI state machine</a></li>
+              <li><a href="#errors">Error envelope</a></li>
+              <li><a href="#gotchas">Gotchas</a></li>
+              <li><a href="#endpoint-index">Endpoint index</a></li>
+            </ul>
+          </nav>
+        </aside>
 
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-12">
-<div class="lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-12">
+        <!-- ============== Main ============== -->
+        <main class="min-w-0">
+          <header class="border-b border-gray-200 pb-6 mb-10">
+            <div class="flex items-baseline gap-3">
+              <h1 class="text-3xl font-bold text-gray-900 tracking-tight">Quantara Auth</h1>
+              <span class="text-sm text-gray-400">API integration guide</span>
+            </div>
+            <p class="mt-2 text-gray-600">
+              End-to-end reference for every authentication flow Quantara supports — signup,
+              password login, OAuth, magic link, password reset, MFA (TOTP / email / recovery
+              codes), and passkeys.
+            </p>
+            <p class="mt-2 text-xs text-gray-400">
+              Canonical reference implementation:
+              <a href="/api/docs/demo" class="text-indigo-600 hover:underline">/api/docs/demo</a>
+              &nbsp;·&nbsp; Interactive API spec:
+              <a href="/api/docs" class="text-indigo-600 hover:underline">/api/docs</a>
+            </p>
+          </header>
 
-<!-- ============== Sidebar TOC ============== -->
-<aside class="hidden lg:block">
-  <nav class="sticky top-6 toc text-sm">
-    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Contents</p>
-    <ul class="space-y-1.5">
-      <li><a href="#overview">Overview</a></li>
-      <li><a href="#architecture">Architecture</a></li>
-      <li><a href="#concepts">Concepts</a></li>
-      <li class="pt-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">Flows</li>
-      <li><a href="#signup">Signup</a></li>
-      <li><a href="#login">Login</a></li>
-      <li><a href="#mfa-challenge">MFA challenge</a></li>
-      <li><a href="#oauth">OAuth (Google / Apple)</a></li>
-      <li><a href="#magic-link">Magic link</a></li>
-      <li><a href="#forgot-password">Forgot password</a></li>
-      <li><a href="#reset-password">Reset password</a></li>
-      <li><a href="#mfa-totp">Set up TOTP MFA</a></li>
-      <li><a href="#mfa-email">Set up Email MFA</a></li>
-      <li><a href="#mfa-recovery">Recovery codes</a></li>
-      <li><a href="#passkey-register">Passkey — register</a></li>
-      <li><a href="#passkey-login">Passkey — login</a></li>
-      <li><a href="#passkey-manage">Passkey — list / remove</a></li>
-      <li><a href="#refresh">Token refresh</a></li>
-      <li><a href="#logout">Logout</a></li>
-      <li><a href="#me">Profile</a></li>
-      <li class="pt-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">Reference</li>
-      <li><a href="#state-machine">UI state machine</a></li>
-      <li><a href="#errors">Error envelope</a></li>
-      <li><a href="#gotchas">Gotchas</a></li>
-      <li><a href="#endpoint-index">Endpoint index</a></li>
-    </ul>
-  </nav>
-</aside>
+          <!-- ===================== Overview ===================== -->
+          <section id="overview" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Overview</h2>
+            <p class="text-gray-700 leading-relaxed">
+              Quantara fronts an external auth service under
+              <code class="inline">/api/auth/*</code>. Your client never talks to the auth service
+              directly — Quantara wraps every upstream call, applies its own validation, and emits a
+              uniform JSON envelope. JWTs returned by Quantara are issued by the auth service and
+              verified against its JWKS.
+            </p>
+            <p class="mt-3 text-gray-700 leading-relaxed">
+              Tokens carry the user's identity. The client stores them, attaches the access token as
+              <code class="inline">Authorization: Bearer …</code> to subsequent calls, and refreshes
+              when expired.
+            </p>
+            <div class="callout callout-info mt-4 text-sm">
+              <strong>Two headers on every call:</strong>
+              <ul class="mt-1 ml-4 list-disc">
+                <li>
+                  <code class="inline">x-api-key: &lt;client key&gt;</code> — identifies which
+                  Quantara client app is calling. Required on all
+                  <code class="inline">/api/*</code> routes <em>except</em>
+                  <code class="inline">/api/auth/oauth/*</code> and
+                  <code class="inline">/api/docs*</code>.
+                </li>
+                <li>
+                  <code class="inline">Authorization: Bearer &lt;accessToken&gt;</code> — required
+                  only on routes that operate on a logged-in user (everything tagged "auth required"
+                  below).
+                </li>
+              </ul>
+            </div>
+          </section>
 
-<!-- ============== Main ============== -->
-<main class="min-w-0">
+          <!-- ===================== Architecture ===================== -->
+          <section id="architecture" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Architecture</h2>
+            <p class="text-gray-700 mb-4">
+              Every auth call is a thin proxy. Quantara also adds: API-key gate, OpenAPI typing,
+              OAuth CSRF cookie, and email-enumeration protection on reset / magic-link requests.
+            </p>
+            <div class="mermaid">
+              sequenceDiagram autonumber participant C as Client (browser / app) participant Q as
+              Quantara API<br />(/api/auth/*) participant A as Auth<br />(/v1/auth/*) participant J
+              as Auth JWKS C->>Q: POST /api/auth/login<br />x-api-key + body Q->>A: POST
+              /v1/auth/login<br />(M2M Basic auth) A-->>Q: { accessToken, refreshToken, user }
+              Q-->>C: { success: true, data: { accessToken, ... } } Note over C: stores tokens<br />(localStorage)
+              C->>Q: GET /api/coach (Bearer JWT) Q->>J: fetch JWKS (cached) J-->>Q: public keys
+              Q->>Q: verify signature, iss, aud, exp Q-->>C: 200 OK
+            </div>
+            <p class="mt-3 text-xs text-gray-500">
+              Quantara never sees the user's password after the initial proxy hop — it's forwarded
+              to the auth service verbatim. No password material is logged or stored on Quantara.
+            </p>
+          </section>
 
-<header class="border-b border-gray-200 pb-6 mb-10">
-  <div class="flex items-baseline gap-3">
-    <h1 class="text-3xl font-bold text-gray-900 tracking-tight">Quantara Auth</h1>
-    <span class="text-sm text-gray-400">API integration guide</span>
-  </div>
-  <p class="mt-2 text-gray-600">End-to-end reference for every authentication flow Quantara supports — signup, password login, OAuth, magic link, password reset, MFA (TOTP / email / recovery codes), and passkeys.</p>
-  <p class="mt-2 text-xs text-gray-400">Canonical reference implementation: <a href="/api/docs/demo" class="text-indigo-600 hover:underline">/api/docs/demo</a> &nbsp;·&nbsp; Interactive API spec: <a href="/api/docs" class="text-indigo-600 hover:underline">/api/docs</a></p>
-</header>
+          <!-- ===================== Concepts ===================== -->
+          <section id="concepts" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Concepts</h2>
 
-<!-- ===================== Overview ===================== -->
-<section id="overview" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Overview</h2>
-  <p class="text-gray-700 leading-relaxed">Quantara fronts an external auth service under <code class="inline">/api/auth/*</code>. Your client never talks to the auth service directly — Quantara wraps every upstream call, applies its own validation, and emits a uniform JSON envelope. JWTs returned by Quantara are issued by the auth service and verified against its JWKS.</p>
-  <p class="mt-3 text-gray-700 leading-relaxed">Tokens carry the user's identity. The client stores them, attaches the access token as <code class="inline">Authorization: Bearer …</code> to subsequent calls, and refreshes when expired.</p>
-  <div class="callout callout-info mt-4 text-sm">
-    <strong>Two headers on every call:</strong>
-    <ul class="mt-1 ml-4 list-disc">
-      <li><code class="inline">x-api-key: &lt;client key&gt;</code> — identifies which Quantara client app is calling. Required on all <code class="inline">/api/*</code> routes <em>except</em> <code class="inline">/api/auth/oauth/*</code> and <code class="inline">/api/docs*</code>.</li>
-      <li><code class="inline">Authorization: Bearer &lt;accessToken&gt;</code> — required only on routes that operate on a logged-in user (everything tagged "auth required" below).</li>
-    </ul>
-  </div>
-</section>
-
-<!-- ===================== Architecture ===================== -->
-<section id="architecture" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Architecture</h2>
-  <p class="text-gray-700 mb-4">Every auth call is a thin proxy. Quantara also adds: API-key gate, OpenAPI typing, OAuth CSRF cookie, and email-enumeration protection on reset / magic-link requests.</p>
-  <div class="mermaid">
-sequenceDiagram
-    autonumber
-    participant C as Client (browser / app)
-    participant Q as Quantara API<br/>(/api/auth/*)
-    participant A as Auth<br/>(/v1/auth/*)
-    participant J as Auth JWKS
-    C->>Q: POST /api/auth/login<br/>x-api-key + body
-    Q->>A: POST /v1/auth/login<br/>(M2M Basic auth)
-    A-->>Q: { accessToken, refreshToken, user }
-    Q-->>C: { success: true, data: { accessToken, ... } }
-    Note over C: stores tokens<br/>(localStorage)
-    C->>Q: GET /api/coach (Bearer JWT)
-    Q->>J: fetch JWKS (cached)
-    J-->>Q: public keys
-    Q->>Q: verify signature, iss, aud, exp
-    Q-->>C: 200 OK
-  </div>
-  <p class="mt-3 text-xs text-gray-500">Quantara never sees the user's password after the initial proxy hop — it's forwarded to the auth service verbatim. No password material is logged or stored on Quantara.</p>
-</section>
-
-<!-- ===================== Concepts ===================== -->
-<section id="concepts" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Concepts</h2>
-
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Response envelope</h3>
-  <p class="text-gray-700 text-sm">Every <code class="inline">/api/auth/*</code> response is wrapped in one of two shapes:</p>
-<pre><code>// Success
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Response envelope</h3>
+            <p class="text-gray-700 text-sm">
+              Every <code class="inline">/api/auth/*</code> response is wrapped in one of two
+              shapes:
+            </p>
+            <pre><code>// Success
 { "success": true, "data": { ... } }
 
 // Error
 { "success": false, "error": { "code": "INVALID_CREDENTIALS", "message": "..." } }</code></pre>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Token lifecycle</h3>
-  <ul class="list-disc ml-6 text-gray-700 text-sm space-y-1">
-    <li><strong>Access token</strong> — short-lived JWT (RS256). Attach to API calls.</li>
-    <li><strong>Refresh token</strong> — long-lived. Exchanged via <code class="inline">POST /api/auth/token/refresh</code> to mint a new access token.</li>
-    <li><strong>MFA token</strong> — single-use, short-lived. Issued when login returns <code class="inline">mfaRequired: true</code>; consumed by <code class="inline">POST /api/auth/mfa/verify</code>.</li>
-  </ul>
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Token lifecycle</h3>
+            <ul class="list-disc ml-6 text-gray-700 text-sm space-y-1">
+              <li><strong>Access token</strong> — short-lived JWT (RS256). Attach to API calls.</li>
+              <li>
+                <strong>Refresh token</strong> — long-lived. Exchanged via
+                <code class="inline">POST /api/auth/token/refresh</code> to mint a new access token.
+              </li>
+              <li>
+                <strong>MFA token</strong> — single-use, short-lived. Issued when login returns
+                <code class="inline">mfaRequired: true</code>; consumed by
+                <code class="inline">POST /api/auth/mfa/verify</code>.
+              </li>
+            </ul>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">JWT claims (after verify)</h3>
-<pre><code>{
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">JWT claims (after verify)</h3>
+            <pre><code>{
   "sub":            "usr_…",          // user ID
   "email":          "you@example.com",
   "email_verified": true,
@@ -155,16 +284,24 @@ sequenceDiagram
   "iat":            1713996400
 }</code></pre>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Where tokens live (the demo's choice)</h3>
-<pre><code>localStorage.setItem("qt_access_token",  accessToken);
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">
+              Where tokens live (the demo's choice)
+            </h3>
+            <pre><code>localStorage.setItem("qt_access_token",  accessToken);
 localStorage.setItem("qt_refresh_token", refreshToken);</code></pre>
-  <div class="callout callout-warn mt-2 text-sm">
-    <strong>Trade-off.</strong> <code class="inline">localStorage</code> is convenient but exposed to any XSS on the same origin. For higher-security surfaces, prefer an HttpOnly cookie set server-side. The demo uses <code class="inline">localStorage</code> for transparency.
-  </div>
+            <div class="callout callout-warn mt-2 text-sm">
+              <strong>Trade-off.</strong> <code class="inline">localStorage</code> is convenient but
+              exposed to any XSS on the same origin. For higher-security surfaces, prefer an
+              HttpOnly cookie set server-side. The demo uses
+              <code class="inline">localStorage</code> for transparency.
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Callback URL conventions</h3>
-  <p class="text-gray-700 text-sm">Email-delivered links and OAuth redirects bring users back to the same single-page app. The demo routes them by inspecting the URL on load:</p>
-<pre><code>const urlParams  = new URLSearchParams(window.location.search);
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Callback URL conventions</h3>
+            <p class="text-gray-700 text-sm">
+              Email-delivered links and OAuth redirects bring users back to the same single-page
+              app. The demo routes them by inspecting the URL on load:
+            </p>
+            <pre><code>const urlParams  = new URLSearchParams(window.location.search);
 const hashParams = new URLSearchParams(window.location.hash.slice(1));
 
 if (hashParams.get("access_token")) {
@@ -176,43 +313,68 @@ if (hashParams.get("access_token")) {
 } else if (urlParams.get("token") && urlParams.get("magic")) {
   // Magic link — verify token immediately
 }</code></pre>
-  <ul class="list-disc ml-6 text-gray-700 text-sm space-y-1 mt-2">
-    <li><strong>OAuth</strong> returns to <code class="inline">{your_app}/#access_token=…&refresh_token=…</code></li>
-    <li><strong>Reset password</strong> emails <code class="inline">{your_app}/?token=…&reset=true</code></li>
-    <li><strong>Magic link</strong> emails <code class="inline">{your_app}/?token=…&magic=true</code></li>
-  </ul>
-</section>
+            <ul class="list-disc ml-6 text-gray-700 text-sm space-y-1 mt-2">
+              <li>
+                <strong>OAuth</strong> returns to
+                <code class="inline">{your_app}/#access_token=…&refresh_token=…</code>
+              </li>
+              <li>
+                <strong>Reset password</strong> emails
+                <code class="inline">{your_app}/?token=…&reset=true</code>
+              </li>
+              <li>
+                <strong>Magic link</strong> emails
+                <code class="inline">{your_app}/?token=…&magic=true</code>
+              </li>
+            </ul>
+          </section>
 
-<!-- ===================== Signup ===================== -->
-<section id="signup" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Signup (email + password)</h2>
-  <p class="text-gray-700 mb-4">Creates a new account and returns tokens immediately. After successful signup the demo prompts the user to add a passkey before sending them to the dashboard.</p>
+          <!-- ===================== Signup ===================== -->
+          <section id="signup" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Signup (email + password)</h2>
+            <p class="text-gray-700 mb-4">
+              Creates a new account and returns tokens immediately. After successful signup the demo
+              prompts the user to add a passkey before sending them to the dashboard.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Endpoint</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/signup</code></td></tr>
-    <tr><th>Auth</th><td>API key only — no Bearer token</td></tr>
-    <tr><th>Body</th><td><code class="inline">{ email, password (min 8), displayName? }</code></td></tr>
-    <tr><th>Returns</th><td><code class="inline">{ accessToken, refreshToken?, user }</code></td></tr>
-    <tr><th>Errors</th><td><code class="inline">409 SIGNUP_FAILED</code> (email exists, password rejected, etc.)</td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Endpoint</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/signup</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Auth</th>
+                <td>API key only — no Bearer token</td>
+              </tr>
+              <tr>
+                <th>Body</th>
+                <td><code class="inline">{ email, password (min 8), displayName? }</code></td>
+              </tr>
+              <tr>
+                <th>Returns</th>
+                <td><code class="inline">{ accessToken, refreshToken?, user }</code></td>
+              </tr>
+              <tr>
+                <th>Errors</th>
+                <td>
+                  <code class="inline">409 SIGNUP_FAILED</code> (email exists, password rejected,
+                  etc.)
+                </td>
+              </tr>
+            </table>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    U->>C: enter email, password, name
-    C->>Q: POST /api/auth/signup
-    Q->>A: POST /v1/auth/signup
-    A-->>Q: { accessToken, user }
-    Q-->>C: { success: true, data }
-    Note over C: store tokens
-    C-->>U: prompt "Set up passkey?"
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant U as User participant C as Client participant Q as
+              Quantara participant A as Auth U->>C: enter email, password, name C->>Q: POST
+              /api/auth/signup Q->>A: POST /v1/auth/signup A-->>Q: { accessToken, user } Q-->>C: {
+              success: true, data } Note over C: store tokens C-->>U: prompt "Set up passkey?"
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>const res = await fetch("/api/auth/signup", {
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>const res = await fetch("/api/auth/signup", {
   method: "POST",
   headers: { "x-api-key": API_KEY, "Content-Type": "application/json" },
   body: JSON.stringify({
@@ -228,41 +390,64 @@ accessToken  = data.data.accessToken;
 refreshToken = data.data.refreshToken || "";
 saveTokens();
 showStep("passkey-prompt");   // offer passkey enrolment</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Login ===================== -->
-<section id="login" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Login (email + password)</h2>
-  <p class="text-gray-700 mb-4">If the user has MFA enrolled, login returns an <strong>MFA challenge</strong> instead of tokens. Both responses use <code class="inline">success: true</code> — the client branches on <code class="inline">data.mfaRequired</code>.</p>
+          <!-- ===================== Login ===================== -->
+          <section id="login" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Login (email + password)</h2>
+            <p class="text-gray-700 mb-4">
+              If the user has MFA enrolled, login returns an <strong>MFA challenge</strong> instead
+              of tokens. Both responses use <code class="inline">success: true</code> — the client
+              branches on <code class="inline">data.mfaRequired</code>.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Endpoint</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/login</code></td></tr>
-    <tr><th>Auth</th><td>API key only</td></tr>
-    <tr><th>Body</th><td><code class="inline">{ email, password }</code></td></tr>
-    <tr><th>Returns (no MFA)</th><td><code class="inline">{ accessToken, refreshToken?, user }</code></td></tr>
-    <tr><th>Returns (MFA)</th><td><code class="inline">{ mfaRequired: true, mfaToken, availableMethods: ["totp", "email"] }</code></td></tr>
-    <tr><th>Errors</th><td><code class="inline">401 INVALID_CREDENTIALS</code>, <code class="inline">423 ACCOUNT_LOCKED</code>, <code class="inline">429</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Endpoint</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/login</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Auth</th>
+                <td>API key only</td>
+              </tr>
+              <tr>
+                <th>Body</th>
+                <td><code class="inline">{ email, password }</code></td>
+              </tr>
+              <tr>
+                <th>Returns (no MFA)</th>
+                <td><code class="inline">{ accessToken, refreshToken?, user }</code></td>
+              </tr>
+              <tr>
+                <th>Returns (MFA)</th>
+                <td>
+                  <code class="inline"
+                    >{ mfaRequired: true, mfaToken, availableMethods: ["totp", "email"] }</code
+                  >
+                </td>
+              </tr>
+              <tr>
+                <th>Errors</th>
+                <td>
+                  <code class="inline">401 INVALID_CREDENTIALS</code>,
+                  <code class="inline">423 ACCOUNT_LOCKED</code>, <code class="inline">429</code>
+                </td>
+              </tr>
+            </table>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    C->>Q: POST /api/auth/login
-    Q->>A: POST /v1/auth/login
-    alt MFA not enrolled
-        A-->>Q: 200 { accessToken, user }
-        Q-->>C: success + tokens
-    else MFA enrolled
-        A-->>Q: 403 mfa_required + mfaToken
-        Q-->>C: 200 { mfaRequired, mfaToken, availableMethods }
-        Note right of C: switch UI to MFA step
-    end
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant C as Client participant Q as Quantara participant A as
+              Auth C->>Q: POST /api/auth/login Q->>A: POST /v1/auth/login alt MFA not enrolled
+              A-->>Q: 200 { accessToken, user } Q-->>C: success + tokens else MFA enrolled A-->>Q:
+              403 mfa_required + mfaToken Q-->>C: 200 { mfaRequired, mfaToken, availableMethods }
+              Note right of C: switch UI to MFA step end
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>const res = await fetch("/api/auth/login", {
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>const res = await fetch("/api/auth/login", {
   method: "POST",
   headers: { "x-api-key": API_KEY, "Content-Type": "application/json" },
   body: JSON.stringify({ email: currentEmail, password }),
@@ -282,46 +467,56 @@ accessToken  = data.data.accessToken;
 refreshToken = data.data.refreshToken || "";
 saveTokens();
 goToDashboard();</code></pre>
-</section>
+          </section>
 
-<!-- ===================== MFA Challenge ===================== -->
-<section id="mfa-challenge" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">MFA challenge (during login)</h2>
-  <p class="text-gray-700 mb-4">After login returns <code class="inline">mfaRequired: true</code>, the client must redeem the <code class="inline">mfaToken</code> by submitting a code via <code class="inline">/api/auth/mfa/verify</code>. The user picks <em>which</em> method (TOTP code from their authenticator, email code, or a recovery code).</p>
+          <!-- ===================== MFA Challenge ===================== -->
+          <section id="mfa-challenge" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">MFA challenge (during login)</h2>
+            <p class="text-gray-700 mb-4">
+              After login returns <code class="inline">mfaRequired: true</code>, the client must
+              redeem the <code class="inline">mfaToken</code> by submitting a code via
+              <code class="inline">/api/auth/mfa/verify</code>. The user picks <em>which</em> method
+              (TOTP code from their authenticator, email code, or a recovery code).
+            </p>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Endpoints</h3>
-  <table class="endpoint mb-4">
-    <tr><th class="w-44">Send email code</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/challenge</code> &nbsp;·&nbsp; body <code class="inline">{ mfaToken }</code></td></tr>
-    <tr><th>Verify any code</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/verify</code> &nbsp;·&nbsp; body <code class="inline">{ mfaToken, code, method, trustDevice? }</code></td></tr>
-  </table>
-  <p class="text-sm text-gray-700"><code class="inline">method</code> is one of <code class="inline">"totp"</code>, <code class="inline">"email"</code>, or <code class="inline">"recovery_code"</code>. <code class="inline">trustDevice: true</code> tells the auth service to skip MFA on this device for ~30 days.</p>
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Endpoints</h3>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-44">Send email code</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/challenge</code> &nbsp;·&nbsp; body
+                  <code class="inline">{ mfaToken }</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Verify any code</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/verify</code> &nbsp;·&nbsp; body
+                  <code class="inline">{ mfaToken, code, method, trustDevice? }</code>
+                </td>
+              </tr>
+            </table>
+            <p class="text-sm text-gray-700">
+              <code class="inline">method</code> is one of <code class="inline">"totp"</code>,
+              <code class="inline">"email"</code>, or <code class="inline">"recovery_code"</code>.
+              <code class="inline">trustDevice: true</code> tells the auth service to skip MFA on
+              this device for ~30 days.
+            </p>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    Note over C: holds mfaToken from login response
-    alt method = email
-        C->>Q: POST /api/auth/mfa/challenge { mfaToken }
-        Q->>A: send email OTP
-        A-->>Q: ok
-        Q-->>C: success
-        Note over C: user reads inbox
-    end
-    C->>Q: POST /api/auth/mfa/verify<br/>{ mfaToken, code, method, trustDevice }
-    Q->>A: POST /v1/auth/mfa/verify
-    alt code valid
-        A-->>Q: { accessToken, refreshToken, user }
-        Q-->>C: success + tokens
-    else code invalid
-        A-->>Q: 401
-        Q-->>C: { error: MFA_FAILED }
-    end
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant C as Client participant Q as Quantara participant A as
+              Auth Note over C: holds mfaToken from login response alt method = email C->>Q: POST
+              /api/auth/mfa/challenge { mfaToken } Q->>A: send email OTP A-->>Q: ok Q-->>C: success
+              Note over C: user reads inbox end C->>Q: POST /api/auth/mfa/verify<br />{ mfaToken,
+              code, method, trustDevice } Q->>A: POST /v1/auth/mfa/verify alt code valid A-->>Q: {
+              accessToken, refreshToken, user } Q-->>C: success + tokens else code invalid A-->>Q:
+              401 Q-->>C: { error: MFA_FAILED } end
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>// (a) When method === "email", request the code first
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>// (a) When method === "email", request the code first
 await fetch("/api/auth/mfa/challenge", {
   method: "POST",
   headers: headers(),
@@ -347,44 +542,70 @@ refreshToken = data.data.refreshToken || "";
 saveTokens();
 goToDashboard();</code></pre>
 
-  <div class="callout callout-tip mt-4 text-sm">
-    <strong>UX detail from the demo.</strong> The 6 single-digit code boxes auto-advance, support pasting (a 6-char paste fans out to all six inputs), and auto-submit on the last digit. 1Password autofill drops the full code into the first box — the demo handles that case by detecting <code class="inline">input.value.length &gt; 1</code> and re-distributing.
-  </div>
-</section>
+            <div class="callout callout-tip mt-4 text-sm">
+              <strong>UX detail from the demo.</strong> The 6 single-digit code boxes auto-advance,
+              support pasting (a 6-char paste fans out to all six inputs), and auto-submit on the
+              last digit. 1Password autofill drops the full code into the first box — the demo
+              handles that case by detecting
+              <code class="inline">input.value.length &gt; 1</code> and re-distributing.
+            </div>
+          </section>
 
-<!-- ===================== OAuth ===================== -->
-<section id="oauth" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">OAuth — Google &amp; Apple</h2>
-  <p class="text-gray-700 mb-4">A full-page redirect to <code class="inline">/api/auth/oauth/{provider}</code>. Quantara sets a signed CSRF cookie (<code class="inline">qoauth_cs</code>, 5 min, HttpOnly), bounces the user through the provider, validates the round-tripped state on callback, and finally returns the user back to your <code class="inline">redirect_uri</code> with tokens in the URL fragment.</p>
+          <!-- ===================== OAuth ===================== -->
+          <section id="oauth" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">OAuth — Google &amp; Apple</h2>
+            <p class="text-gray-700 mb-4">
+              A full-page redirect to <code class="inline">/api/auth/oauth/{provider}</code>.
+              Quantara sets a signed CSRF cookie (<code class="inline">qoauth_cs</code>, 5 min,
+              HttpOnly), bounces the user through the provider, validates the round-tripped state on
+              callback, and finally returns the user back to your
+              <code class="inline">redirect_uri</code> with tokens in the URL fragment.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-44">Initiate</th><td><span class="method method-get">GET</span> <code class="inline">/api/auth/oauth/{provider}?redirect_uri=…</code></td></tr>
-    <tr><th>Callback (browser)</th><td><span class="method method-get">GET</span> <code class="inline">/api/auth/oauth/{provider}/callback</code> — Quantara handles, then redirects</td></tr>
-    <tr><th>Native (mobile SDK)</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/oauth/{provider}/native</code> &nbsp;·&nbsp; <code class="inline">{ idToken, displayName? }</code></td></tr>
-  </table>
-  <p class="text-sm text-gray-700"><code class="inline">{provider}</code> is <code class="inline">google</code> or <code class="inline">apple</code>. OAuth routes are <em>exempt</em> from the API-key requirement (the browser doing the redirect can't carry it).</p>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-44">Initiate</th>
+                <td>
+                  <span class="method method-get">GET</span>
+                  <code class="inline">/api/auth/oauth/{provider}?redirect_uri=…</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Callback (browser)</th>
+                <td>
+                  <span class="method method-get">GET</span>
+                  <code class="inline">/api/auth/oauth/{provider}/callback</code> — Quantara
+                  handles, then redirects
+                </td>
+              </tr>
+              <tr>
+                <th>Native (mobile SDK)</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/oauth/{provider}/native</code> &nbsp;·&nbsp;
+                  <code class="inline">{ idToken, displayName? }</code>
+                </td>
+              </tr>
+            </table>
+            <p class="text-sm text-gray-700">
+              <code class="inline">{provider}</code> is <code class="inline">google</code> or
+              <code class="inline">apple</code>. OAuth routes are <em>exempt</em> from the API-key
+              requirement (the browser doing the redirect can't carry it).
+            </p>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant C as Client
-    participant Q as Quantara
-    participant P as Provider<br/>(Google / Apple)
-    C->>Q: GET /api/auth/oauth/google?redirect_uri=…
-    Q->>Q: set HttpOnly cookie qoauth_cs (signed)
-    Q-->>C: 302 to provider with state=cs
-    C->>P: provider consent screen
-    U->>P: approve
-    P->>Q: GET /callback?code=…&state=cs
-    Q->>Q: verify cookie matches state
-    Q->>P: exchange code → tokens (server-side)
-    P-->>Q: id_token, etc.
-    Q-->>C: 302 redirect_uri#access_token=…&refresh_token=…
-    Note over C: read tokens from window.location.hash
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant U as User participant C as Client participant Q as
+              Quantara participant P as Provider<br />(Google / Apple) C->>Q: GET
+              /api/auth/oauth/google?redirect_uri=… Q->>Q: set HttpOnly cookie qoauth_cs (signed)
+              Q-->>C: 302 to provider with state=cs C->>P: provider consent screen U->>P: approve
+              P->>Q: GET /callback?code=…&state=cs Q->>Q: verify cookie matches state Q->>P:
+              exchange code → tokens (server-side) P-->>Q: id_token, etc. Q-->>C: 302
+              redirect_uri#access_token=…&refresh_token=… Note over C: read tokens from
+              window.location.hash
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>// Initiate — full-page redirect
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>// Initiate — full-page redirect
 function doOAuth(provider) {
   const redirectUri = window.location.origin + window.location.pathname;
   window.location.href =
@@ -402,42 +623,55 @@ if (hashParams.get("access_token")) {
   goToDashboard();
 }</code></pre>
 
-  <div class="callout callout-info mt-4 text-sm">
-    <strong>Native OAuth.</strong> Mobile apps using Sign-in-with-Google / Sign-in-with-Apple SDKs already have an <code class="inline">id_token</code>. POST it to <code class="inline">/api/auth/oauth/{provider}/native</code> instead of running the redirect dance — no browser, no cookies.
-  </div>
-</section>
+            <div class="callout callout-info mt-4 text-sm">
+              <strong>Native OAuth.</strong> Mobile apps using Sign-in-with-Google /
+              Sign-in-with-Apple SDKs already have an <code class="inline">id_token</code>. POST it
+              to <code class="inline">/api/auth/oauth/{provider}/native</code> instead of running
+              the redirect dance — no browser, no cookies.
+            </div>
+          </section>
 
-<!-- ===================== Magic link ===================== -->
-<section id="magic-link" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Magic link</h2>
-  <p class="text-gray-700 mb-4">Passwordless: request a one-time link, then click it from email to sign in. Token TTL ≈ 10 minutes. The request endpoint is <strong>enumeration-safe</strong> — it always returns 200 whether the email exists or not.</p>
+          <!-- ===================== Magic link ===================== -->
+          <section id="magic-link" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Magic link</h2>
+            <p class="text-gray-700 mb-4">
+              Passwordless: request a one-time link, then click it from email to sign in. Token TTL
+              ≈ 10 minutes. The request endpoint is <strong>enumeration-safe</strong> — it always
+              returns 200 whether the email exists or not.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Request link</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/magic-link/request</code> &nbsp;·&nbsp; <code class="inline">{ email, redirectUri? }</code></td></tr>
-    <tr><th>Verify</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/magic-link/verify</code> &nbsp;·&nbsp; <code class="inline">{ token }</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Request link</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/magic-link/request</code> &nbsp;·&nbsp;
+                  <code class="inline">{ email, redirectUri? }</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Verify</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/magic-link/verify</code> &nbsp;·&nbsp;
+                  <code class="inline">{ token }</code>
+                </td>
+              </tr>
+            </table>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    participant M as Mailbox
-    C->>Q: POST /api/auth/magic-link/request { email }
-    Q->>A: POST /v1/auth/magic-link/request
-    A->>M: deliver email with link<br/>{redirectUri}?token=…&magic=true
-    Q-->>C: 200 (always — enumeration-safe)
-    U->>M: click link
-    M->>C: open redirectUri with ?token&magic=true
-    C->>Q: POST /api/auth/magic-link/verify { token }
-    Q->>A: POST /v1/auth/magic-link/verify
-    A-->>Q: { accessToken, user }<br/>OR mfaRequired
-    Q-->>C: success + tokens (or MFA challenge)
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant U as User participant C as Client participant Q as
+              Quantara participant A as Auth participant M as Mailbox C->>Q: POST
+              /api/auth/magic-link/request { email } Q->>A: POST /v1/auth/magic-link/request A->>M:
+              deliver email with link<br />{redirectUri}?token=…&magic=true Q-->>C: 200 (always —
+              enumeration-safe) U->>M: click link M->>C: open redirectUri with ?token&magic=true
+              C->>Q: POST /api/auth/magic-link/verify { token } Q->>A: POST
+              /v1/auth/magic-link/verify A-->>Q: { accessToken, user }<br />OR mfaRequired Q-->>C:
+              success + tokens (or MFA challenge)
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>// (1) Request the link
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>// (1) Request the link
 await fetch("/api/auth/magic-link/request", {
   method: "POST", headers: headers(),
   body: JSON.stringify({ email: currentEmail }),
@@ -467,60 +701,84 @@ async function doMagicLinkVerify(token) {
     showMfaStep();
   }
 }</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Forgot password ===================== -->
-<section id="forgot-password" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Forgot password — request reset</h2>
-  <p class="text-gray-700 mb-4">Sends a reset link to the user's email. Like magic-link request, this is <strong>enumeration-safe</strong> — always 200.</p>
+          <!-- ===================== Forgot password ===================== -->
+          <section id="forgot-password" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Forgot password — request reset</h2>
+            <p class="text-gray-700 mb-4">
+              Sends a reset link to the user's email. Like magic-link request, this is
+              <strong>enumeration-safe</strong> — always 200.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Endpoint</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/password/reset-request</code></td></tr>
-    <tr><th>Body</th><td><code class="inline">{ email, redirectUri? }</code> — <code class="inline">redirectUri</code> defaults to the current origin</td></tr>
-    <tr><th>Returns</th><td>Always <code class="inline">200 { message: "..." }</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Endpoint</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/password/reset-request</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Body</th>
+                <td>
+                  <code class="inline">{ email, redirectUri? }</code> —
+                  <code class="inline">redirectUri</code> defaults to the current origin
+                </td>
+              </tr>
+              <tr>
+                <th>Returns</th>
+                <td>Always <code class="inline">200 { message: "..." }</code></td>
+              </tr>
+            </table>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>const res = await fetch("/api/auth/password/reset-request", {
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>const res = await fetch("/api/auth/password/reset-request", {
   method: "POST", headers: headers(),
   body: JSON.stringify({ email: currentEmail }),
 });
 // Always treat as success; show "if an account exists, check your email"</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Reset password ===================== -->
-<section id="reset-password" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Reset password — set new</h2>
-  <p class="text-gray-700 mb-4">Triggered when the user lands back on your app from the reset email at <code class="inline">…/?token=…&amp;reset=true</code>. Token TTL ≈ 1 hour.</p>
+          <!-- ===================== Reset password ===================== -->
+          <section id="reset-password" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Reset password — set new</h2>
+            <p class="text-gray-700 mb-4">
+              Triggered when the user lands back on your app from the reset email at
+              <code class="inline">…/?token=…&amp;reset=true</code>. Token TTL ≈ 1 hour.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Endpoint</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/password/reset</code></td></tr>
-    <tr><th>Body</th><td><code class="inline">{ token, newPassword (min 8) }</code></td></tr>
-    <tr><th>Errors</th><td><code class="inline">400 RESET_FAILED</code> (expired / used / invalid token)</td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Endpoint</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/password/reset</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Body</th>
+                <td><code class="inline">{ token, newPassword (min 8) }</code></td>
+              </tr>
+              <tr>
+                <th>Errors</th>
+                <td>
+                  <code class="inline">400 RESET_FAILED</code> (expired / used / invalid token)
+                </td>
+              </tr>
+            </table>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    Note over C: page loaded with ?token=…&reset=true
-    U->>C: enter new password + confirm
-    C->>Q: POST /api/auth/password/reset
-    Q->>A: POST /v1/auth/password/reset
-    alt token valid
-        A-->>Q: ok
-        Q-->>C: success
-        Note over C: prompt user to sign in with new password
-    else token expired or used
-        A-->>Q: 400
-        Q-->>C: { error: RESET_FAILED }
-    end
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant U as User participant C as Client participant Q as
+              Quantara participant A as Auth Note over C: page loaded with ?token=…&reset=true
+              U->>C: enter new password + confirm C->>Q: POST /api/auth/password/reset Q->>A: POST
+              /v1/auth/password/reset alt token valid A-->>Q: ok Q-->>C: success Note over C: prompt
+              user to sign in with new password else token expired or used A-->>Q: 400 Q-->>C: {
+              error: RESET_FAILED } end
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>const params = new URLSearchParams(window.location.search);
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>const params = new URLSearchParams(window.location.search);
 const token = params.get("token");
 if (!token) return showError("reset-pw-error", "Invalid reset link");
 
@@ -534,43 +792,59 @@ if (data.success) {
 } else {
   showError("reset-pw-error", data.error?.message || "Reset failed");
 }</code></pre>
-</section>
+          </section>
 
-<!-- ===================== TOTP MFA setup ===================== -->
-<section id="mfa-totp" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Set up TOTP MFA (authenticator app)</h2>
-  <p class="text-gray-700 mb-4">User must already be signed in. The setup endpoint returns a secret + <code class="inline">otpauth://</code> URI for QR rendering. The user scans with Google Authenticator / 1Password / Authy / etc., enters the 6-digit code from the app, and Quantara enrolls the factor and returns recovery codes.</p>
+          <!-- ===================== TOTP MFA setup ===================== -->
+          <section id="mfa-totp" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">
+              Set up TOTP MFA (authenticator app)
+            </h2>
+            <p class="text-gray-700 mb-4">
+              User must already be signed in. The setup endpoint returns a secret +
+              <code class="inline">otpauth://</code> URI for QR rendering. The user scans with
+              Google Authenticator / 1Password / Authy / etc., enters the 6-digit code from the app,
+              and Quantara enrolls the factor and returns recovery codes.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Setup</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/totp/setup</code> · auth required · empty body</td></tr>
-    <tr><th>Returns</th><td><code class="inline">{ secret, otpAuthUri | qrCodeUrl | uri }</code></td></tr>
-    <tr><th>Confirm</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/totp/confirm</code> · auth required · <code class="inline">{ code }</code> (6 digits)</td></tr>
-    <tr><th>Returns</th><td><code class="inline">{ recoveryCodes: [...] }</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Setup</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/totp/setup</code> · auth required · empty body
+                </td>
+              </tr>
+              <tr>
+                <th>Returns</th>
+                <td><code class="inline">{ secret, otpAuthUri | qrCodeUrl | uri }</code></td>
+              </tr>
+              <tr>
+                <th>Confirm</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/totp/confirm</code> · auth required ·
+                  <code class="inline">{ code }</code> (6 digits)
+                </td>
+              </tr>
+              <tr>
+                <th>Returns</th>
+                <td><code class="inline">{ recoveryCodes: [...] }</code></td>
+              </tr>
+            </table>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    participant App as Authenticator app
-    C->>Q: POST /mfa/totp/setup (Bearer)
-    Q->>A: POST /v1/auth/mfa/totp/setup
-    A-->>Q: { secret, otpAuthUri }
-    Q-->>C: { secret, otpAuthUri }
-    C->>U: render QR code (qrserver.com)
-    U->>App: scan QR — app starts generating codes
-    U->>C: enter 6-digit code
-    C->>Q: POST /mfa/totp/confirm { code }
-    Q->>A: POST /v1/auth/mfa/totp/confirm
-    A-->>Q: { recoveryCodes }
-    Q-->>C: { recoveryCodes }
-    Note over C: show recovery codes — user must save them
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant U as User participant C as Client participant Q as
+              Quantara participant A as Auth participant App as Authenticator app C->>Q: POST
+              /mfa/totp/setup (Bearer) Q->>A: POST /v1/auth/mfa/totp/setup A-->>Q: { secret,
+              otpAuthUri } Q-->>C: { secret, otpAuthUri } C->>U: render QR code (qrserver.com)
+              U->>App: scan QR — app starts generating codes U->>C: enter 6-digit code C->>Q: POST
+              /mfa/totp/confirm { code } Q->>A: POST /v1/auth/mfa/totp/confirm A-->>Q: {
+              recoveryCodes } Q-->>C: { recoveryCodes } Note over C: show recovery codes — user must
+              save them
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>// (1) Generate the secret + URI
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>// (1) Generate the secret + URI
 const res = await fetch("/api/auth/mfa/totp/setup", {
   method: "POST", headers: headers(),
 });
@@ -595,41 +869,54 @@ if (cdata.success) {
     cdata.data.recoveryCodes.join("\n");
 }</code></pre>
 
-  <div class="callout callout-warn mt-4 text-sm">
-    <strong>Recovery codes are shown once.</strong> Make the user copy / download / print them before dismissing the dialog. They can later regenerate (invalidating the old set) via <code class="inline">POST /api/auth/mfa/recovery/regenerate</code>.
-  </div>
-</section>
+            <div class="callout callout-warn mt-4 text-sm">
+              <strong>Recovery codes are shown once.</strong> Make the user copy / download / print
+              them before dismissing the dialog. They can later regenerate (invalidating the old
+              set) via <code class="inline">POST /api/auth/mfa/recovery/regenerate</code>.
+            </div>
+          </section>
 
-<!-- ===================== Email MFA setup ===================== -->
-<section id="mfa-email" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Set up Email MFA</h2>
-  <p class="text-gray-700 mb-4">Same shape as TOTP, but the "second factor" is a 6-digit code sent to the user's email. Useful as a fallback when the user doesn't want to install an authenticator app.</p>
+          <!-- ===================== Email MFA setup ===================== -->
+          <section id="mfa-email" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Set up Email MFA</h2>
+            <p class="text-gray-700 mb-4">
+              Same shape as TOTP, but the "second factor" is a 6-digit code sent to the user's
+              email. Useful as a fallback when the user doesn't want to install an authenticator
+              app.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Setup (sends code)</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/email/setup</code> · auth required · empty body</td></tr>
-    <tr><th>Confirm</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/email/confirm</code> · auth required · <code class="inline">{ code }</code></td></tr>
-    <tr><th>Returns</th><td><code class="inline">{ recoveryCodes: [...] }</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Setup (sends code)</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/email/setup</code> · auth required · empty body
+                </td>
+              </tr>
+              <tr>
+                <th>Confirm</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/email/confirm</code> · auth required ·
+                  <code class="inline">{ code }</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Returns</th>
+                <td><code class="inline">{ recoveryCodes: [...] }</code></td>
+              </tr>
+            </table>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    participant M as Mailbox
-    C->>Q: POST /mfa/email/setup
-    Q->>A: send 6-digit code to user email
-    A->>M: email
-    Q-->>C: success
-    Note over C: user reads inbox
-    C->>Q: POST /mfa/email/confirm { code }
-    Q->>A: verify
-    A-->>Q: { recoveryCodes }
-    Q-->>C: success — Email MFA enrolled
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant C as Client participant Q as Quantara participant A as
+              Auth participant M as Mailbox C->>Q: POST /mfa/email/setup Q->>A: send 6-digit code to
+              user email A->>M: email Q-->>C: success Note over C: user reads inbox C->>Q: POST
+              /mfa/email/confirm { code } Q->>A: verify A-->>Q: { recoveryCodes } Q-->>C: success —
+              Email MFA enrolled
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>// (1) Tell the auth service to send the email
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>// (1) Tell the auth service to send the email
 await fetch("/api/auth/mfa/email/setup", {
   method: "POST", headers: headers(),
 });
@@ -639,22 +926,57 @@ const res = await fetch("/api/auth/mfa/email/confirm", {
   method: "POST", headers: headers(),
   body: JSON.stringify({ code }),
 });</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Recovery codes ===================== -->
-<section id="mfa-recovery" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Recovery codes &amp; MFA management</h2>
+          <!-- ===================== Recovery codes ===================== -->
+          <section id="mfa-recovery" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">
+              Recovery codes &amp; MFA management
+            </h2>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-44">List enrolled methods</th><td><span class="method method-get">GET</span> <code class="inline">/api/auth/mfa/methods</code> · auth required</td></tr>
-    <tr><th>Regenerate codes</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/recovery/regenerate</code> · auth required</td></tr>
-    <tr><th>List authenticators</th><td><span class="method method-get">GET</span> <code class="inline">/api/auth/mfa/authenticators</code> · auth required</td></tr>
-    <tr><th>Remove authenticator</th><td><span class="method method-delete">DELETE</span> <code class="inline">/api/auth/mfa/authenticators/{id}</code> · auth required</td></tr>
-    <tr><th>Use during login</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/mfa/verify</code> with <code class="inline">method: "recovery_code"</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-44">List enrolled methods</th>
+                <td>
+                  <span class="method method-get">GET</span>
+                  <code class="inline">/api/auth/mfa/methods</code> · auth required
+                </td>
+              </tr>
+              <tr>
+                <th>Regenerate codes</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/recovery/regenerate</code> · auth required
+                </td>
+              </tr>
+              <tr>
+                <th>List authenticators</th>
+                <td>
+                  <span class="method method-get">GET</span>
+                  <code class="inline">/api/auth/mfa/authenticators</code> · auth required
+                </td>
+              </tr>
+              <tr>
+                <th>Remove authenticator</th>
+                <td>
+                  <span class="method method-delete">DELETE</span>
+                  <code class="inline">/api/auth/mfa/authenticators/{id}</code> · auth required
+                </td>
+              </tr>
+              <tr>
+                <th>Use during login</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/mfa/verify</code> with
+                  <code class="inline">method: "recovery_code"</code>
+                </td>
+              </tr>
+            </table>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2"><code class="inline">/methods</code> response shape</h3>
-<pre><code>{
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">
+              <code class="inline">/methods</code> response shape
+            </h3>
+            <pre><code>{
   "success": true,
   "data": {
     "available": ["totp", "email"],
@@ -666,10 +988,15 @@ const res = await fetch("/api/auth/mfa/email/confirm", {
     ]
   }
 }</code></pre>
-  <p class="text-sm text-gray-700 mt-2">Type strings vary slightly — the auth service returns <code class="inline">otp</code> / <code class="inline">oob</code>, the demo also handles <code class="inline">totp</code> / <code class="inline">email</code>. Treat both as synonyms when rendering UI.</p>
+            <p class="text-sm text-gray-700 mt-2">
+              Type strings vary slightly — the auth service returns
+              <code class="inline">otp</code> / <code class="inline">oob</code>, the demo also
+              handles <code class="inline">totp</code> / <code class="inline">email</code>. Treat
+              both as synonyms when rendering UI.
+            </p>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Recovery code login</h3>
-<pre><code>await fetch("/api/auth/mfa/verify", {
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Recovery code login</h3>
+            <pre><code>await fetch("/api/auth/mfa/verify", {
   method: "POST", headers: headers(),
   body: JSON.stringify({
     mfaToken,                    // from /login response
@@ -677,22 +1004,46 @@ const res = await fetch("/api/auth/mfa/email/confirm", {
     method: "recovery_code",     // backend translates to the auth service's "recovery"
   }),
 });</code></pre>
-  <p class="text-sm text-gray-700 mt-2">Each recovery code is single-use. The remaining count is in <code class="inline">enrolled[].remaining_codes</code>. When low, prompt the user to regenerate.</p>
-</section>
+            <p class="text-sm text-gray-700 mt-2">
+              Each recovery code is single-use. The remaining count is in
+              <code class="inline">enrolled[].remaining_codes</code>. When low, prompt the user to
+              regenerate.
+            </p>
+          </section>
 
-<!-- ===================== Passkey register ===================== -->
-<section id="passkey-register" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Passkey — registration</h2>
-  <p class="text-gray-700 mb-4">User must already be signed in. Two-step WebAuthn: get options, call <code class="inline">navigator.credentials.create()</code>, ship the assertion back. The base64url ↔ Uint8Array conversion is the only fiddly bit.</p>
+          <!-- ===================== Passkey register ===================== -->
+          <section id="passkey-register" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Passkey — registration</h2>
+            <p class="text-gray-700 mb-4">
+              User must already be signed in. Two-step WebAuthn: get options, call
+              <code class="inline">navigator.credentials.create()</code>, ship the assertion back.
+              The base64url ↔ Uint8Array conversion is the only fiddly bit.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-44">Get options</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/passkey/register/options</code> · auth required · empty body</td></tr>
-    <tr><th>Verify</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/passkey/register/verify</code> · auth required · <code class="inline">{ response, name }</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-44">Get options</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/passkey/register/options</code> · auth required ·
+                  empty body
+                </td>
+              </tr>
+              <tr>
+                <th>Verify</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/passkey/register/verify</code> · auth required ·
+                  <code class="inline">{ response, name }</code>
+                </td>
+              </tr>
+            </table>
 
-  <div class="callout callout-warn text-sm">
-    <strong>Wrapper format.</strong> The auth service expects the WebAuthn credential under a <code class="inline">response</code> key, with a sibling <code class="inline">name</code> string for the human-readable passkey label:
-    <pre class="mt-2"><code>{
+            <div class="callout callout-warn text-sm">
+              <strong>Wrapper format.</strong> The auth service expects the WebAuthn credential
+              under a <code class="inline">response</code> key, with a sibling
+              <code class="inline">name</code> string for the human-readable passkey label:
+              <pre class="mt-2"><code>{
   "response": {
     "id": "…", "rawId": "…", "type": "public-key",
     "response": {
@@ -703,33 +1054,22 @@ const res = await fetch("/api/auth/mfa/email/confirm", {
   },
   "name": "1Password"
 }</code></pre>
-  </div>
+            </div>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    participant W as Authenticator<br/>(Touch ID, 1Password, security key, …)
-    C->>Q: POST /passkey/register/options (Bearer)
-    Q->>A: get registration challenge
-    A-->>Q: PublicKeyCredentialCreationOptions
-    Q-->>C: { options }
-    Note over C: convert challenge + user.id<br/>from base64url → Uint8Array
-    C->>W: navigator.credentials.create({ publicKey })
-    W->>U: prompt biometric / touch
-    U->>W: approve
-    W-->>C: PublicKeyCredential
-    Note over C: convert ArrayBuffers → base64url<br/>wrap as { response, name }
-    C->>Q: POST /passkey/register/verify { response, name }
-    Q->>A: verify attestation
-    A-->>Q: ok
-    Q-->>C: success
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant U as User participant C as Client participant Q as
+              Quantara participant A as Auth participant W as Authenticator<br />(Touch ID,
+              1Password, security key, …) C->>Q: POST /passkey/register/options (Bearer) Q->>A: get
+              registration challenge A-->>Q: PublicKeyCredentialCreationOptions Q-->>C: { options }
+              Note over C: convert challenge + user.id<br />from base64url → Uint8Array C->>W:
+              navigator.credentials.create({ publicKey }) W->>U: prompt biometric / touch U->>W:
+              approve W-->>C: PublicKeyCredential Note over C: convert ArrayBuffers → base64url<br />wrap
+              as { response, name } C->>Q: POST /passkey/register/verify { response, name } Q->>A:
+              verify attestation A-->>Q: ok Q-->>C: success
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>const optRes = await fetch("/api/auth/passkey/register/options", {
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>const optRes = await fetch("/api/auth/passkey/register/options", {
   method: "POST", headers: headers(),
 });
 const optData = await optRes.json();
@@ -778,41 +1118,49 @@ await fetch("/api/auth/passkey/register/verify", {
   method: "POST", headers: headers(),
   body: JSON.stringify(body),
 });</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Passkey login ===================== -->
-<section id="passkey-login" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Passkey — login</h2>
-  <p class="text-gray-700 mb-4">Same shape as registration, but no Bearer token (the user is signing in). If you know the email up front, send it in <code class="inline">options</code> so the platform shows the user only their own keys.</p>
+          <!-- ===================== Passkey login ===================== -->
+          <section id="passkey-login" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Passkey — login</h2>
+            <p class="text-gray-700 mb-4">
+              Same shape as registration, but no Bearer token (the user is signing in). If you know
+              the email up front, send it in <code class="inline">options</code> so the platform
+              shows the user only their own keys.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-44">Get options</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/passkey/login/options</code> · public · <code class="inline">{ email? }</code></td></tr>
-    <tr><th>Verify</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/passkey/login/verify</code> · public · <code class="inline">{ response }</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-44">Get options</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/passkey/login/options</code> · public ·
+                  <code class="inline">{ email? }</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Verify</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/passkey/login/verify</code> · public ·
+                  <code class="inline">{ response }</code>
+                </td>
+              </tr>
+            </table>
 
-  <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant C as Client
-    participant Q as Quantara
-    participant A as Auth
-    participant W as Authenticator
-    C->>Q: POST /passkey/login/options { email? }
-    Q->>A: get authentication challenge
-    A-->>Q: PublicKeyCredentialRequestOptions
-    Q-->>C: { options }
-    C->>W: navigator.credentials.get({ publicKey })
-    W->>U: prompt biometric / touch
-    U->>W: approve
-    W-->>C: PublicKeyCredential (assertion)
-    C->>Q: POST /passkey/login/verify { response }
-    Q->>A: verify signature
-    A-->>Q: { accessToken, refreshToken, user }
-    Q-->>C: success + tokens
-  </div>
+            <div class="mermaid">
+              sequenceDiagram participant U as User participant C as Client participant Q as
+              Quantara participant A as Auth participant W as Authenticator C->>Q: POST
+              /passkey/login/options { email? } Q->>A: get authentication challenge A-->>Q:
+              PublicKeyCredentialRequestOptions Q-->>C: { options } C->>W:
+              navigator.credentials.get({ publicKey }) W->>U: prompt biometric / touch U->>W:
+              approve W-->>C: PublicKeyCredential (assertion) C->>Q: POST /passkey/login/verify {
+              response } Q->>A: verify signature A-->>Q: { accessToken, refreshToken, user } Q-->>C:
+              success + tokens
+            </div>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
-<pre><code>const optRes = await fetch("/api/auth/passkey/login/options", {
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Reference implementation</h3>
+            <pre><code>const optRes = await fetch("/api/auth/passkey/login/options", {
   method: "POST", headers: headers(),
   body: JSON.stringify({ email: currentEmail || undefined }),
 });
@@ -853,19 +1201,31 @@ if (data.success) {
   saveTokens();
   goToDashboard();
 }</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Passkey list / remove ===================== -->
-<section id="passkey-manage" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Passkey — list &amp; remove</h2>
+          <!-- ===================== Passkey list / remove ===================== -->
+          <section id="passkey-manage" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Passkey — list &amp; remove</h2>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">List</th><td><span class="method method-get">GET</span> <code class="inline">/api/auth/passkey/list</code> · auth required</td></tr>
-    <tr><th>Remove</th><td><span class="method method-delete">DELETE</span> <code class="inline">/api/auth/passkey/{id}</code> · auth required</td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">List</th>
+                <td>
+                  <span class="method method-get">GET</span>
+                  <code class="inline">/api/auth/passkey/list</code> · auth required
+                </td>
+              </tr>
+              <tr>
+                <th>Remove</th>
+                <td>
+                  <span class="method method-delete">DELETE</span>
+                  <code class="inline">/api/auth/passkey/{id}</code> · auth required
+                </td>
+              </tr>
+            </table>
 
-  <h3 class="font-semibold text-gray-900 mt-5 mb-2">Per-passkey shape</h3>
-<pre><code>{
+            <h3 class="font-semibold text-gray-900 mt-5 mb-2">Per-passkey shape</h3>
+            <pre><code>{
   "credentialId": "…",
   "name":         "1Password",          // user-set label
   "deviceType":   "platform" | "cross-platform",
@@ -873,20 +1233,36 @@ if (data.success) {
   "enrolledAt":   "2024-08-01T…",
   "lastUsedAt":   "2024-09-12T…" | null
 }</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Refresh ===================== -->
-<section id="refresh" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Token refresh</h2>
-  <p class="text-gray-700 mb-4">When the access token nears expiry (or you get a <code class="inline">401</code>), exchange the refresh token for a fresh pair. The refresh token may rotate — always store whatever comes back.</p>
+          <!-- ===================== Refresh ===================== -->
+          <section id="refresh" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Token refresh</h2>
+            <p class="text-gray-700 mb-4">
+              When the access token nears expiry (or you get a <code class="inline">401</code>),
+              exchange the refresh token for a fresh pair. The refresh token may rotate — always
+              store whatever comes back.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Endpoint</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/token/refresh</code></td></tr>
-    <tr><th>Body</th><td><code class="inline">{ refreshToken }</code></td></tr>
-    <tr><th>Returns</th><td><code class="inline">{ accessToken, refreshToken? }</code></td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Endpoint</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/token/refresh</code>
+                </td>
+              </tr>
+              <tr>
+                <th>Body</th>
+                <td><code class="inline">{ refreshToken }</code></td>
+              </tr>
+              <tr>
+                <th>Returns</th>
+                <td><code class="inline">{ accessToken, refreshToken? }</code></td>
+              </tr>
+            </table>
 
-<pre><code>const res = await fetch("/api/auth/token/refresh", {
+            <pre><code>const res = await fetch("/api/auth/token/refresh", {
   method: "POST", headers: headers(),
   body: JSON.stringify({ refreshToken }),
 });
@@ -896,168 +1272,450 @@ if (data.success) {
   refreshToken = data.data.refreshToken || refreshToken;
   saveTokens();
 }</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Logout ===================== -->
-<section id="logout" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Logout</h2>
-  <p class="text-gray-700 mb-4">Best-effort revocation. Call the endpoint, then drop your local tokens. The endpoint always returns 200 so a transient auth service outage doesn't trap the user signed in.</p>
+          <!-- ===================== Logout ===================== -->
+          <section id="logout" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Logout</h2>
+            <p class="text-gray-700 mb-4">
+              Best-effort revocation. Call the endpoint, then drop your local tokens. The endpoint
+              always returns 200 so a transient auth service outage doesn't trap the user signed in.
+            </p>
 
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Endpoint</th><td><span class="method method-post">POST</span> <code class="inline">/api/auth/logout</code> · auth required · empty body</td></tr>
-  </table>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Endpoint</th>
+                <td>
+                  <span class="method method-post">POST</span>
+                  <code class="inline">/api/auth/logout</code> · auth required · empty body
+                </td>
+              </tr>
+            </table>
 
-<pre><code>try { await fetch("/api/auth/logout", { method: "POST", headers: headers() }); } catch {}
+            <pre><code>try { await fetch("/api/auth/logout", { method: "POST", headers: headers() }); } catch {}
 clearTokens();
 showStep("email");</code></pre>
-</section>
+          </section>
 
-<!-- ===================== Profile ===================== -->
-<section id="me" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Profile (<code class="inline">/me</code>)</h2>
-  <table class="endpoint mb-4">
-    <tr><th class="w-32">Get profile</th><td><span class="method method-get">GET</span> <code class="inline">/api/auth/me</code> · auth required — read straight from JWT claims, no DB hit</td></tr>
-    <tr><th>Update</th><td><span class="method method-patch">PATCH</span> <code class="inline">/api/auth/me</code> · auth required · <code class="inline">{ displayName?, avatarUrl? }</code></td></tr>
-  </table>
-  <p class="text-sm text-gray-700">After a profile update, refresh the access token to pick up the new claims.</p>
-</section>
+          <!-- ===================== Profile ===================== -->
+          <section id="me" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">
+              Profile (<code class="inline">/me</code>)
+            </h2>
+            <table class="endpoint mb-4">
+              <tr>
+                <th class="w-32">Get profile</th>
+                <td>
+                  <span class="method method-get">GET</span>
+                  <code class="inline">/api/auth/me</code> · auth required — read straight from JWT
+                  claims, no DB hit
+                </td>
+              </tr>
+              <tr>
+                <th>Update</th>
+                <td>
+                  <span class="method method-patch">PATCH</span>
+                  <code class="inline">/api/auth/me</code> · auth required ·
+                  <code class="inline">{ displayName?, avatarUrl? }</code>
+                </td>
+              </tr>
+            </table>
+            <p class="text-sm text-gray-700">
+              After a profile update, refresh the access token to pick up the new claims.
+            </p>
+          </section>
 
-<!-- ===================== UI state machine ===================== -->
-<section id="state-machine" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">UI state machine</h2>
-  <p class="text-gray-700 mb-4">How the demo's six steps relate. Reproduce this shape in your own client and most edge cases (deep links, MFA, post-signup passkey prompt) fall out for free.</p>
-  <div class="mermaid">
-stateDiagram-v2
-    [*] --> email
-    email --> password: enter email + Continue
-    email --> oauth_redirect: click Google / Apple
-    oauth_redirect --> dashboard: callback returns tokens
+          <!-- ===================== UI state machine ===================== -->
+          <section id="state-machine" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">UI state machine</h2>
+            <p class="text-gray-700 mb-4">
+              How the demo's six steps relate. Reproduce this shape in your own client and most edge
+              cases (deep links, MFA, post-signup passkey prompt) fall out for free.
+            </p>
+            <div class="mermaid">
+              stateDiagram-v2 [*] --> email email --> password: enter email + Continue email -->
+              oauth_redirect: click Google / Apple oauth_redirect --> dashboard: callback returns
+              tokens password --> dashboard: login OK (no MFA) password --> mfa: login → mfaRequired
+              password --> passkey_prompt: signup OK password --> reset_request: click "Forgot
+              password?" password --> magic_sent: click "Magic link" password --> passkey_login:
+              click "Passkey" reset_request --> reset_sent: email dispatched magic_sent -->
+              reset_sent: email dispatched mfa --> dashboard: code OK mfa --> mfa: code wrong →
+              retry passkey_login --> dashboard: assertion OK passkey_prompt --> dashboard: skip OR
+              setup dashboard --> [*]: logout note right of dashboard MFA setup, passkey add, token
+              refresh, profile, logout all live here. end note
+            </div>
+          </section>
 
-    password --> dashboard: login OK (no MFA)
-    password --> mfa: login → mfaRequired
-    password --> passkey_prompt: signup OK
-    password --> reset_request: click "Forgot password?"
-    password --> magic_sent: click "Magic link"
-    password --> passkey_login: click "Passkey"
+          <!-- ===================== Errors ===================== -->
+          <section id="errors" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Error envelope</h2>
+            <p class="text-gray-700 mb-2">
+              All non-2xx responses use this shape (and so do some 200s, e.g. enumeration-safe
+              paths):
+            </p>
+            <pre><code>{ "success": false, "error": { "code": "INVALID_CREDENTIALS", "message": "..." } }</code></pre>
 
-    reset_request --> reset_sent: email dispatched
-    magic_sent --> reset_sent: email dispatched
+            <table class="endpoint mt-4">
+              <tr>
+                <th>Status</th>
+                <th>Common <code class="inline">error.code</code></th>
+                <th>Meaning</th>
+              </tr>
+              <tr>
+                <td>400</td>
+                <td>
+                  <code class="inline">RESET_FAILED</code>,
+                  <code class="inline">INVALID_CODE</code>,
+                  <code class="inline">INVALID_STATE</code>,
+                  <code class="inline">PASSKEY_FAILED</code>,
+                  <code class="inline">OAUTH_ERROR</code>
+                </td>
+                <td>Validation / token / signature failed</td>
+              </tr>
+              <tr>
+                <td>401</td>
+                <td>
+                  <code class="inline">UNAUTHORIZED</code>,
+                  <code class="inline">INVALID_CREDENTIALS</code>,
+                  <code class="inline">INVALID_TOKEN</code>, <code class="inline">MFA_FAILED</code>,
+                  <code class="inline">OAUTH_FAILED</code>
+                </td>
+                <td>Bearer missing/expired or credentials wrong</td>
+              </tr>
+              <tr>
+                <td>403</td>
+                <td><code class="inline">FORBIDDEN</code></td>
+                <td>IP not whitelisted (docs only) or role denied</td>
+              </tr>
+              <tr>
+                <td>409</td>
+                <td>
+                  <code class="inline">CONFLICT</code>, <code class="inline">SIGNUP_FAILED</code>
+                </td>
+                <td>Resource conflict (e.g. email exists)</td>
+              </tr>
+              <tr>
+                <td>423</td>
+                <td><code class="inline">ACCOUNT_LOCKED</code></td>
+                <td>Too many failed attempts — back off</td>
+              </tr>
+              <tr>
+                <td>429</td>
+                <td><code class="inline">RATE_LIMITED</code></td>
+                <td>Auth service throttled — respect <code class="inline">Retry-After</code></td>
+              </tr>
+            </table>
+          </section>
 
-    mfa --> dashboard: code OK
-    mfa --> mfa: code wrong → retry
+          <!-- ===================== Gotchas ===================== -->
+          <section id="gotchas" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Gotchas</h2>
+            <ol class="list-decimal ml-6 space-y-3 text-gray-700 text-sm">
+              <li>
+                <strong
+                  ><code class="inline">mfaRequired</code> is a <em>success</em> response.</strong
+                >
+                Don't branch on the HTTP status — branch on
+                <code class="inline">data.data.mfaRequired</code>. Both the no-MFA and MFA paths
+                return <code class="inline">200 { success: true }</code>.
+              </li>
+              <li>
+                <strong>Recovery codes are not <code class="inline">recovery</code>.</strong> Send
+                <code class="inline">method: "recovery_code"</code> on the wire — the backend
+                translates to the auth service's <code class="inline">recovery</code>.
+              </li>
+              <li>
+                <strong>Passkey body is double-wrapped.</strong> Both register and login expect
+                <code class="inline">{ response: &lt;PublicKeyCredential&gt;, name? }</code> — not
+                the raw credential. The inner <code class="inline">response</code> field on the
+                credential itself is also called <code class="inline">response</code>; yes, you nest
+                twice.
+              </li>
+              <li>
+                <strong>WebAuthn types are binary.</strong> The browser hands you ArrayBuffers; the
+                auth service wants base64url. Convert in both directions (challenge → Uint8Array on
+                the way in, ArrayBuffer → base64url on the way out).
+              </li>
+              <li>
+                <strong>OAuth tokens come back in the URL fragment</strong> (<code class="inline"
+                  >#access_token=…</code
+                >), not the query string. Read from
+                <code class="inline">window.location.hash</code>, then
+                <code class="inline">history.replaceState</code> to scrub the URL.
+              </li>
+              <li>
+                <strong>Enumeration-safe endpoints always 200.</strong> Don't show "user exists" on
+                <code class="inline">/password/reset-request</code> or
+                <code class="inline">/magic-link/request</code> — show "if the account exists, check
+                your email" regardless of outcome.
+              </li>
+              <li>
+                <strong>Cookies are only used for OAuth state.</strong> No auth cookies — JWTs only.
+                The <code class="inline">qoauth_cs</code> cookie is signed, HttpOnly, 5-min TTL,
+                scoped to <code class="inline">/api/auth/oauth</code>.
+              </li>
+              <li>
+                <strong>Time skew breaks TOTP.</strong> If the user's authenticator phone clock
+                drifts &gt;60s, codes will fail. Tell them to sync system time.
+              </li>
+              <li>
+                <strong>MFA method type strings vary.</strong> The auth service says
+                <code class="inline">otp</code> / <code class="inline">oob</code>; some surfaces use
+                <code class="inline">totp</code> / <code class="inline">email</code>. Treat both as
+                synonyms when listing enrolled methods.
+              </li>
+              <li>
+                <strong>Refresh tokens may rotate.</strong> Always overwrite the stored refresh
+                token with whatever comes back from <code class="inline">/token/refresh</code>; the
+                previous one may be revoked.
+              </li>
+            </ol>
+          </section>
 
-    passkey_login --> dashboard: assertion OK
-    passkey_prompt --> dashboard: skip OR setup
+          <!-- ===================== Endpoint index ===================== -->
+          <section id="endpoint-index" class="anchor mb-12">
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Endpoint index</h2>
+            <table class="endpoint">
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Purpose</th>
+              </tr>
+              <tr>
+                <td><span class="method method-get">GET</span></td>
+                <td><code class="inline">/api/auth/config</code></td>
+                <td>—</td>
+                <td>Discover available methods</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/signup</code></td>
+                <td>—</td>
+                <td>Create account</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/login</code></td>
+                <td>—</td>
+                <td>Sign in (may return MFA challenge)</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/logout</code></td>
+                <td>Bearer</td>
+                <td>Revoke session</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/token/refresh</code></td>
+                <td>—</td>
+                <td>Mint new access token</td>
+              </tr>
+              <tr>
+                <td><span class="method method-get">GET</span></td>
+                <td><code class="inline">/api/auth/me</code></td>
+                <td>Bearer</td>
+                <td>Current user (from JWT)</td>
+              </tr>
+              <tr>
+                <td><span class="method method-patch">PATCH</span></td>
+                <td><code class="inline">/api/auth/me</code></td>
+                <td>Bearer</td>
+                <td>Update profile</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/magic-link/request</code></td>
+                <td>—</td>
+                <td>Email magic link (enumeration-safe)</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/magic-link/verify</code></td>
+                <td>—</td>
+                <td>Redeem magic link</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/password/reset-request</code></td>
+                <td>—</td>
+                <td>Email reset link (enumeration-safe)</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/password/reset</code></td>
+                <td>—</td>
+                <td>Set new password using reset token</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/email/verify/send</code></td>
+                <td>Bearer</td>
+                <td>Send email verification code</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/email/verify/confirm</code></td>
+                <td>Bearer</td>
+                <td>Confirm email verification</td>
+              </tr>
+              <tr>
+                <td><span class="method method-get">GET</span></td>
+                <td><code class="inline">/api/auth/mfa/methods</code></td>
+                <td>Bearer</td>
+                <td>List enrolled MFA methods</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/mfa/totp/setup</code></td>
+                <td>Bearer</td>
+                <td>Generate TOTP secret + QR</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/mfa/totp/confirm</code></td>
+                <td>Bearer</td>
+                <td>Enrol TOTP, return recovery codes</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/mfa/email/setup</code></td>
+                <td>Bearer</td>
+                <td>Send email setup code</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/mfa/email/confirm</code></td>
+                <td>Bearer</td>
+                <td>Enrol email MFA, return recovery codes</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/mfa/challenge</code></td>
+                <td>—</td>
+                <td>Send email code during login</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/mfa/verify</code></td>
+                <td>—</td>
+                <td>Verify code (totp / email / recovery_code)</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/mfa/recovery/regenerate</code></td>
+                <td>Bearer</td>
+                <td>New recovery codes (invalidates old)</td>
+              </tr>
+              <tr>
+                <td><span class="method method-get">GET</span></td>
+                <td><code class="inline">/api/auth/mfa/authenticators</code></td>
+                <td>Bearer</td>
+                <td>List authenticators</td>
+              </tr>
+              <tr>
+                <td><span class="method method-delete">DELETE</span></td>
+                <td><code class="inline">/api/auth/mfa/authenticators/{id}</code></td>
+                <td>Bearer</td>
+                <td>Remove authenticator</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/passkey/register/options</code></td>
+                <td>Bearer</td>
+                <td>WebAuthn registration challenge</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/passkey/register/verify</code></td>
+                <td>Bearer</td>
+                <td>Verify attestation</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/passkey/login/options</code></td>
+                <td>—</td>
+                <td>WebAuthn authentication challenge</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/passkey/login/verify</code></td>
+                <td>—</td>
+                <td>Verify assertion → tokens</td>
+              </tr>
+              <tr>
+                <td><span class="method method-get">GET</span></td>
+                <td><code class="inline">/api/auth/passkey/list</code></td>
+                <td>Bearer</td>
+                <td>List registered passkeys</td>
+              </tr>
+              <tr>
+                <td><span class="method method-delete">DELETE</span></td>
+                <td><code class="inline">/api/auth/passkey/{id}</code></td>
+                <td>Bearer</td>
+                <td>Remove passkey</td>
+              </tr>
+              <tr>
+                <td><span class="method method-get">GET</span></td>
+                <td><code class="inline">/api/auth/oauth/{provider}</code></td>
+                <td>—</td>
+                <td>Begin OAuth (302)</td>
+              </tr>
+              <tr>
+                <td><span class="method method-get">GET</span></td>
+                <td><code class="inline">/api/auth/oauth/{provider}/callback</code></td>
+                <td>—</td>
+                <td>Provider callback</td>
+              </tr>
+              <tr>
+                <td><span class="method method-post">POST</span></td>
+                <td><code class="inline">/api/auth/oauth/{provider}/native</code></td>
+                <td>—</td>
+                <td>Mobile native ID-token exchange</td>
+              </tr>
+            </table>
+          </section>
 
-    dashboard --> [*]: logout
-    note right of dashboard
-      MFA setup, passkey add,
-      token refresh, profile,
-      logout all live here.
-    end note
-  </div>
-</section>
+          <footer class="border-t border-gray-200 pt-6 mt-12 text-xs text-gray-400">
+            <p>
+              Reference implementation:
+              <a href="/api/docs/demo" class="text-indigo-600 hover:underline">/api/docs/demo</a>
+              &nbsp;·&nbsp; OpenAPI spec:
+              <a href="/api/openapi.json" class="text-indigo-600 hover:underline"
+                >/api/openapi.json</a
+              >
+              &nbsp;·&nbsp; Interactive console:
+              <a href="/api/docs" class="text-indigo-600 hover:underline">/api/docs</a>
+            </p>
+          </footer>
+        </main>
+      </div>
+    </div>
 
-<!-- ===================== Errors ===================== -->
-<section id="errors" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Error envelope</h2>
-  <p class="text-gray-700 mb-2">All non-2xx responses use this shape (and so do some 200s, e.g. enumeration-safe paths):</p>
-<pre><code>{ "success": false, "error": { "code": "INVALID_CREDENTIALS", "message": "..." } }</code></pre>
+    <script>
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
 
-  <table class="endpoint mt-4">
-    <tr><th>Status</th><th>Common <code class="inline">error.code</code></th><th>Meaning</th></tr>
-    <tr><td>400</td><td><code class="inline">RESET_FAILED</code>, <code class="inline">INVALID_CODE</code>, <code class="inline">INVALID_STATE</code>, <code class="inline">PASSKEY_FAILED</code>, <code class="inline">OAUTH_ERROR</code></td><td>Validation / token / signature failed</td></tr>
-    <tr><td>401</td><td><code class="inline">UNAUTHORIZED</code>, <code class="inline">INVALID_CREDENTIALS</code>, <code class="inline">INVALID_TOKEN</code>, <code class="inline">MFA_FAILED</code>, <code class="inline">OAUTH_FAILED</code></td><td>Bearer missing/expired or credentials wrong</td></tr>
-    <tr><td>403</td><td><code class="inline">FORBIDDEN</code></td><td>IP not whitelisted (docs only) or role denied</td></tr>
-    <tr><td>409</td><td><code class="inline">CONFLICT</code>, <code class="inline">SIGNUP_FAILED</code></td><td>Resource conflict (e.g. email exists)</td></tr>
-    <tr><td>423</td><td><code class="inline">ACCOUNT_LOCKED</code></td><td>Too many failed attempts — back off</td></tr>
-    <tr><td>429</td><td><code class="inline">RATE_LIMITED</code></td><td>Auth service throttled — respect <code class="inline">Retry-After</code></td></tr>
-  </table>
-</section>
-
-<!-- ===================== Gotchas ===================== -->
-<section id="gotchas" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Gotchas</h2>
-  <ol class="list-decimal ml-6 space-y-3 text-gray-700 text-sm">
-    <li><strong><code class="inline">mfaRequired</code> is a <em>success</em> response.</strong> Don't branch on the HTTP status — branch on <code class="inline">data.data.mfaRequired</code>. Both the no-MFA and MFA paths return <code class="inline">200 { success: true }</code>.</li>
-    <li><strong>Recovery codes are not <code class="inline">recovery</code>.</strong> Send <code class="inline">method: "recovery_code"</code> on the wire — the backend translates to the auth service's <code class="inline">recovery</code>.</li>
-    <li><strong>Passkey body is double-wrapped.</strong> Both register and login expect <code class="inline">{ response: &lt;PublicKeyCredential&gt;, name? }</code> — not the raw credential. The inner <code class="inline">response</code> field on the credential itself is also called <code class="inline">response</code>; yes, you nest twice.</li>
-    <li><strong>WebAuthn types are binary.</strong> The browser hands you ArrayBuffers; the auth service wants base64url. Convert in both directions (challenge → Uint8Array on the way in, ArrayBuffer → base64url on the way out).</li>
-    <li><strong>OAuth tokens come back in the URL fragment</strong> (<code class="inline">#access_token=…</code>), not the query string. Read from <code class="inline">window.location.hash</code>, then <code class="inline">history.replaceState</code> to scrub the URL.</li>
-    <li><strong>Enumeration-safe endpoints always 200.</strong> Don't show "user exists" on <code class="inline">/password/reset-request</code> or <code class="inline">/magic-link/request</code> — show "if the account exists, check your email" regardless of outcome.</li>
-    <li><strong>Cookies are only used for OAuth state.</strong> No auth cookies — JWTs only. The <code class="inline">qoauth_cs</code> cookie is signed, HttpOnly, 5-min TTL, scoped to <code class="inline">/api/auth/oauth</code>.</li>
-    <li><strong>Time skew breaks TOTP.</strong> If the user's authenticator phone clock drifts &gt;60s, codes will fail. Tell them to sync system time.</li>
-    <li><strong>MFA method type strings vary.</strong> The auth service says <code class="inline">otp</code> / <code class="inline">oob</code>; some surfaces use <code class="inline">totp</code> / <code class="inline">email</code>. Treat both as synonyms when listing enrolled methods.</li>
-    <li><strong>Refresh tokens may rotate.</strong> Always overwrite the stored refresh token with whatever comes back from <code class="inline">/token/refresh</code>; the previous one may be revoked.</li>
-  </ol>
-</section>
-
-<!-- ===================== Endpoint index ===================== -->
-<section id="endpoint-index" class="anchor mb-12">
-  <h2 class="text-2xl font-bold text-gray-900 mb-3">Endpoint index</h2>
-  <table class="endpoint">
-    <tr><th>Method</th><th>Path</th><th>Auth</th><th>Purpose</th></tr>
-    <tr><td><span class="method method-get">GET</span></td><td><code class="inline">/api/auth/config</code></td><td>—</td><td>Discover available methods</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/signup</code></td><td>—</td><td>Create account</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/login</code></td><td>—</td><td>Sign in (may return MFA challenge)</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/logout</code></td><td>Bearer</td><td>Revoke session</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/token/refresh</code></td><td>—</td><td>Mint new access token</td></tr>
-    <tr><td><span class="method method-get">GET</span></td><td><code class="inline">/api/auth/me</code></td><td>Bearer</td><td>Current user (from JWT)</td></tr>
-    <tr><td><span class="method method-patch">PATCH</span></td><td><code class="inline">/api/auth/me</code></td><td>Bearer</td><td>Update profile</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/magic-link/request</code></td><td>—</td><td>Email magic link (enumeration-safe)</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/magic-link/verify</code></td><td>—</td><td>Redeem magic link</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/password/reset-request</code></td><td>—</td><td>Email reset link (enumeration-safe)</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/password/reset</code></td><td>—</td><td>Set new password using reset token</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/email/verify/send</code></td><td>Bearer</td><td>Send email verification code</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/email/verify/confirm</code></td><td>Bearer</td><td>Confirm email verification</td></tr>
-    <tr><td><span class="method method-get">GET</span></td><td><code class="inline">/api/auth/mfa/methods</code></td><td>Bearer</td><td>List enrolled MFA methods</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/mfa/totp/setup</code></td><td>Bearer</td><td>Generate TOTP secret + QR</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/mfa/totp/confirm</code></td><td>Bearer</td><td>Enrol TOTP, return recovery codes</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/mfa/email/setup</code></td><td>Bearer</td><td>Send email setup code</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/mfa/email/confirm</code></td><td>Bearer</td><td>Enrol email MFA, return recovery codes</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/mfa/challenge</code></td><td>—</td><td>Send email code during login</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/mfa/verify</code></td><td>—</td><td>Verify code (totp / email / recovery_code)</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/mfa/recovery/regenerate</code></td><td>Bearer</td><td>New recovery codes (invalidates old)</td></tr>
-    <tr><td><span class="method method-get">GET</span></td><td><code class="inline">/api/auth/mfa/authenticators</code></td><td>Bearer</td><td>List authenticators</td></tr>
-    <tr><td><span class="method method-delete">DELETE</span></td><td><code class="inline">/api/auth/mfa/authenticators/{id}</code></td><td>Bearer</td><td>Remove authenticator</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/passkey/register/options</code></td><td>Bearer</td><td>WebAuthn registration challenge</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/passkey/register/verify</code></td><td>Bearer</td><td>Verify attestation</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/passkey/login/options</code></td><td>—</td><td>WebAuthn authentication challenge</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/passkey/login/verify</code></td><td>—</td><td>Verify assertion → tokens</td></tr>
-    <tr><td><span class="method method-get">GET</span></td><td><code class="inline">/api/auth/passkey/list</code></td><td>Bearer</td><td>List registered passkeys</td></tr>
-    <tr><td><span class="method method-delete">DELETE</span></td><td><code class="inline">/api/auth/passkey/{id}</code></td><td>Bearer</td><td>Remove passkey</td></tr>
-    <tr><td><span class="method method-get">GET</span></td><td><code class="inline">/api/auth/oauth/{provider}</code></td><td>—</td><td>Begin OAuth (302)</td></tr>
-    <tr><td><span class="method method-get">GET</span></td><td><code class="inline">/api/auth/oauth/{provider}/callback</code></td><td>—</td><td>Provider callback</td></tr>
-    <tr><td><span class="method method-post">POST</span></td><td><code class="inline">/api/auth/oauth/{provider}/native</code></td><td>—</td><td>Mobile native ID-token exchange</td></tr>
-  </table>
-</section>
-
-<footer class="border-t border-gray-200 pt-6 mt-12 text-xs text-gray-400">
-  <p>Reference implementation: <a href="/api/docs/demo" class="text-indigo-600 hover:underline">/api/docs/demo</a> &nbsp;·&nbsp; OpenAPI spec: <a href="/api/openapi.json" class="text-indigo-600 hover:underline">/api/openapi.json</a> &nbsp;·&nbsp; Interactive console: <a href="/api/docs" class="text-indigo-600 hover:underline">/api/docs</a></p>
-</footer>
-
-</main>
-</div>
-</div>
-
-<script>
-  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
-
-  // Active TOC link on scroll
-  const sections = document.querySelectorAll("section[id]");
-  const links = document.querySelectorAll(".toc a");
-  const linkById = {};
-  links.forEach(a => { const id = a.getAttribute("href").slice(1); linkById[id] = a; });
-  const obs = new IntersectionObserver((entries) => {
-    entries.forEach(e => {
-      if (e.isIntersecting) {
-        links.forEach(a => a.classList.remove("active"));
-        linkById[e.target.id]?.classList.add("active");
-      }
-    });
-  }, { rootMargin: "-30% 0px -65% 0px" });
-  sections.forEach(s => obs.observe(s));
-</script>
-
-</body>
+      // Active TOC link on scroll
+      const sections = document.querySelectorAll("section[id]");
+      const links = document.querySelectorAll(".toc a");
+      const linkById = {};
+      links.forEach((a) => {
+        const id = a.getAttribute("href").slice(1);
+        linkById[id] = a;
+      });
+      const obs = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((e) => {
+            if (e.isIntersecting) {
+              links.forEach((a) => a.classList.remove("active"));
+              linkById[e.target.id]?.classList.add("active");
+            }
+          });
+        },
+        { rootMargin: "-30% 0px -65% 0px" },
+      );
+      sections.forEach((s) => obs.observe(s));
+    </script>
+  </body>
 </html>

@@ -20,8 +20,8 @@ export const DEFAULT_TIMEFRAME_WEIGHTS: Record<Timeframe, number> = {
   "1m": 0,
   "5m": 0,
   "15m": 0.15,
-  "1h": 0.20,
-  "4h": 0.30,
+  "1h": 0.2,
+  "4h": 0.3,
   "1d": 0.35,
 };
 
@@ -145,9 +145,7 @@ export function blendTimeframeVotes(
   }
 
   // Step 3: Collect non-null, non-gated votes and renormalize weights.
-  const votingTfs: Timeframe[] = TIMEFRAMES.filter(
-    (tf) => perTimeframeVotes[tf] !== null,
-  );
+  const votingTfs: Timeframe[] = TIMEFRAMES.filter((tf) => perTimeframeVotes[tf] !== null);
 
   const rawWeightSum = votingTfs.reduce((sum, tf) => sum + weights[tf], 0);
 

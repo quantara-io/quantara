@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
+
 import { stochastic } from "./stochastic.js";
 
-function makeOHLC(n = 200, seed = 7): {
+function makeOHLC(
+  n = 200,
+  seed = 7,
+): {
   high: number[];
   low: number[];
   close: number[];
@@ -13,7 +17,7 @@ function makeOHLC(n = 200, seed = 7): {
   let s = seed;
   for (let i = 0; i < n; i++) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 200;
+    const move = (((s >>> 0) % 201) - 100) / 200;
     val = Math.max(1, val + move);
     const spread = 0.5 + ((s >>> 8) % 100) / 100;
     high.push(val + spread / 2);

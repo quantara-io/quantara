@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
+
 import { obv, obvUpdate } from "./obv.js";
 
-function makeClosesVolume(n = 200, seed = 77): {
+function makeClosesVolume(
+  n = 200,
+  seed = 77,
+): {
   close: number[];
   volume: number[];
 } {
@@ -11,7 +15,7 @@ function makeClosesVolume(n = 200, seed = 77): {
   let s = seed;
   for (let i = 0; i < n; i++) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const move = ((s >>> 0) % 201 - 100) / 300;
+    const move = (((s >>> 0) % 201) - 100) / 300;
     val = Math.max(1, val + move);
     close.push(val);
     volume.push(1000 + ((s >>> 4) % 5000));

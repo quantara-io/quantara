@@ -52,9 +52,7 @@ describe("backfillCandles — OHLCV numeric coercion", () => {
     const stringRow = [openTime, "79757.2", "79800.0", "79700.5", "79780.1", "12.345"];
 
     // First call returns one row; second call returns empty to end the while loop.
-    fetchOHLCVMock
-      .mockResolvedValueOnce([stringRow])
-      .mockResolvedValueOnce([]);
+    fetchOHLCVMock.mockResolvedValueOnce([stringRow]).mockResolvedValueOnce([]);
 
     const { backfillCandles } = await import("./backfill.js");
     await backfillCandles({
@@ -91,9 +89,7 @@ describe("backfillCandles — OHLCV numeric coercion", () => {
     // Binance returns OHLCV as numbers — must still work correctly.
     const numberRow = [openTime, 79668.35, 79710.0, 79600.0, 79680.0, 8.5];
 
-    fetchOHLCVMock
-      .mockResolvedValueOnce([numberRow])
-      .mockResolvedValueOnce([]);
+    fetchOHLCVMock.mockResolvedValueOnce([numberRow]).mockResolvedValueOnce([]);
 
     const { backfillCandles } = await import("./backfill.js");
     await backfillCandles({
@@ -120,9 +116,7 @@ describe("backfillCandles — OHLCV numeric coercion", () => {
     // Simulate a row where some OHLCV fields are null.
     const nullRow = [openTime, null, null, null, null, null];
 
-    fetchOHLCVMock
-      .mockResolvedValueOnce([nullRow])
-      .mockResolvedValueOnce([]);
+    fetchOHLCVMock.mockResolvedValueOnce([nullRow]).mockResolvedValueOnce([]);
 
     const { backfillCandles } = await import("./backfill.js");
     await backfillCandles({

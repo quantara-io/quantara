@@ -8,7 +8,7 @@ export async function archiveCandles(
   exchange: string,
   pair: string,
   date: string,
-  data: unknown[]
+  data: unknown[],
 ): Promise<void> {
   const safePair = pair.replace("/", "-");
   const key = `candles/${exchange}/${safePair}/${date}.json`;
@@ -19,7 +19,7 @@ export async function archiveCandles(
       Key: key,
       Body: JSON.stringify(data),
       ContentType: "application/json",
-    })
+    }),
   );
 
   console.log(`[S3Archive] Uploaded ${data.length} records to s3://${BUCKET}/${key}`);

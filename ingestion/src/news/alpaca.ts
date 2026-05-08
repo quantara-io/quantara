@@ -1,4 +1,5 @@
 import { SSMClient, GetParametersCommand } from "@aws-sdk/client-ssm";
+
 import type { NewsRecord } from "./types.js";
 
 const BASE_URL = "https://data.alpaca.markets/v1beta1/news";

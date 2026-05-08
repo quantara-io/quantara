@@ -1,11 +1,13 @@
 import ccxt from "ccxt";
 import type { Candle, Timeframe } from "@quantara/shared";
-import { EXCHANGES, PAIRS, getSymbol, type ExchangeId, type TradingPair } from "./config.js";
-import { storeCandles } from "../lib/candle-store.js";
-import { storePriceSnapshots } from "../lib/store.js";
-import type { PriceSnapshot } from "./fetcher.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
+
+import { storeCandles } from "../lib/candle-store.js";
+import { storePriceSnapshots } from "../lib/store.js";
+
+import { EXCHANGES, PAIRS, getSymbol, type ExchangeId, type TradingPair } from "./config.js";
+import type { PriceSnapshot } from "./fetcher.js";
 
 const WATCHDOG_INTERVAL_MS = 60_000;
 const STALE_THRESHOLD_MS = 5 * 60_000;
@@ -20,8 +22,7 @@ interface StreamState {
 const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const METADATA_TABLE =
-  process.env.TABLE_METADATA ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
+  process.env.TABLE_METADATA ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
 
 export class MarketStreamManager {
   private streams: Map<string, StreamState> = new Map();
@@ -80,7 +81,9 @@ export class MarketStreamManager {
     }
 
     this.watchdogTimer = setInterval(() => this.watchdog(), WATCHDOG_INTERVAL_MS);
-    console.log(`[Stream] Started ${this.streams.size} streams across ${this.exchanges.size} exchanges`);
+    console.log(
+      `[Stream] Started ${this.streams.size} streams across ${this.exchanges.size} exchanges`,
+    );
   }
 
   async stop(): Promise<void> {
@@ -205,7 +208,9 @@ export class MarketStreamManager {
     for (const [key, state] of this.streams) {
       const isStale = !state.lastDataAt || now - state.lastDataAt > STALE_THRESHOLD_MS;
       if (isStale) {
-        console.warn(`[Watchdog] Stream ${key} stale (last data ${state.lastDataAt ? Math.round((now - state.lastDataAt) / 1000) + "s ago" : "never"})`);
+        console.warn(
+          `[Watchdog] Stream ${key} stale (last data ${state.lastDataAt ? Math.round((now - state.lastDataAt) / 1000) + "s ago" : "never"})`,
+        );
       }
       const map = pairStaleness.get(state.pair);
       if (map) map[state.exchange] = isStale;
@@ -214,18 +219,20 @@ export class MarketStreamManager {
     // Persist staleness to ingestion-metadata so the indicator handler's gateStale
     // check has a live producer (P2 #1 fix).
     for (const [pair, stalenessMap] of pairStaleness) {
-      ddbClient.send(
-        new PutCommand({
-          TableName: METADATA_TABLE,
-          Item: {
-            metaKey: `exchange-staleness#${pair}`,
-            staleness: stalenessMap,
-            updatedAt: new Date().toISOString(),
-          },
-        }),
-      ).catch((err: Error) => {
-        console.error(`[Watchdog] Failed to persist staleness for ${pair}: ${err.message}`);
-      });
+      ddbClient
+        .send(
+          new PutCommand({
+            TableName: METADATA_TABLE,
+            Item: {
+              metaKey: `exchange-staleness#${pair}`,
+              staleness: stalenessMap,
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+        )
+        .catch((err: Error) => {
+          console.error(`[Watchdog] Failed to persist staleness for ${pair}: ${err.message}`);
+        });
     }
   }
 }

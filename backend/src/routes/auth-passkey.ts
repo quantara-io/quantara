@@ -1,10 +1,14 @@
 // @ts-nocheck — proxy routes return dynamic Aldero responses
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
+
 import { alderoPost, alderoGet, alderoDelete, AlderoError } from "../lib/aldero-client.js";
 import {
-  PasskeyOptionsResponse, PasskeyVerifyRequest, PasskeyListResponse,
-  AuthSuccessResponse, SuccessResponse,
+  PasskeyOptionsResponse,
+  PasskeyVerifyRequest,
+  PasskeyListResponse,
+  AuthSuccessResponse,
+  SuccessResponse,
 } from "../lib/schemas/auth.js";
 import { ErrorResponse } from "../lib/schemas/common.js";
 import { requireAuth } from "../middleware/require-auth.js";
@@ -22,10 +26,14 @@ const registerOptionsRoute = createRoute({
   path: "/passkey/register/options",
   tags: ["Passkeys"],
   summary: "Get WebAuthn registration options",
-  description: "Returns a challenge and options for navigator.credentials.create(). User must be authenticated.",
+  description:
+    "Returns a challenge and options for navigator.credentials.create(). User must be authenticated.",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: PasskeyOptionsResponse } }, description: "Registration challenge" },
+    200: {
+      content: { "application/json": { schema: PasskeyOptionsResponse } },
+      description: "Registration challenge",
+    },
   },
 });
 
@@ -41,12 +49,19 @@ const registerVerifyRoute = createRoute({
   path: "/passkey/register/verify",
   tags: ["Passkeys"],
   summary: "Verify WebAuthn registration",
-  description: "Submit the credential from navigator.credentials.create() to complete passkey registration.",
+  description:
+    "Submit the credential from navigator.credentials.create() to complete passkey registration.",
   security: [{ Bearer: [] }],
   request: { body: { content: { "application/json": { schema: PasskeyVerifyRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Passkey registered" },
-    400: { content: { "application/json": { schema: ErrorResponse } }, description: "Verification failed" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Passkey registered",
+    },
+    400: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Verification failed",
+    },
   },
 });
 
@@ -58,7 +73,10 @@ authPasskey.openapi(registerVerifyRoute, async (c) => {
     return c.json({ success: true as const, data: { message: "Passkey registered" } } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "PASSKEY_FAILED", message: err.message } } as any, 400);
+      return c.json(
+        { success: false as const, error: { code: "PASSKEY_FAILED", message: err.message } } as any,
+        400,
+      );
     }
     throw err;
   }
@@ -70,7 +88,8 @@ const loginOptionsRoute = createRoute({
   path: "/passkey/login/options",
   tags: ["Passkeys"],
   summary: "Get WebAuthn login options",
-  description: "Returns a challenge and allowed credentials for navigator.credentials.get(). No authentication required.",
+  description:
+    "Returns a challenge and allowed credentials for navigator.credentials.get(). No authentication required.",
   request: {
     body: {
       content: {
@@ -83,7 +102,10 @@ const loginOptionsRoute = createRoute({
     },
   },
   responses: {
-    200: { content: { "application/json": { schema: PasskeyOptionsResponse } }, description: "Login challenge" },
+    200: {
+      content: { "application/json": { schema: PasskeyOptionsResponse } },
+      description: "Login challenge",
+    },
   },
 });
 
@@ -99,22 +121,35 @@ const loginVerifyRoute = createRoute({
   path: "/passkey/login/verify",
   tags: ["Passkeys"],
   summary: "Verify WebAuthn login",
-  description: "Submit the assertion from navigator.credentials.get() to complete passwordless login.",
+  description:
+    "Submit the assertion from navigator.credentials.get() to complete passwordless login.",
   request: { body: { content: { "application/json": { schema: PasskeyVerifyRequest } } } },
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "Passkey login successful" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Verification failed" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "Passkey login successful",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Verification failed",
+    },
   },
 });
 
 authPasskey.openapi(loginVerifyRoute, async (c) => {
   const body = await c.req.json();
   try {
-    const result = await alderoPost("/v1/auth/passkey/authenticate/verify", body) as Record<string, unknown>;
+    const result = (await alderoPost("/v1/auth/passkey/authenticate/verify", body)) as Record<
+      string,
+      unknown
+    >;
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "PASSKEY_FAILED", message: err.message } } as any, 401);
+      return c.json(
+        { success: false as const, error: { code: "PASSKEY_FAILED", message: err.message } } as any,
+        401,
+      );
     }
     throw err;
   }
@@ -128,13 +163,16 @@ const listRoute = createRoute({
   summary: "List enrolled passkeys",
   security: [{ Bearer: [] }],
   responses: {
-    200: { content: { "application/json": { schema: PasskeyListResponse } }, description: "Enrolled passkeys" },
+    200: {
+      content: { "application/json": { schema: PasskeyListResponse } },
+      description: "Enrolled passkeys",
+    },
   },
 });
 
 authPasskey.openapi(listRoute, async (c) => {
   const token = c.req.header("Authorization")?.slice(7);
-  const result = await alderoGet("/v1/auth/passkey/list", token) as any;
+  const result = (await alderoGet("/v1/auth/passkey/list", token)) as any;
   const passkeys = result.passkeys || (Array.isArray(result) ? result : []);
   return c.json({ success: true as const, data: { passkeys } } as any);
 });
@@ -148,7 +186,10 @@ const deleteRoute = createRoute({
   security: [{ Bearer: [] }],
   request: { params: z.object({ id: z.string() }) },
   responses: {
-    200: { content: { "application/json": { schema: SuccessResponse } }, description: "Passkey removed" },
+    200: {
+      content: { "application/json": { schema: SuccessResponse } },
+      description: "Passkey removed",
+    },
   },
 });
 

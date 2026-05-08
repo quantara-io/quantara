@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { volumeZscore } from "./volume-zscore.js";
 
 function makeVolume(n = 200, seed = 88): number[] {
@@ -42,9 +43,7 @@ describe("volumeZscore", () => {
 
   it("volume at mean produces z-score near 0", () => {
     // Sequence: 19 bars of 1000, then 1 bar of 1000 (at mean).
-    const vols = Array.from({ length: 25 }, (_, i) =>
-      i < 20 ? 1000 : 1000,
-    );
+    const vols = Array.from({ length: 25 }, (_, i) => (i < 20 ? 1000 : 1000));
     const r = volumeZscore(vols, 20);
     expect(r[19]).toBeCloseTo(0, 5);
   });

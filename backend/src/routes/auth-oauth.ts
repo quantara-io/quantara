@@ -1,10 +1,16 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
-import { alderoPost, getAlderoRedirectUrl, AlderoError } from "../lib/aldero-client.js";
-import { OAuthProviderParam, OAuthCallbackQuery, NativeTokenRequest, AuthSuccessResponse } from "../lib/schemas/auth.js";
-import { ErrorResponse } from "../lib/schemas/common.js";
 import { z } from "@hono/zod-openapi";
+
+import { alderoPost, getAlderoRedirectUrl, AlderoError } from "../lib/aldero-client.js";
+import {
+  OAuthProviderParam,
+  OAuthCallbackQuery,
+  NativeTokenRequest,
+  AuthSuccessResponse,
+} from "../lib/schemas/auth.js";
+import { ErrorResponse } from "../lib/schemas/common.js";
 
 const authOAuth = new OpenAPIHono();
 
@@ -87,13 +93,17 @@ const oauthCallbackRoute = createRoute({
   path: "/oauth/:provider/callback",
   tags: ["Auth"],
   summary: "OAuth callback handler",
-  description: "Validates the CSRF cookie against the round-tripped `cs` query param, then exchanges the authorization code for tokens.",
+  description:
+    "Validates the CSRF cookie against the round-tripped `cs` query param, then exchanges the authorization code for tokens.",
   request: {
     params: OAuthProviderParam,
     query: OAuthCallbackQuery,
   },
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "OAuth login successful" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "OAuth login successful",
+    },
     400: { content: { "application/json": { schema: ErrorResponse } }, description: "OAuth error" },
   },
 });
@@ -108,29 +118,38 @@ authOAuth.openapi(oauthCallbackRoute, async (c) => {
   deleteCookie(c, STATE_COOKIE, { path: "/api/auth/oauth" });
 
   if (!cookieState || !query.cs || cookieState !== query.cs) {
-    return c.json({
-      success: false as const,
-      error: { code: "INVALID_STATE", message: "OAuth state mismatch" },
-    }, 400);
+    return c.json(
+      {
+        success: false as const,
+        error: { code: "INVALID_STATE", message: "OAuth state mismatch" },
+      },
+      400,
+    );
   }
 
   if (query.error) {
-    return c.json({
-      success: false as const,
-      error: { code: "OAUTH_ERROR", message: query.error },
-    }, 400);
+    return c.json(
+      {
+        success: false as const,
+        error: { code: "OAUTH_ERROR", message: query.error },
+      },
+      400,
+    );
   }
 
   try {
-    const result = await alderoPost(`/v1/auth/oauth/${provider}/callback`, {
+    const result = (await alderoPost(`/v1/auth/oauth/${provider}/callback`, {
       code: query.code,
       state: query.state,
-    }) as Record<string, unknown>;
+    })) as Record<string, unknown>;
 
     return c.json({ success: true as const, data: result } as never, 200);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "OAUTH_FAILED", message: err.message } }, 400);
+      return c.json(
+        { success: false as const, error: { code: "OAUTH_FAILED", message: err.message } },
+        400,
+      );
     }
     throw err;
   }
@@ -148,8 +167,14 @@ const oauthNativeRoute = createRoute({
     body: { content: { "application/json": { schema: NativeTokenRequest } } },
   },
   responses: {
-    200: { content: { "application/json": { schema: AuthSuccessResponse } }, description: "Token exchanged" },
-    401: { content: { "application/json": { schema: ErrorResponse } }, description: "Invalid token" },
+    200: {
+      content: { "application/json": { schema: AuthSuccessResponse } },
+      description: "Token exchanged",
+    },
+    401: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Invalid token",
+    },
   },
 });
 
@@ -157,11 +182,17 @@ authOAuth.openapi(oauthNativeRoute, async (c) => {
   const { provider } = c.req.valid("param");
   const body = c.req.valid("json");
   try {
-    const result = await alderoPost(`/v1/auth/oauth/${provider}/native`, body) as Record<string, unknown>;
+    const result = (await alderoPost(`/v1/auth/oauth/${provider}/native`, body)) as Record<
+      string,
+      unknown
+    >;
     return c.json({ success: true as const, data: result } as never, 200);
   } catch (err) {
     if (err instanceof AlderoError) {
-      return c.json({ success: false as const, error: { code: "OAUTH_FAILED", message: err.message } }, 401);
+      return c.json(
+        { success: false as const, error: { code: "OAUTH_FAILED", message: err.message } },
+        401,
+      );
     }
     throw err;
   }

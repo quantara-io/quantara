@@ -5,7 +5,7 @@ Last updated: 2026-04-25
 
 ## Decisions locked
 
-- **Memory tiers**: 1m candles for *today only* (kept in Fargate process), 1h for last 24h, 1d for the long term. 1m never persisted to DDB.
+- **Memory tiers**: 1m candles for _today only_ (kept in Fargate process), 1h for last 24h, 1d for the long term. 1m never persisted to DDB.
 - **Signal compute lives in Fargate process**: indicator state (RSI, MAs, etc.) is in-memory, recomputed from CCXT REST backfill on restart. Signals fire from the tick loop directly.
 - **HA pattern**: active/standby with DDB lease. **In prod**: 2 tasks, leader writes/fires. **In dev**: 1 task only — no standby — to keep cost down.
 - **HA-ready properties baked in from day 1** (idempotent writes, deterministic signal IDs, stateless SSE) so the second task is a deploy flag, not a rewrite.
@@ -23,13 +23,13 @@ The ingestion service has only been running since **Apr 19, 2026**. The 30-day
 average is misleading because most of that window had nothing running. Steady-state
 since Apr 20:
 
-| Component | Per day | Per month | Per year |
-|---|---|---|---|
-| **DynamoDB writes** (≈$1.06/day) | $1.06 | **~$32** | **~$385** |
-| Fargate (0.25 vCPU, 512 MB) | $0.24 | ~$7.20 | ~$87 |
-| VPC | $0.12 | ~$3.60 | ~$44 |
-| All other services | <$0.001 | ~$0 | ~$0 |
-| **Total dev** | **$1.42** | **~$43** | **~$515** |
+| Component                        | Per day   | Per month | Per year  |
+| -------------------------------- | --------- | --------- | --------- |
+| **DynamoDB writes** (≈$1.06/day) | $1.06     | **~$32**  | **~$385** |
+| Fargate (0.25 vCPU, 512 MB)      | $0.24     | ~$7.20    | ~$87      |
+| VPC                              | $0.12     | ~$3.60    | ~$44      |
+| All other services               | <$0.001   | ~$0       | ~$0       |
+| **Total dev**                    | **$1.42** | **~$43**  | **~$515** |
 
 Reverse-engineering the tick rate from actual cost:
 $1.06/day ÷ $1.25/M = ~850K writes/day = **~9.8 writes/sec total** = **~0.66/sec/stream**
@@ -40,16 +40,16 @@ Prod account: $0 in last 30 days (nothing deployed yet).
 
 ### Measured table sizes (snapshot)
 
-| Table | Items | Size | TTL | Storage cost |
-|---|---|---|---|---|
-| **prices** | 8.0 M | 991 MB | ✅ 24h (lagging) | ~$0.25/mo |
-| candles | 38 K | 6.6 MB | ✅ tiered by timeframe | ~$0.002/mo |
-| news-events | 550 | 0.18 MB | ✅ | negligible |
-| Everything else | 0 | 0 | varies | $0 |
-| **Total storage** | | **~1 GB** | | **~$0.25/mo (~$3/yr)** |
+| Table             | Items | Size      | TTL                    | Storage cost           |
+| ----------------- | ----- | --------- | ---------------------- | ---------------------- |
+| **prices**        | 8.0 M | 991 MB    | ✅ 24h (lagging)       | ~$0.25/mo              |
+| candles           | 38 K  | 6.6 MB    | ✅ tiered by timeframe | ~$0.002/mo             |
+| news-events       | 550   | 0.18 MB   | ✅                     | negligible             |
+| Everything else   | 0     | 0         | varies                 | $0                     |
+| **Total storage** |       | **~1 GB** |                        | **~$0.25/mo (~$3/yr)** |
 
 **Storage is not a meaningful cost.** TTL is doing its job; even 10× growth puts
-total storage at ~$3.50/mo. Archiving to S3 for *cost reasons* makes no sense.
+total storage at ~$3.50/mo. Archiving to S3 for _cost reasons_ makes no sense.
 After Phase 1, the `prices` table goes away entirely.
 
 ### Re-pull the numbers
@@ -75,12 +75,12 @@ What the code does:
 
 What's actually in DDB `candles` (full scan, 38,800 rows):
 
-| Count | Timeframe | Exchange | % |
-|---|---|---|---|
-| 37,360 | 1m | binanceus | 96.3% |
-| 1,416 | 1m | kraken | 3.6% |
-| 24 | 1h | binanceus | 0.06% |
-| 0 | (any) | coinbase | 0% (was unsupported by CCXT — fixed in Phase 1c) |
+| Count  | Timeframe | Exchange  | %                                                |
+| ------ | --------- | --------- | ------------------------------------------------ |
+| 37,360 | 1m        | binanceus | 96.3%                                            |
+| 1,416  | 1m        | kraken    | 3.6%                                             |
+| 24     | 1h        | binanceus | 0.06%                                            |
+| 0      | (any)     | coinbase  | 0% (was unsupported by CCXT — fixed in Phase 1c) |
 
 **Reality differed from intent until Phase 1c:**
 
@@ -92,7 +92,7 @@ What's actually in DDB `candles` (full scan, 38,800 rows):
 
 ## What "real-time chart" actually requires
 
-A candle chart shows *closed* historical bars plus *one* forming bar that updates
+A candle chart shows _closed_ historical bars plus _one_ forming bar that updates
 tick-by-tick. Only the rightmost bar moves.
 
 ```
@@ -172,17 +172,17 @@ For each `(exchange, pair)`:
 
 ### Timeframe sourcing rule
 
-| Timeframe | Source | Notes |
-|---|---|---|
-| 1m forming | SSE from Fargate | from in-memory |
-| 1m closed (today) | SSE + Fargate ringBuffer1m | served via HTTP/SSE, never persisted |
-| 1m beyond today | **not available** — chart falls back to 1h | by design |
-| 5m, 15m | aggregate from ringBuffer1m on read | within today's window |
-| 1h closed, ≤24h | Fargate ringBuffer1h | in-memory |
-| 1h closed, >24h | DDB candles | persisted on each 1h close |
-| 4h | aggregate from 1h | trivial rollup |
-| 1d (today) | aggregate today's 1m + forming | natural |
-| 1d (historical) | DDB candles (1d row) | written at UTC midnight |
+| Timeframe         | Source                                     | Notes                                |
+| ----------------- | ------------------------------------------ | ------------------------------------ |
+| 1m forming        | SSE from Fargate                           | from in-memory                       |
+| 1m closed (today) | SSE + Fargate ringBuffer1m                 | served via HTTP/SSE, never persisted |
+| 1m beyond today   | **not available** — chart falls back to 1h | by design                            |
+| 5m, 15m           | aggregate from ringBuffer1m on read        | within today's window                |
+| 1h closed, ≤24h   | Fargate ringBuffer1h                       | in-memory                            |
+| 1h closed, >24h   | DDB candles                                | persisted on each 1h close           |
+| 4h                | aggregate from 1h                          | trivial rollup                       |
+| 1d (today)        | aggregate today's 1m + forming             | natural                              |
+| 1d (historical)   | DDB candles (1d row)                       | written at UTC midnight              |
 
 ### Restart recovery (the main risk)
 
@@ -216,14 +216,14 @@ task is a deploy, not a rewrite:
 PutItem({
   Key: { pair, sk: `${exchange}#1h#${openTime}` },
   ConditionExpression: "attribute_not_exists(sk)",
-})
+});
 // Two tasks both writing → first wins, second's ConditionalCheckFailed is swallowed
 ```
 
 **2. Deterministic signal IDs.**
 
 ```ts
-signalId = sha256(`${exchange}|${pair}|${signalType}|${triggerCandleOpenTime}`)
+signalId = sha256(`${exchange}|${pair}|${signalType}|${triggerCandleOpenTime}`);
 ```
 
 Same input on either task → same ID → same conditional write semantics. No dup signals.
@@ -253,6 +253,7 @@ The lease is one DDB conditional update. ~30 lines of code. If A dies, B's lease
 acquire succeeds within 30s and it starts writing.
 
 **Caveats:**
+
 - Both tasks subscribe to exchanges → 2× WebSocket connections per IP. Public
   market data is usually generous (Binance allows ~24/IP) — verify per venue.
 - Compute cost doubles: 2× $7/mo Fargate = $14/mo. Trivial in prod, deliberately
@@ -260,30 +261,30 @@ acquire succeeds within 30s and it starts writing.
 
 ### Dev vs prod
 
-| | Dev | Prod |
-|---|---|---|
-| Fargate ingestion | 1 task (or 0 when not testing) | 2 tasks (active/standby) |
-| Lease enabled | No (single task is implicit leader) | Yes (DDB lease) |
-| ALB | Yes (1 target) | Yes (2 targets) |
-| Cost (run-rate) | ~$11/mo (1 task + ALB + VPC) | ~$45/mo (2 tasks + ALB + VPC) |
+|                   | Dev                                 | Prod                          |
+| ----------------- | ----------------------------------- | ----------------------------- |
+| Fargate ingestion | 1 task (or 0 when not testing)      | 2 tasks (active/standby)      |
+| Lease enabled     | No (single task is implicit leader) | Yes (DDB lease)               |
+| ALB               | Yes (1 target)                      | Yes (2 targets)               |
+| Cost (run-rate)   | ~$11/mo (1 task + ALB + VPC)        | ~$45/mo (2 tasks + ALB + VPC) |
 
 The single-task dev path uses the same code; the leader-election logic short-circuits
 when `INGESTION_HA=false` (env var). One config flag toggles it.
 
 ## Storage tier decisions
 
-| Data | Access pattern | Today | Proposed | Reason |
-|---|---|---|---|---|
-| Latest tick / bid-ask | High-write, last-write-wins | DDB `prices` | **In-process Map; SSE for clients** | DDB is wrong shape — only the latest matters. |
-| Forming 1m candle | Live-updating | (not exposed) | **SSE from in-memory** | Already in memory; just expose it. |
-| 1m closed (today) | Read for chart, signals | DDB `candles` | **In-memory ring buffer; never persisted** | Chart only shows today; signals consume from same buffer. |
-| 1m closed (>today) | Range read | DDB `candles` (TTL 7d) | **Not available — chart uses 1h** | Don't store. |
-| 1h closed | Range read, chart history | DDB `candles` (sparse) | **DDB on each 1h close (idempotent)** | Persisted from in-memory on rollup. |
-| 1d closed | Long-range read, backtests | not stored | **DDB on each 1d close (idempotent)** | Persisted from in-memory on rollup. |
-| 5m / 15m / 4h | Derived | not stored | **Aggregate from 1m or 1h on read** | No reason to store. |
-| Signals | Triggered events | DDB `signals` (empty) | **DDB on trigger (deterministic ID, idempotent)** | Sparse writes; conditional. |
-| News events | Append + dedup | DDB `news-events` | **DDB (unchanged)** | Storage is trivial; archive only if analytics need it. |
-| Raw ticks (replay) | Write-only firehose | not stored | **(still don't store)** OR Firehose → S3 if R&D needs it | DDB is wrong store. |
+| Data                  | Access pattern              | Today                  | Proposed                                                 | Reason                                                    |
+| --------------------- | --------------------------- | ---------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| Latest tick / bid-ask | High-write, last-write-wins | DDB `prices`           | **In-process Map; SSE for clients**                      | DDB is wrong shape — only the latest matters.             |
+| Forming 1m candle     | Live-updating               | (not exposed)          | **SSE from in-memory**                                   | Already in memory; just expose it.                        |
+| 1m closed (today)     | Read for chart, signals     | DDB `candles`          | **In-memory ring buffer; never persisted**               | Chart only shows today; signals consume from same buffer. |
+| 1m closed (>today)    | Range read                  | DDB `candles` (TTL 7d) | **Not available — chart uses 1h**                        | Don't store.                                              |
+| 1h closed             | Range read, chart history   | DDB `candles` (sparse) | **DDB on each 1h close (idempotent)**                    | Persisted from in-memory on rollup.                       |
+| 1d closed             | Long-range read, backtests  | not stored             | **DDB on each 1d close (idempotent)**                    | Persisted from in-memory on rollup.                       |
+| 5m / 15m / 4h         | Derived                     | not stored             | **Aggregate from 1m or 1h on read**                      | No reason to store.                                       |
+| Signals               | Triggered events            | DDB `signals` (empty)  | **DDB on trigger (deterministic ID, idempotent)**        | Sparse writes; conditional.                               |
+| News events           | Append + dedup              | DDB `news-events`      | **DDB (unchanged)**                                      | Storage is trivial; archive only if analytics need it.    |
+| Raw ticks (replay)    | Write-only firehose         | not stored             | **(still don't store)** OR Firehose → S3 if R&D needs it | DDB is wrong store.                                       |
 
 ## Implementation phases
 
@@ -305,6 +306,7 @@ Verified: 0 OHLCV errors after deploy.
 In rough dependency order:
 
 **1.1** — in-memory ring buffers + rollup logic
+
 - Add `MemoryStore` per `(exchange, pair)` with `latestTick`, `formingCandle`,
   `ringBuffer1m` (today-sized), `ringBuffer1h` (24-sized), `indicators`.
 - Tick → update tick + forming + indicators.
@@ -313,28 +315,34 @@ In rough dependency order:
 - 1d close → aggregate, write to DDB (idempotent).
 
 **1.2** — startup backfill
+
 - On task start: `CCXT.fetchOHLCV(symbol, '1m', sinceStartOfDay)` per stream.
 - Replay through indicator logic to rebuild state.
 - Then start `watchTicker` / `watchOHLCV`.
 
 **1.3** — signals as first-class
+
 - Move/build signal evaluation into the per-tick path.
 - Deterministic signalId; PutItem `signals` with `ConditionExpression: attribute_not_exists`.
 - Emit triggered signals on a `/signals/stream/:pair` SSE channel.
 
 **1.4** — HTTP / SSE server in Fargate (Hono)
+
 - `GET /price/:exch/:pair` — JSON snapshot
 - `GET /stream/:exch/:pair` — SSE: forming candle + closed 1m + signals
 - `GET /candles/:exch/:pair?tf=1m|5m|15m|1h|1d&from=&to=` — serve from memory or DDB by range
 
 **1.5** — ALB + DNS in front of Fargate
+
 - ALB target group → Fargate task on port 8080.
 - Stable hostname (e.g., `ingestion.dev.quantara.aldero.io`) so the chart can connect.
 
 **1.6** — drop the `prices` table
+
 - Once nothing reads it, remove `aws_dynamodb_table.prices` and the writer code.
 
 **1.7** — HA-ready properties (single task, but baked in)
+
 - Idempotent writes: confirmed in 1.1 / 1.3.
 - Stateless SSE: confirmed in 1.4.
 - Lease logic disabled in dev via env (`INGESTION_HA=false`); active in prod via task count = 2.
@@ -361,15 +369,15 @@ Pattern when triggered: DynamoDB Streams → Firehose → S3 Parquet, partitione
 
 ## Cost delta (current run-rate, dev only)
 
-| | Before | Phase 0 (idle) | Phase 1 dev (single task) | Phase 1 prod (active/standby) |
-|---|---|---|---|---|
-| DDB `prices` writes | ~$32/mo | $0 | $0 | $0 |
-| DDB `candles` writes (1h+1d only) | ~$0.50/mo | $0 | <$0.05/mo | <$0.05/mo |
-| DDB `signals` writes | $0 | $0 | <$0.10/mo | <$0.10/mo |
-| ALB | $0 | $0 | ~$16/mo | ~$16/mo |
-| Fargate | ~$7/mo | $0 | ~$7/mo | ~$14/mo (2 tasks) |
-| VPC | ~$3.60/mo | $0 | ~$3.60/mo | ~$3.60/mo |
-| **Total** | **~$43/mo** | **~$0/mo** | **~$27/mo** | **~$34/mo** |
+|                                   | Before      | Phase 0 (idle) | Phase 1 dev (single task) | Phase 1 prod (active/standby) |
+| --------------------------------- | ----------- | -------------- | ------------------------- | ----------------------------- |
+| DDB `prices` writes               | ~$32/mo     | $0             | $0                        | $0                            |
+| DDB `candles` writes (1h+1d only) | ~$0.50/mo   | $0             | <$0.05/mo                 | <$0.05/mo                     |
+| DDB `signals` writes              | $0          | $0             | <$0.10/mo                 | <$0.10/mo                     |
+| ALB                               | $0          | $0             | ~$16/mo                   | ~$16/mo                       |
+| Fargate                           | ~$7/mo      | $0             | ~$7/mo                    | ~$14/mo (2 tasks)             |
+| VPC                               | ~$3.60/mo   | $0             | ~$3.60/mo                 | ~$3.60/mo                     |
+| **Total**                         | **~$43/mo** | **~$0/mo**     | **~$27/mo**               | **~$34/mo**                   |
 
 Phase 0 is the biggest single dev win (~$515/yr). Phase 1's dev savings vs the
 current run-rate are smaller (~$190/yr) because ALB adds a fixed line item — but
@@ -380,12 +388,12 @@ Phase 1 is what protects against the **scaling cliff**:
 Current architecture (per-tick PutItem to `prices`) scales linearly with
 streams × tick rate:
 
-| Symbols × exchanges | Approx writes/sec | DDB `prices` cost/mo |
-|---|---|---|
-| 5 × 3 = 15 (today) | ~10/sec | ~$32 |
-| 10 × 3 = 30 | ~20/sec | ~$65 |
-| 30 × 5 = 150 | ~100/sec | ~$325 |
-| 30 × 5, 5 ticks/sec/stream | ~750/sec | ~$2,400 |
+| Symbols × exchanges        | Approx writes/sec | DDB `prices` cost/mo |
+| -------------------------- | ----------------- | -------------------- |
+| 5 × 3 = 15 (today)         | ~10/sec           | ~$32                 |
+| 10 × 3 = 30                | ~20/sec           | ~$65                 |
+| 30 × 5 = 150               | ~100/sec          | ~$325                |
+| 30 × 5, 5 ticks/sec/stream | ~750/sec          | ~$2,400              |
 
 After Phase 1, this column is replaced by zero — `prices` table goes away. Only
 1h/1d candle and signal writes remain, which are bounded regardless of tick rate

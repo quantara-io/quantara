@@ -9,11 +9,11 @@ Quantara is a workspace monorepo with three runnables (`backend`, `ingestion`, `
 
 ## AWS accounts
 
-| Account | ID | Profile | Role |
-|---|---|---|---|
-| Management | 489922707011 | `quantara-management` | Org/IAM Identity Center, Terraform state |
-| Dev | 442725244722 | `quantara-dev` (default) | All local dev hits this |
-| Prod | 351666231984 | `quantara-prod` | Hands off |
+| Account    | ID           | Profile                  | Role                                     |
+| ---------- | ------------ | ------------------------ | ---------------------------------------- |
+| Management | 489922707011 | `quantara-management`    | Org/IAM Identity Center, Terraform state |
+| Dev        | 442725244722 | `quantara-dev` (default) | All local dev hits this                  |
+| Prod       | 351666231984 | `quantara-prod`          | Hands off                                |
 
 SSO start URL: `https://d-9267dc8051.awsapps.com/start`. Region: `us-west-2` (always).
 
@@ -31,15 +31,16 @@ If `~/.aws/config` is missing the Quantara profiles, see `docs/AWS_SSO_SETUP.md`
 
 From the repo root:
 
-| Workspace | Command | What it does |
-|---|---|---|
-| Backend (Hono on Lambda → tsx local) | `npm run dev --workspace=quantara-backend` | `tsx --watch src/local.ts`, port 3001, hits real DynamoDB in dev account |
-| Ingestion (one-shot) | `npm run dev --workspace=quantara-ingestion` | `tsx src/local.ts` — backfill or single-poll mode |
-| Ingestion (streaming Fargate-equivalent) | `npm run dev:stream --workspace=quantara-ingestion` | `tsx src/service.ts` — real WebSocket streams + news poller |
-| Web (Next.js 16) | `npm run dev --workspace=web` | Standard `next dev` |
-| Ops dashboard | `npx tsx tools/dashboard.ts` | Live status page on `:3333` (DynamoDB / ECS / SQS / Logs) |
+| Workspace                                | Command                                             | What it does                                                             |
+| ---------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
+| Backend (Hono on Lambda → tsx local)     | `npm run dev --workspace=quantara-backend`          | `tsx --watch src/local.ts`, port 3001, hits real DynamoDB in dev account |
+| Ingestion (one-shot)                     | `npm run dev --workspace=quantara-ingestion`        | `tsx src/local.ts` — backfill or single-poll mode                        |
+| Ingestion (streaming Fargate-equivalent) | `npm run dev:stream --workspace=quantara-ingestion` | `tsx src/service.ts` — real WebSocket streams + news poller              |
+| Web (Next.js 16)                         | `npm run dev --workspace=web`                       | Standard `next dev`                                                      |
+| Ops dashboard                            | `npx tsx tools/dashboard.ts`                        | Live status page on `:3333` (DynamoDB / ECS / SQS / Logs)                |
 
 The backend `dev` script bakes in env vars:
+
 ```
 AWS_REGION=us-west-2
 AWS_PROFILE=quantara-dev
@@ -50,6 +51,7 @@ SKIP_IP_WHITELIST=true
 ```
 
 Ingestion `dev` / `dev:stream` scripts set the same `AWS_REGION`, `AWS_PROFILE`, `TABLE_PREFIX`. If you need a different prefix or profile, override on the command line:
+
 ```bash
 AWS_PROFILE=quantara-prod TABLE_PREFIX=quantara-prod- npm run dev --workspace=quantara-backend
 ```
@@ -58,10 +60,10 @@ AWS_PROFILE=quantara-prod TABLE_PREFIX=quantara-prod- npm run dev --workspace=qu
 
 Local dev routes can bypass two middleware checks:
 
-| Flag | Effect |
-|---|---|
-| `SKIP_API_KEY=true` | `requireApiKey` accepts the literal `dev-local` key (or any key when paired with the right SSM stub) |
-| `SKIP_IP_WHITELIST=true` | `ipWhitelist` accepts every client IP |
+| Flag                     | Effect                                                                                               |
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `SKIP_API_KEY=true`      | `requireApiKey` accepts the literal `dev-local` key (or any key when paired with the right SSM stub) |
+| `SKIP_IP_WHITELIST=true` | `ipWhitelist` accepts every client IP                                                                |
 
 Both are set in `backend/package.json` for `npm run dev`. Don't ship them. They are checked **only** in the middleware modules (`api-key.ts`, `ip-whitelist.ts`) — not enforced by infrastructure.
 
@@ -70,6 +72,7 @@ For Aldero auth: there's no bypass for `requireAuth`. Hit `/api/auth/login` agai
 ## SSM secrets the local stack reads
 
 Even with the bypasses, several flows still hit SSM in the dev account:
+
 - Aldero M2M client credentials (`/quantara/dev/aldero-m2m-client-id`, `/quantara/dev/aldero-client-secret`).
 - API keys (`/quantara/dev/api-keys/*`) — bypassed by `SKIP_API_KEY=true`.
 - IP allow list (`/quantara/dev/docs-allowed-ips`) — bypassed by `SKIP_IP_WHITELIST=true`.
@@ -78,12 +81,14 @@ Even with the bypasses, several flows still hit SSM in the dev account:
 - Alpaca creds (`/quantara/dev/alpaca/key-id`, `/quantara/dev/alpaca/secret-key`).
 
 If `aws sts get-caller-identity` works but a local server can't read SSM, your role is fine — the parameter probably doesn't exist yet. Create it:
+
 ```bash
 aws ssm put-parameter --profile quantara-dev --region us-west-2 \
   --name '/quantara/dev/<param>' --type SecureString --value '<value>' --overwrite
 ```
 
 To add your roaming IP to the docs allow list:
+
 ```bash
 MY_IP=$(curl -s https://checkip.amazonaws.com)
 CURRENT=$(aws ssm get-parameter --profile quantara-dev --region us-west-2 \
@@ -106,6 +111,7 @@ The dashboard hardcodes the dev account ID (`442725244722`) and prefix (`quantar
 ## Typecheck / build / test
 
 From the repo root, all workspaces in one shot:
+
 ```bash
 npm run typecheck       # all workspaces
 npm run build           # all workspaces

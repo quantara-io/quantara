@@ -7,6 +7,7 @@ Pick the highest-priority `agent-ready` issue and dispatch a worker. Designed to
 Steps:
 
 1. **Concurrency check first** — if 5+ open issues already carry `agent-claimed`, exit with "at cap, skipping" and stop. Do not block.
+
    ```bash
    COUNT=$(gh issue list --label agent-claimed --state open --json number -q 'length')
    [ "$COUNT" -ge 5 ] && echo "at cap" && exit 0
@@ -23,6 +24,7 @@ Steps:
      --json number,labels,createdAt \
      -q 'sort_by(.createdAt) | map(select(.labels | map(.name) | index("agent-forbidden") | not)) | .[0].number')
    ```
+
    If no eligible issue, exit with "nothing to do" and stop.
 
 3. **Dispatch** by invoking `/dispatch <issue>` (or directly spawning `quantara-worker` with that issue number — same effect).

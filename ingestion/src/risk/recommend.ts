@@ -95,11 +95,7 @@ function kellyF(p: number, b: number): number {
  */
 export function kellyUnlocked(stats: KellyStats): boolean {
   return (
-    stats.resolved >= 50 &&
-    stats.p >= 0.45 &&
-    stats.p <= 0.65 &&
-    stats.b >= 0.5 &&
-    stats.b <= 3.0
+    stats.resolved >= 50 && stats.p >= 0.45 && stats.p <= 0.65 && stats.b >= 0.5 && stats.b <= 3.0
   );
 }
 
@@ -147,11 +143,7 @@ export function computeRiskRecommendation(
     // Conservative: always fixed-fractional
     sizePct = RISK_PCT[profile];
     model = "fixed";
-  } else if (
-    profile === "aggressive" &&
-    kelly !== undefined &&
-    kellyUnlocked(kelly)
-  ) {
+  } else if (profile === "aggressive" && kelly !== undefined && kellyUnlocked(kelly)) {
     // Aggressive with Kelly unlocked: 0.25 × kelly_f (no extra × RISK_PCT scaling)
     const kf = kellyF(kelly.p, kelly.b);
     sizePct = 0.25 * Math.max(0, kf);
@@ -179,9 +171,7 @@ export function computeRiskRecommendation(
     { closePct: 0.25, rMultiple: tpMultiples[1] },
     { closePct: 0.25, rMultiple: tpMultiples[2] },
   ].map(({ closePct, rMultiple }) => ({
-    price: isBuy
-      ? entryPrice + stopDistance * rMultiple
-      : entryPrice - stopDistance * rMultiple,
+    price: isBuy ? entryPrice + stopDistance * rMultiple : entryPrice - stopDistance * rMultiple,
     closePct,
     rMultiple,
   }));

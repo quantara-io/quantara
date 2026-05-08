@@ -22,11 +22,7 @@ export const BARS_PER_YEAR: Record<Timeframe, number> = {
  *
  * Warm-up: bars 0..N-1 are null (need N returns → N+1 closes).
  */
-export function realizedVol(
-  close: number[],
-  timeframe: Timeframe,
-  n = 20,
-): (number | null)[] {
+export function realizedVol(close: number[], timeframe: Timeframe, n = 20): (number | null)[] {
   const len = close.length;
   const result: (number | null)[] = new Array(len).fill(null);
   const annFactor = Math.sqrt(BARS_PER_YEAR[timeframe]);
@@ -54,8 +50,7 @@ export function realizedVol(
 
     // Population stdev.
     const mean = window.reduce((a, b) => a + b, 0) / window.length;
-    const variance =
-      window.reduce((a, b) => a + (b - mean) ** 2, 0) / window.length;
+    const variance = window.reduce((a, b) => a + (b - mean) ** 2, 0) / window.length;
     const stdev = Math.sqrt(variance);
 
     result[i] = stdev * annFactor;
