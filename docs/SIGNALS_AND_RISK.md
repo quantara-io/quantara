@@ -577,39 +577,45 @@ Per-pair tuning (e.g. DOGE may benefit from a 15m-heavier vector since it lacks 
 | Any TF has `gateReason = "dispersion"` or `"stale"` | Blend forces `type = "hold"`, propagates the gateReason. Confidence = 0.5.                                            |
 | Mixed gates (e.g. 4h `vol`-gated, 1h `stale`-gated) | Priority: `vol` > `dispersion` > `stale`. Blend's `gateReason` is the highest-priority one fired on any TF.           |
 
-### 5.9 Event-driven trigger — 2-phase collect-then-compute (v4 design)
+### 5.9 Event-driven trigger — 2-phase collect-then-compute (v5 design)
 
-> **v4 design (supersedes v3). Fixes applied: Fix #1 (P1 — recoverable quorum), Fix #2 (P2 — FilterCriteria timeframe), Fix #3 (P2 — TTL epoch seconds). Traced to codex review of PR #123.**
+> **v5 design (supersedes v4). v4 fixes retained: Fix #1-v4 (P1 — drop claimedBy), Fix #2-v4 (P2 — FilterCriteria timeframe), Fix #3-v4 (P2 — TTL epoch seconds). Traced to codex review of PR #123.**
+>
+> **v5 fixes (this doc). Traced to codex review of PR #125 (comment #4409943828):**
+>
+> - **Fix #1 (P1):** Eliminate mark-then-emit race — drop `processed-close-store` entirely; use `signals-v2` conditional Put as the sole dedup mechanism.
+> - **Fix #2 (P1):** Drop `source` filter from FilterCriteria — existing candle writers do not persist a `source` attribute; filter silently rejects all events. Timeframe allowlist retained.
+> - **Fix #5 (P3):** Rename `exchange` (singular) → `exchanges` (plural) in pseudo-code to match the schema and quorum-check logic.
 
 #### Trigger architecture
 
 The indicator handler is a Lambda subscribed to a DDB Streams event source mapping on the `quantara-{env}-candles` table. Each new candle write emits a stream event; the handler accumulates exchange writes into a `close-quorum` row, and any handler that observes full quorum computes and commits the blended signal.
 
-**Event source mapping FilterCriteria (Fix #2 — include timeframe allowlist):**
+**Event source mapping FilterCriteria (Fix #2 v4 + Fix #2 v5 — timeframe allowlist only, no source filter):**
 
 ```json
 {
   "Filters": [
     {
-      "Pattern": "{ \"dynamodb\": { \"NewImage\": { \"source\": { \"S\": [\"live\"] }, \"timeframe\": { \"S\": [\"15m\", \"1h\", \"4h\", \"1d\"] } } } }"
+      "Pattern": "{ \"dynamodb\": { \"NewImage\": { \"timeframe\": { \"S\": [\"15m\", \"1h\", \"4h\", \"1d\"] } } } }"
     }
   ]
 }
 ```
 
-Why: `MarketStreamManager` writes 1m candles with `source: "live"` (not blended), and the higher-TF poller writes 5m with `source: "live"` (also not blended — only 15m/1h/4h/1d are). Without the `timeframe` filter, the handler is invoked for unsupported timeframes, creates quorum rows for slots that will never blend, and wastes compute. 1m and 5m candles still get written to DDB; they just don't trigger the indicator handler.
+Why timeframe-only (Fix #2 v5): existing candle writers (`storeCandles` in `MarketStreamManager` for live, scheduled poller for higher TFs, backfill scripts) **do not persist a `source` attribute**. Filtering on `source.S = "live"` would silently reject every candle event, causing total signal failure with no error. The timeframe allowlist alone is sufficient: 1m and 5m candles are excluded; backfill candles that slip through are idempotent under Fix #1 v5 (signals-v2 dedup). Option A (write-side fix to persist `source` on all candle writers) is deferred to a future cleanup if backfill processing overhead becomes observable.
 
-#### Phase 1 — Collect exchanges (string set ADD)
+#### Step 1 — Collect exchanges (string set ADD)
 
 On each filtered stream event, the handler writes to `close-quorum`:
 
 ```
 PK: pair#timeframe#closeTime  (e.g. "BTC/USDT#1h#1746576000000")
-exchange: string set ADD { exchange }   // atomic ADD — idempotent on retry
-ttl: Math.floor(closeTimeMs / 1000) + 86_400   // epoch SECONDS (Fix #3 — see note below)
+exchanges: string set ADD { exchange }   // Fix #5: plural "exchanges" — atomic ADD, idempotent on retry
+ttl: Math.floor(closeTimeMs / 1000) + 86_400   // epoch SECONDS (Fix #3-v4 — see note below)
 ```
 
-**TTL conversion note (Fix #3):** DynamoDB TTL is interpreted as Unix epoch seconds. `Candle.closeTime` is epoch milliseconds. The conversion is:
+**TTL conversion note (Fix #3-v4):** DynamoDB TTL is interpreted as Unix epoch seconds. `Candle.closeTime` is epoch milliseconds. The conversion is:
 
 ```ts
 // Option A — explicit:
@@ -621,45 +627,61 @@ ttl: Math.floor(closeTimeMs / 1000) + 86_400;
 
 Both are correct. Do NOT write `closeTimeMs + 86_400_000` as the TTL value — that produces a value ~1000× too large (year ~57000) and the row will never expire.
 
-#### Phase 2 — Check + compute + commit (single conditional Put)
+#### Step 2 — Check quorum
 
 After the ADD, the handler reads the current `close-quorum` item and checks:
 
-1. `item.exchanges.size >= REQUIRED_EXCHANGE_COUNT` (quorum reached — all 3 exchanges have written for this slot)
-2. `item.processedAt` is absent (signal not yet committed by a prior handler)
-
-If both conditions are true, the handler computes the indicators and blended signal, then writes the signal with a **conditional Put**:
-
 ```
-ConditionExpression: attribute_not_exists(processedAt)
+item.exchanges.size >= REQUIRED_EXCHANGE_COUNT
 ```
 
-- **First handler to succeed** sets `processedAt` and writes the signal to `signals-v2`. Done.
-- **Other concurrent handlers** (rare race) complete their compute but find `processedAt` already set → their conditional Put fails with `ConditionalCheckFailedException` → they discard the result. No duplicate signal write ever reaches `signals-v2`.
-- **Handler that crashed before committing** never set `processedAt` → DDB Streams retries the event → a fresh handler invocation computes and commits. Crash recovery is automatic.
+If quorum is not reached, stop. (Another handler will complete the slot when the remaining exchanges write.)
 
-#### No `claimedBy` field (Fix #1 — P1)
+#### Step 3 — Check signals-v2 for prior processing (Fix #1 v5 — dedup on signals-v2)
+
+Read `signals-v2` with `signalKey = pair#tf#closeTime`. If the item exists, this slot was already processed by a prior handler (possibly a retried invocation). Skip.
+
+**Why this replaces `processed-close-store` (Fix #1 v5):** v4 used a separate `processed-close-store` table as a marker: write the marker first, then emit the signal. If the handler crashed between the marker write (won) and the signal-v2 write, the retried stream event saw the marker present, skipped the slot, and the signal was permanently lost — the same class of race as the v3 `claimedBy` bug, just inverted.
+
+v5 **drops `processed-close-store` entirely**. There is now only one persistence step: the conditional Put on `signals-v2` (Step 4). Crash recovery: any handler that has not yet completed the conditional Put will retry the entire flow (Steps 1–4) on stream re-delivery. No orphaned marker can block recovery.
+
+#### Step 4 — Compute + conditional Put on signals-v2
+
+Compute the indicators and blended signal, then write with a **conditional Put**:
+
+```
+ConditionExpression: attribute_not_exists(signalKey)
+```
+
+- **First handler to succeed** writes the signal to `signals-v2`. Done.
+- **Other concurrent handlers** (rare race) find the item already exists → their conditional Put fails with `ConditionalCheckFailedException` → they discard the result. No duplicate signal ever reaches `signals-v2`.
+- **Handler that crashed before the Put** left no trace → DDB Streams retries the event → a fresh handler runs Steps 1–4 again and completes normally.
+
+#### No `claimedBy` field (Fix #1-v4 retained)
 
 v3 used a 3-phase `claimedBy` pattern: collect → claim → compute → mark-processed. If the handler set `claimedBy` but crashed before writing `processedAt`, the slot was permanently unrecoverable (retries skipped it because `claimedBy` was present).
 
-v4 **drops `claimedBy` entirely**. The conditional Put on `processedAt` is the single-winner mechanism:
+v4 **dropped `claimedBy` entirely**. v5 extends this by also dropping the separate `processed-close-store` marker. The conditional Put on `signals-v2` is now the single-winner, single-persistence-step mechanism:
 
 - No orphaned slots — crash recovery is automatic via stream retry
 - Race-window cost: in the rare case where 2+ handlers run concurrently for the same slot, both do the compute work, but only one succeeds at the Put. Wasted compute is bounded (compute is 500ms–2s; stream events are mostly serialized per slot via DDB Streams batching)
-- Correctness guarantee: `processedAt` is set exactly once per slot, by the first handler to commit
+- Correctness guarantee: a signal is written to `signals-v2` exactly once per slot, by the first handler to win the conditional Put
 
-#### Summary of 2-phase flow
+#### Summary of collect-then-compute flow
 
 ```
-Stream event (filtered: source=live, timeframe in [15m,1h,4h,1d])
+Stream event (filtered: timeframe in [15m,1h,4h,1d])
   │
-  ├─ Phase 1: ADD exchange to close-quorum row (idempotent)
+  ├─ Step 1: ADD exchange to close-quorum row (exchanges field, idempotent)
   │
-  └─ Phase 2: if quorum AND processedAt absent:
-                compute indicators + blended signal
-                conditional Put(processedAt)  ← single-winner
-                if Put succeeds: write to signals-v2
-                if Put fails (ConditionalCheckFailed): discard (another handler won)
+  ├─ Step 2: read close-quorum; exchanges.size >= REQUIRED_EXCHANGE_COUNT? if not → stop
+  │
+  ├─ Step 3: read signals-v2 by signalKey = pair#tf#closeTime; if exists → stop (already processed)
+  │
+  └─ Step 4: compute indicators + blended signal
+             conditional Put on signals-v2 with attribute_not_exists(signalKey)
+             if Put succeeds: done
+             if Put fails (ConditionalCheckFailed): discard (another handler won)
 ```
 
 ---
@@ -1572,9 +1594,16 @@ ttl: 600  // 10 min
 
 ### 11.5 New: `quantara-{env}-close-quorum` (DDB Streams + event-driven trigger)
 
-> **v4 design. See §5.9 for the full event-driven trigger flow. Fixes applied: Fix #1 (drop claimedBy), Fix #3 (TTL epoch seconds), Fix #5 (close-quorum-monitor Lambda for TTL-expiry observability).**
+> **v5 design. See §5.9 for the full event-driven trigger flow.**
+>
+> **v4 fixes retained:** Fix #1 (drop claimedBy), Fix #3 (TTL epoch seconds), Fix #5-v4 (close-quorum-monitor Lambda).
+>
+> **v5 fixes (this doc). Traced to codex review of PR #125 (comment #4409943828):**
+>
+> - **Fix #1 (P1):** Drop `processed-close-store` from schema — see §5.9 for rationale. `signals-v2` is now the sole dedup source.
+> - **Fix #4 (P2):** `close-quorum` stream must be `NEW_AND_OLD_IMAGES` (not `NEW_IMAGE`) so the `close-quorum-monitor` Lambda can read the deleted item's attributes on TTL REMOVE events.
 
-This table is the coordination point for the 2-phase collect-then-compute flow (§5.9). It is written to by the candle-stream Lambda and read by the same Lambda to check quorum.
+This table is the coordination point for the collect-then-compute flow (§5.9). It is written to by the candle-stream Lambda and read by the same Lambda to check quorum.
 
 **Schema:**
 
@@ -1583,25 +1612,30 @@ PK: pair#timeframe#closeTime  (e.g. "BTC/USDT#1h#1746576000000")
 Attributes:
   exchanges: String Set   // set of exchange names that have written for this slot
                           // populated via DDB ADD (atomic, idempotent on retry)
-  processedAt: ISO8601    // set by the first handler to win the conditional Put
-                          // ABSENT until the slot is committed
   ttl: number             // epoch SECONDS — closeTimeMs / 1000 + 86_400
                           // NOTE: NOT milliseconds — see TTL conversion in §5.9
 ```
 
-**No `claimedBy` or `claimedAt` fields (Fix #1).** The conditional Put on `processedAt` is the single-winner mechanism. See §5.9 for crash-recovery semantics.
+**No `claimedBy`, `claimedAt`, or `processedAt` fields.** v5 drops all per-row processing markers. `signals-v2` is the dedup source (see §5.9 Fix #1 v5). See §5.9 for crash-recovery semantics.
 
-**DDB Streams:** enable DDB Streams on this table with `StreamViewType: NEW_IMAGE`. The event source mapping on the indicator handler Lambda reads from the candle table stream, not this table's stream. This table's stream is used by the optional `close-quorum-monitor` Lambda (see below).
+**No `processed-close-store` table (Fix #1 v5).** The separate marker table introduced in earlier drafts is eliminated. `signals-v2` conditional Put is the sole dedup mechanism.
 
-**Observability — `close-quorum-monitor` Lambda (Fix #5, Option A):**
+**DDB Streams (Fix #4 v5):** enable DDB Streams on this table with `StreamViewType: NEW_AND_OLD_IMAGES`.
+
+Why `NEW_AND_OLD_IMAGES` and not `NEW_IMAGE` (Fix #4 v5): DDB TTL deletion emits a `REMOVE` stream event. With `NEW_IMAGE`, the REMOVE record has no attributes — the item's data is not included. The `close-quorum-monitor` Lambda cannot inspect the deleted row at all. With `NEW_AND_OLD_IMAGES`, the OldImage is present on REMOVE events, giving the monitor access to `pair`, `timeframe`, `closeTime`, and `exchanges` from the expired row. This is required for the monitor to look up `signals-v2` and distinguish missed closes from normally-processed ones.
+
+The event source mapping on the indicator handler Lambda reads from the **candle table** stream, not this table's stream. This table's stream is used only by the `close-quorum-monitor` Lambda (see below).
+
+**Observability — `close-quorum-monitor` Lambda (Fix #5-v4 retained, updated for v5 dedup):**
 
 > **Chosen: Option A — enable streams on close-quorum, subscribe a monitor Lambda.**
 
-When a `close-quorum` row expires via DynamoDB TTL without having `processedAt` set, the TTL deletion emits a `REMOVE` event on the `close-quorum` stream. A dedicated `close-quorum-monitor` Lambda subscribed to this stream with `eventName = REMOVE` filter:
+When a `close-quorum` row expires via DynamoDB TTL, the TTL deletion emits a `REMOVE` event on the `close-quorum` stream (now carrying OldImage per Fix #4 v5). A dedicated `close-quorum-monitor` Lambda subscribed to this stream with `eventName = REMOVE` filter:
 
-1. Checks whether `processedAt` was absent (i.e. this was a missed close, not a normal cleanup)
-2. Emits a `CloseMissed` CloudWatch metric: `{ pair, timeframe, closeTime }`
-3. Logs the event for debugging ("why did this BTC/USDT 4h slot not produce a signal?")
+1. Reads `OldImage` from the stream record to extract `pair`, `timeframe`, and `closeTime`
+2. Reads `signals-v2` with `signalKey = pair#tf#closeTime`
+3. If absent → the slot was never processed → emits a `CloseMissed` CloudWatch metric: `{ pair, timeframe, closeTime }` and logs for debugging
+4. If present → the slot was processed before TTL hit → no-op (normal case)
 
 FilterCriteria for the monitor Lambda:
 
@@ -1628,6 +1662,8 @@ The monitor Lambda is a small, single-purpose function (~30 lines). It does not 
 
 ## 12. Compute architecture
 
+> **v5 update (codex finding Fix #3 P2 / PR #125 comment #4409943828):** §12.1 and §12.3 updated to reflect DDB-Streams-driven `IndicatorLambda` (supersedes the EventBridge-scheduled trigger described in earlier drafts). EventBridge cron retained only for the higher-TF candle poller and the outcome-tracker Lambda.
+
 ### 12.1 Where indicators run
 
 Two viable shapes:
@@ -1636,13 +1672,15 @@ Two viable shapes:
 Pros: indicators stay hot in memory, microsecond recomputation on every candle close. Keeps state.
 Cons: stateful service is harder to scale horizontally; restart loses warm-up window.
 
-**Shape B — Scheduled Lambda + DDB-derived state.**
-Pros: stateless, easy to scale, easy to replay against historical candles for backtests.
+**Shape B — DDB-Streams-driven Lambda + DDB-derived state (chosen).**
+Pros: stateless, easy to scale, easy to replay against historical candles for backtests. Triggered directly by candle writes — no schedule drift.
 Cons: pays DDB read cost on every run; indicators have to be re-derived from candles each invocation.
 
-**Recommendation: Shape B.** Scheduled `IndicatorLambda` triggered on each candle-close boundary (per timeframe) computes indicators from DDB candles + caches the indicator values back into a `quantara-{env}-indicator-state` table. The next signal computation reads cached state + the most recent candle and recomputes only the deltas.
+**Decision: Shape B.** `IndicatorLambda` is triggered by **DDB Streams on the `candles-v2` table** (see §5.9 for the full event source mapping and FilterCriteria). On each filtered stream event, the handler runs the collect-then-compute flow (§5.9) and caches indicator values into a `quantara-{env}-indicator-state` table. The next signal computation reads cached state + the most recent candle and recomputes only the deltas.
 
-Why: backtestability. We need to be able to point the indicator engine at historical candles and reproduce the exact signals that would have fired. A stateful Fargate process makes that arduous.
+Why: backtestability. We need to be able to point the indicator engine at historical candles and reproduce the exact signals that would have fired. A stateful Fargate process makes that arduous. DDB-Streams trigger also eliminates schedule drift — the Lambda fires exactly when a candle is written, not on a fixed cron interval.
+
+**Deprecated (Fix #3 v5): EventBridge-scheduled IndicatorLambda.** Earlier drafts of §12.3 described an EventBridge cron rule triggering the IndicatorLambda every minute (checking `now() % timeframe == 0`). This design is **deprecated and must not be deployed**. Deploying both the scheduled trigger and the DDB-Streams trigger would cause the same slot to be processed twice — the streams-based handler would compute and write the signal, and the cron-based handler would re-enter the flow for the same closeTime. The signals-v2 dedup (§5.9 Step 3–4) prevents duplicate writes, but the wasted compute and duplicate quorum-ADD calls are unnecessary and confusing.
 
 ### 12.2 Latency budget
 
@@ -1653,14 +1691,14 @@ Why: backtestability. We need to be able to point the indicator engine at histor
 | Algo signal → LLM ratification (when invoked) | < 3s             | Haiku is sub-second typically; budget 3s p99 |
 | Signal → user-visible                         | < 30s end-to-end | Backend caches and pushes to web             |
 
-### 12.3 Scheduling
+### 12.3 EventBridge schedules (non-indicator)
 
-EventBridge rules per timeframe:
+EventBridge cron is **not** used to trigger the IndicatorLambda (see §12.1 deprecation note). EventBridge is retained for two other purposes:
 
-- `cron(* * * * ? *)` — every minute (drives 15m/1h/4h/1d depending on minute-of-hour)
-- The Lambda checks `now() % timeframe == 0` for each TF and only computes the ones that just closed.
+- **Higher-TF candle poller** — EventBridge → Lambda calls `fetchOHLCV(pair, timeframe)` on each close boundary for all three exchanges. `cron(* * * * ? *)` with a `now() % timeframe == 0` check per TF. See §2 data-quality gap #1.
+- **Outcome-tracker Lambda** — EventBridge → Lambda that checks resolved signals against actual price outcomes. Triggered on a per-outcome-window schedule (15m, 1h, 4h, 1d offsets from signal emission). See Phase 8.
 
-Avoids deploying 4 separate schedules; single Lambda decides what to do.
+Avoids deploying per-TF schedules for the poller; single Lambda decides what to do based on the current minute.
 
 ---
 
@@ -1685,8 +1723,9 @@ Acceptance: weighted blending matches §5.3 formula; agreement/disagreement test
 
 ### Phase 4 — Indicator Lambda + DDB schema
 
-Files: `ingestion/src/indicator-handler.ts`, terraform additions for `signals` and `indicator-state` tables, EventBridge rule.
-Acceptance: real candles → cached indicator state → algo signal persisted to DDB.
+Files: `ingestion/src/indicator-handler.ts`, terraform additions for `signals` and `indicator-state` tables.
+Trigger: DDB Streams on `candles-v2` table (event source mapping per §5.9 FilterCriteria) — **not** an EventBridge schedule. See §12.1 for the deprecation of the EventBridge-scheduled IndicatorLambda design.
+Acceptance: real candles → collect-then-compute flow (§5.9) → cached indicator state → algo signal persisted to `signals-v2`.
 
 ### Phase 5 — News pair-tagging + sentiment aggregation
 
@@ -1731,18 +1770,21 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 ## 15. Risks
 
 > **v4 update (codex findings Fix #1, Fix #6 / PR #123):** Quorum non-recovery entry replaced with v4 race-window entry. WebSocket capacity entry corrected to reflect 500/sec rate quota, not 500 concurrent connections.
+>
+> **v5 update (codex findings Fix #1, Fix #3, Fix #4 / PR #125 comment #4409943828):** Quorum non-recovery entry updated to reflect signals-v2-as-dedup (no processed-close-store). close-quorum-monitor entry updated to reflect OldImage requirement. New entry added for close-quorum stream StreamViewType regression risk.
 
-| Risk                                                                          | Mitigation                                                                                                                                          |
-| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Indicator off-by-one bugs propagate silently into bad signals.                | Phase 1's TradingView-fixture acceptance bar; replay tests.                                                                                         |
-| LLM hallucinates a `buy` from a `hold`.                                       | Server-side guardrail validates allowed transformations; logs breaches.                                                                             |
-| Sentiment classification misreads sarcasm/satire.                             | Aggregated over many articles; single bad classification has bounded impact.                                                                        |
-| Volatility gate fires too often, suppressing all signals.                     | Threshold tunable; backtested to balance suppression vs noise.                                                                                      |
-| User over-trusts confidence numbers.                                          | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.                                                                |
-| Cross-exchange price disagreement on flash events.                            | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale.                                                              |
-| **Quorum race window (v4) — 2+ handlers compute for same slot concurrently.** | **Rare: DDB Streams mostly serializes per-slot events. Wasted compute bounded to 500ms–2s. Conditional Put guarantees exactly-once signal write.**  |
-| **Close-quorum row expires (TTL) without a signal written (missed close).**   | **`close-quorum-monitor` Lambda emits `CloseMissed` metric on TTL REMOVE; downstream alarm fires when no signal for pair/TF > N minutes (§11.5).**  |
-| **WebSocket concurrent connection cap reached.**                              | **AWS API Gateway default is 500 new connections/second (rate), not 500 concurrent. Steady-state capacity ~600K concurrent per region. See §16.6.** |
+| Risk                                                                          | Mitigation                                                                                                                                                                                                                                                                                               |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Indicator off-by-one bugs propagate silently into bad signals.                | Phase 1's TradingView-fixture acceptance bar; replay tests.                                                                                                                                                                                                                                              |
+| LLM hallucinates a `buy` from a `hold`.                                       | Server-side guardrail validates allowed transformations; logs breaches.                                                                                                                                                                                                                                  |
+| Sentiment classification misreads sarcasm/satire.                             | Aggregated over many articles; single bad classification has bounded impact.                                                                                                                                                                                                                             |
+| Volatility gate fires too often, suppressing all signals.                     | Threshold tunable; backtested to balance suppression vs noise.                                                                                                                                                                                                                                           |
+| User over-trusts confidence numbers.                                          | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.                                                                                                                                                                                                                     |
+| Cross-exchange price disagreement on flash events.                            | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale.                                                                                                                                                                                                                   |
+| **Quorum race window (v5) — 2+ handlers compute for same slot concurrently.** | **Rare: DDB Streams mostly serializes per-slot events. Wasted compute bounded to 500ms–2s. signals-v2 conditional Put (attribute_not_exists) guarantees exactly-once signal write. No orphaned marker can block recovery (processed-close-store eliminated, Fix #1 v5).**                                |
+| **Close-quorum row expires (TTL) without a signal written (missed close).**   | **`close-quorum-monitor` Lambda reads OldImage from REMOVE event, looks up signals-v2 for signalKey = pair#tf#closeTime; if absent, emits `CloseMissed` CloudWatch metric; downstream alarm fires when no signal for pair/TF > N minutes (§11.5).**                                                      |
+| **close-quorum stream reverted to NEW_IMAGE (Fix #4 v5 regression).**         | **If `StreamViewType` is changed from `NEW_AND_OLD_IMAGES` to `NEW_IMAGE`, TTL REMOVE events carry no attributes — the monitor cannot read pair/tf/closeTime from OldImage and silently stops emitting CloseMissed metrics. Guard in Terraform: StreamViewType must be NEW_AND_OLD_IMAGES (see §11.5).** |
+| **WebSocket concurrent connection cap reached.**                              | **AWS API Gateway default is 500 new connections/second (rate), not 500 concurrent. Steady-state capacity ~600K concurrent per region. See §16.6.**                                                                                                                                                      |
 
 ---
 
