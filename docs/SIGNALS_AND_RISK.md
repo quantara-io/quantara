@@ -24,12 +24,12 @@
 
 > **Note:** Earlier drafts of this doc framed signal latency as "5–30s is fine for an advisory product." That framing is superseded here. User expectation research showed that polling-visible lag degrades trust even when users aren't executing trades. The targets below reflect the updated design; §16 covers the SSE architecture that achieves them.
 
-| Step | Target | Notes |
-| ---- | ------ | ----- |
-| **Producer → DDB write** | ≤ 5s after the source candle closes | Event-driven (DDB Streams), not cron-polled |
-| **DDB write → connected client** | ≤ 1s via SSE push | No client polling required |
-| **End-to-end (candle close → user view)** | ≤ 6s p99 in steady state | Sum of the two steps above |
-| **Cold-start tolerance** | ≤ 2s | A fresh client connection sees current state within 2s of connect |
+| Step                                      | Target                              | Notes                                                             |
+| ----------------------------------------- | ----------------------------------- | ----------------------------------------------------------------- |
+| **Producer → DDB write**                  | ≤ 5s after the source candle closes | Event-driven (DDB Streams), not cron-polled                       |
+| **DDB write → connected client**          | ≤ 1s via SSE push                   | No client polling required                                        |
+| **End-to-end (candle close → user view)** | ≤ 6s p99 in steady state            | Sum of the two steps above                                        |
+| **Cold-start tolerance**                  | ≤ 2s                                | A fresh client connection sees current state within 2s of connect |
 
 These targets are aspirational for v1 and tunable per pair/TF. They explicitly do NOT promise execution-grade latency — Quantara remains advisory.
 
@@ -545,13 +545,13 @@ This gives freshness internally (every candle close matters for backtest replay 
 
 **Trade-offs vs. cron:**
 
-| Dimension | Cron approach (superseded) | Event-driven (current) |
-| --------- | -------------------------- | ---------------------- |
-| Latency to first indicator update | 0–60s after candle close | ~5s after candle close |
-| Lambda invocations | 1 batched/min (all pairs × TFs) | 1 per candle close per (pair, TF) |
-| Work per invocation | All 5 pairs × 4 TFs | Only the slot that just closed |
-| AWS pricing | Comparable | Comparable |
-| Idempotency requirement | Lower (cron is self-deduping) | Required (DDB Streams can deliver duplicates) |
+| Dimension                         | Cron approach (superseded)      | Event-driven (current)                        |
+| --------------------------------- | ------------------------------- | --------------------------------------------- |
+| Latency to first indicator update | 0–60s after candle close        | ~5s after candle close                        |
+| Lambda invocations                | 1 batched/min (all pairs × TFs) | 1 per candle close per (pair, TF)             |
+| Work per invocation               | All 5 pairs × 4 TFs             | Only the slot that just closed                |
+| AWS pricing                       | Comparable                      | Comparable                                    |
+| Idempotency requirement           | Lower (cron is self-deduping)   | Required (DDB Streams can deliver duplicates) |
 
 **Compute cost:** 5 pairs × ~127 closes/day across the 4 TFs (15m=96, 1h=24, 4h=6, 1d=1) ≈ 635 invocations/day. Lambda + DDB write ≈ negligible (~$5/month). The Phase 4 cron handler (`ingestion/src/indicator-handler.ts`) is redesigned under this approach — the Lambda entry point is identical but invocation trigger changes from EventBridge schedule to DDB Streams.
 
@@ -1500,10 +1500,10 @@ ttl: 600  // 10 min
 
 Two tables need DDB Streams enabled for the event-driven architecture described in §5.5 and §16:
 
-| Table | Stream type | Consumer | Purpose |
-| ----- | ----------- | -------- | ------- |
-| `quantara-{env}-candles` | `NEW_IMAGE` | indicator-handler Lambda | Triggers indicator computation + blending on each closed candle (§5.5 event-driven trigger) |
-| `quantara-{env}-signals-v2` | `NEW_IMAGE` | SSE fanout Lambda | Triggers push to connected clients when a BlendedSignal is written (§16 SSE architecture) |
+| Table                       | Stream type | Consumer                 | Purpose                                                                                     |
+| --------------------------- | ----------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| `quantara-{env}-candles`    | `NEW_IMAGE` | indicator-handler Lambda | Triggers indicator computation + blending on each closed candle (§5.5 event-driven trigger) |
+| `quantara-{env}-signals-v2` | `NEW_IMAGE` | SSE fanout Lambda        | Triggers push to connected clients when a BlendedSignal is written (§16 SSE architecture)   |
 
 Both stream configurations flow into Terraform additions as part of the implementation issues for §5.5 (P2 event-driven trigger) and §16 (P1 SSE push channel). They are documented here so the storage schema is self-contained and the implementation issues have a single source of truth.
 
@@ -1531,15 +1531,15 @@ Why: backtestability. We need to be able to point the indicator engine at histor
 
 See §1 for the full latency targets (v1). Decomposed into internal steps:
 
-| Step                                          | Target           | Notes                                        |
-| --------------------------------------------- | ---------------- | -------------------------------------------- |
-| Candle close → DDB write (REST poller)        | < 5s             | Lambda cold start is the cap                 |
-| DDB write → DDB Streams → indicator Lambda    | < 1s             | DDB Streams delivery SLA                     |
-| Indicators → algo signal (CPU)                | < 50ms           | Pure CPU                                     |
-| Algo signal → LLM ratification (when invoked) | < 3s             | Sonnet 4.6 p99; budget 3s                    |
-| Signal write → SSE push to client             | < 1s             | DDB Streams → SSE Lambda → client (§16)      |
-| **End-to-end p99 (no LLM)**                   | **≤ 6s**         | Matches §1 target                            |
-| **End-to-end p99 (with LLM ratification)**    | **≤ 9s**         | Acceptable; LLM path is minority of signals  |
+| Step                                          | Target   | Notes                                       |
+| --------------------------------------------- | -------- | ------------------------------------------- |
+| Candle close → DDB write (REST poller)        | < 5s     | Lambda cold start is the cap                |
+| DDB write → DDB Streams → indicator Lambda    | < 1s     | DDB Streams delivery SLA                    |
+| Indicators → algo signal (CPU)                | < 50ms   | Pure CPU                                    |
+| Algo signal → LLM ratification (when invoked) | < 3s     | Sonnet 4.6 p99; budget 3s                   |
+| Signal write → SSE push to client             | < 1s     | DDB Streams → SSE Lambda → client (§16)     |
+| **End-to-end p99 (no LLM)**                   | **≤ 6s** | Matches §1 target                           |
+| **End-to-end p99 (with LLM ratification)**    | **≤ 9s** | Acceptable; LLM path is minority of signals |
 
 ### 12.3 Scheduling
 
@@ -1618,15 +1618,15 @@ Acceptance: signals emitted in Phase 4 are scored at expiry; rolling accuracy is
 
 ## 15. Risks
 
-| Risk                                                           | Mitigation                                                                             |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Indicator off-by-one bugs propagate silently into bad signals. | Phase 1's TradingView-fixture acceptance bar; replay tests.                            |
-| LLM hallucinates a `buy` from a `hold`.                        | Server-side guardrail validates allowed transformations; logs breaches.                |
-| Sentiment classification misreads sarcasm/satire.              | Aggregated over many articles; single bad classification has bounded impact.           |
-| Volatility gate fires too often, suppressing all signals.      | Threshold tunable; backtested to balance suppression vs noise.                         |
-| User over-trusts confidence numbers.                           | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.   |
-| Cross-exchange price disagreement on flash events.             | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale. |
-| SSE Lambda concurrency exhausted under spike load.             | Concurrency cap + CloudWatch alarm (§16.6). Advisory product; drop-on-full is acceptable. |
+| Risk                                                           | Mitigation                                                                                                  |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Indicator off-by-one bugs propagate silently into bad signals. | Phase 1's TradingView-fixture acceptance bar; replay tests.                                                 |
+| LLM hallucinates a `buy` from a `hold`.                        | Server-side guardrail validates allowed transformations; logs breaches.                                     |
+| Sentiment classification misreads sarcasm/satire.              | Aggregated over many articles; single bad classification has bounded impact.                                |
+| Volatility gate fires too often, suppressing all signals.      | Threshold tunable; backtested to balance suppression vs noise.                                              |
+| User over-trusts confidence numbers.                           | UI must show outcome history alongside confidence; "advisory" disclaimer everywhere.                        |
+| Cross-exchange price disagreement on flash events.             | Median-of-three; stale-flag exclusion; fall back to single-exchange when ≥2 are stale.                      |
+| SSE Lambda concurrency exhausted under spike load.             | Concurrency cap + CloudWatch alarm (§16.6). Advisory product; drop-on-full is acceptable.                   |
 | DDB Streams duplicate delivery causes double fanout.           | SSE fanout Lambda must be idempotent; dedupe by `(signalId, clientId)` within the Lambda invocation window. |
 
 ---
@@ -1639,15 +1639,15 @@ This section documents the v1 push channel — how signal updates flow from the 
 
 **Chosen: Server-Sent Events (SSE) via Lambda function URL with response streaming.**
 
-| Dimension | SSE (chosen) | WebSocket |
-| --------- | ------------ | --------- |
-| Direction | Server → client only | Bidirectional |
-| Fit for "tell me when a signal updates" | Perfect — one-way | Over-engineered |
-| Reconnect handling | Built into the browser/SSE spec | Custom reconnect logic required |
-| Lambda support | Response streaming (available since 2023) | Requires API Gateway WebSocket or ALB — additional infra |
-| Connection-state management | Stateless from server perspective | Requires connection registry |
-| Auth in browser | JWT in query param (standard SSE pattern) | `Authorization` header supported |
-| Implementation complexity | Low | High |
+| Dimension                               | SSE (chosen)                              | WebSocket                                                |
+| --------------------------------------- | ----------------------------------------- | -------------------------------------------------------- |
+| Direction                               | Server → client only                      | Bidirectional                                            |
+| Fit for "tell me when a signal updates" | Perfect — one-way                         | Over-engineered                                          |
+| Reconnect handling                      | Built into the browser/SSE spec           | Custom reconnect logic required                          |
+| Lambda support                          | Response streaming (available since 2023) | Requires API Gateway WebSocket or ALB — additional infra |
+| Connection-state management             | Stateless from server perspective         | Requires connection registry                             |
+| Auth in browser                         | JWT in query param (standard SSE pattern) | `Authorization` header supported                         |
+| Implementation complexity               | Low                                       | High                                                     |
 
 **WebSocket revisited if/when** client-initiated subscriptions or commands are needed (e.g. "change my pair filter without reconnecting"). For v1, the client simply reconnects with a different `pairs=` query param; this is acceptable.
 
@@ -1710,24 +1710,24 @@ event: init
 data: {"pairs":{"BTC/USDT":{...currentSignal},"ETH/USDT":{...currentSignal},...}}
 ```
 
-| Event | When emitted | Payload |
-| ----- | ------------ | ------- |
-| `init` | Immediately on connect | Current snapshot of all subscribed pairs |
-| `signal-update` | When a new BlendedSignal is written to `signals-v2` | Full signal object |
-| `signal-invalidated` | When a signal's `invalidated` flag is set (§10.4) | `signalId` + `invalidatedAt` |
-| `keepalive` | Every 15 seconds | Server timestamp |
+| Event                | When emitted                                        | Payload                                  |
+| -------------------- | --------------------------------------------------- | ---------------------------------------- |
+| `init`               | Immediately on connect                              | Current snapshot of all subscribed pairs |
+| `signal-update`      | When a new BlendedSignal is written to `signals-v2` | Full signal object                       |
+| `signal-invalidated` | When a signal's `invalidated` flag is set (§10.4)   | `signalId` + `invalidatedAt`             |
+| `keepalive`          | Every 15 seconds                                    | Server timestamp                         |
 
 The `init` event ensures a freshly connected client (or a reconnecting mobile client) sees current state within 2s — satisfying the cold-start tolerance target in §1.
 
 ### 16.5 Client lifecycle
 
-| Phase | Behavior |
-| ----- | -------- |
-| Connect | Client opens `EventSource` to `/genie/stream?token=<jwt>&pairs=BTC%2FUSDT,ETH%2FUSDT`. Server sends `init` event with current snapshot. |
-| Active | Server pushes `signal-update` and `signal-invalidated` events as they occur. `keepalive` every 15s to detect dead connections. |
-| Disconnect / network drop | SSE built-in: browser auto-reconnects with `Last-Event-ID` header. Server sends `init` to resync current state. |
-| Mobile background | App suspended → SSE connection drops. On resume, EventSource reconnects and the `init` event resyncs. No separate "catch up" mechanism needed for an advisory product. |
-| Token expiry | Server sends a `close` event (or lets the keepalive lapse). Client re-authenticates via Aldero and opens a new `EventSource`. |
+| Phase                     | Behavior                                                                                                                                                               |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Connect                   | Client opens `EventSource` to `/genie/stream?token=<jwt>&pairs=BTC%2FUSDT,ETH%2FUSDT`. Server sends `init` event with current snapshot.                                |
+| Active                    | Server pushes `signal-update` and `signal-invalidated` events as they occur. `keepalive` every 15s to detect dead connections.                                         |
+| Disconnect / network drop | SSE built-in: browser auto-reconnects with `Last-Event-ID` header. Server sends `init` to resync current state.                                                        |
+| Mobile background         | App suspended → SSE connection drops. On resume, EventSource reconnects and the `init` event resyncs. No separate "catch up" mechanism needed for an advisory product. |
+| Token expiry              | Server sends a `close` event (or lets the keepalive lapse). Client re-authenticates via Aldero and opens a new `EventSource`.                                          |
 
 ### 16.6 Backpressure and concurrency limits
 
@@ -1744,13 +1744,13 @@ The `init` event ensures a freshly connected client (or a reconnecting mobile cl
 
 ### 16.7 What §16 explicitly defers
 
-| Topic | Phase |
-| ----- | ----- |
-| WebSocket variant | Revisit if client-initiated subscriptions are needed (post-MVP) |
-| Replay queue (client missed N updates) | Not needed for advisory product; `init` on reconnect is sufficient |
-| Per-user subscription filter (dynamic pair selection without reconnect) | Post-MVP; reconnect with new `pairs=` param is acceptable for v1 |
-| Tick-level (sub-candle) signal streaming | P3 deferred; signals emit on candle-close boundaries |
-| Connection analytics (active connections, p99 delivery latency) | Phase after SSE ships — instrument via CloudWatch Embedded Metrics Format |
+| Topic                                                                   | Phase                                                                     |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| WebSocket variant                                                       | Revisit if client-initiated subscriptions are needed (post-MVP)           |
+| Replay queue (client missed N updates)                                  | Not needed for advisory product; `init` on reconnect is sufficient        |
+| Per-user subscription filter (dynamic pair selection without reconnect) | Post-MVP; reconnect with new `pairs=` param is acceptable for v1          |
+| Tick-level (sub-candle) signal streaming                                | P3 deferred; signals emit on candle-close boundaries                      |
+| Connection analytics (active connections, p99 delivery latency)         | Phase after SSE ships — instrument via CloudWatch Embedded Metrics Format |
 
 ---
 
