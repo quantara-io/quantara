@@ -33,6 +33,13 @@ genie.openapi(signalsRoute, async (c) => {
   return c.json({ success: true as const, data: { signals, disclaimer: ADVISORY_DISCLAIMER } });
 });
 
+const pairNotFoundSchema = z
+  .object({
+    success: z.literal(false),
+    error: z.object({ code: z.string(), message: z.string() }),
+  })
+  .openapi("PairNotFoundResponse");
+
 const signalByPairRoute = createRoute({
   method: "get",
   path: "/signals/:pair",
@@ -46,16 +53,7 @@ const signalByPairRoute = createRoute({
       description: "Signal for pair",
     },
     404: {
-      content: {
-        "application/json": {
-          schema: z
-            .object({
-              success: z.literal(false),
-              error: z.object({ code: z.string(), message: z.string() }),
-            })
-            .openapi("PairNotFoundResponse"),
-        },
-      },
+      content: { "application/json": { schema: pairNotFoundSchema } },
       description: "Unknown trading pair",
     },
   },
@@ -69,9 +67,9 @@ genie.openapi(signalByPairRoute, async (c) => {
       {
         success: false as const,
         error: { code: "UNKNOWN_PAIR", message: `Unknown trading pair: ${pair}` },
-      },
+      } satisfies z.infer<typeof pairNotFoundSchema>,
       404,
-    ) as any;
+    );
   }
 
   const auth = c.get("auth");
@@ -80,10 +78,13 @@ genie.openapi(signalByPairRoute, async (c) => {
     pair as (typeof PAIRS)[number],
     auth.email,
   );
-  return c.json({
-    success: true as const,
-    data: { pair, signal, disclaimer: ADVISORY_DISCLAIMER },
-  }) as any;
+  return c.json(
+    {
+      success: true as const,
+      data: { pair, signal, disclaimer: ADVISORY_DISCLAIMER },
+    } satisfies z.infer<typeof SignalByPairResponse>,
+    200,
+  );
 });
 
 const historyRoute = createRoute({

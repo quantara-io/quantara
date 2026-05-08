@@ -28,6 +28,52 @@ export const Signal = z
 const TimeframeEnum = z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]);
 
 /**
+ * Per-timeframe vote produced by scoreTimeframe.
+ * Mirrors the TimeframeVote interface from @quantara/shared so the OpenAPI
+ * spec exposes a typed schema instead of an opaque blob.
+ */
+export const TimeframeVoteSchema = z
+  .object({
+    type: z.enum(["buy", "sell", "hold"]),
+    confidence: z.number(),
+    rulesFired: z.array(z.string()),
+    bullishScore: z.number(),
+    bearishScore: z.number(),
+    volatilityFlag: z.boolean(),
+    gateReason: z.enum(["vol", "dispersion", "stale"]).nullable(),
+    asOf: z.number(),
+  })
+  .openapi("TimeframeVote");
+
+/**
+ * Risk recommendation emitted alongside each non-hold BlendedSignal.
+ * Mirrors the RiskRecommendation interface from @quantara/shared.
+ * null when signal.type === "hold" or computed sizePct is below the threshold.
+ */
+export const RiskRecommendationSchema = z
+  .object({
+    pair: z.string(),
+    profile: z.enum(["conservative", "moderate", "aggressive"]),
+    positionSizePct: z.number(),
+    positionSizeModel: z.enum(["fixed", "vol-targeted", "kelly"]),
+    stopLoss: z.number(),
+    stopDistance: z.number().describe("ATR × multiplier (price delta, not an R-multiple)"),
+    takeProfit: z.array(
+      z.object({
+        price: z.number(),
+        closePct: z.number(),
+        rMultiple: z.number(),
+      }),
+    ),
+    invalidationCondition: z.string().describe("Human-readable invalidation condition"),
+    trailingStopAfterTP2: z.object({
+      multiplier: z.number(),
+      reference: z.literal("ATR"),
+    }),
+  })
+  .openapi("RiskRecommendation");
+
+/**
  * BlendedSignalSchema — the full user-facing signal shape that the signal-service
  * emits. Carries per-timeframe votes for transparency and post-renormalization
  * weights (§5.6 of SIGNALS_AND_RISK.md).
@@ -42,7 +88,7 @@ export const BlendedSignalSchema = z
     rulesFired: z.array(z.string()),
 
     // Per-timeframe vote breakdown — null when a TF had no valid data.
-    perTimeframe: z.record(TimeframeEnum, z.unknown().nullable()),
+    perTimeframe: z.record(TimeframeEnum, TimeframeVoteSchema.nullable()),
     // Post-renormalization weights per timeframe (§5.6).
     weightsUsed: z.record(TimeframeEnum, z.number()),
 
@@ -51,7 +97,7 @@ export const BlendedSignalSchema = z
     emittingTimeframe: TimeframeEnum,
 
     // Risk recommendation — null when type === "hold"
-    risk: z.unknown().nullable(),
+    risk: RiskRecommendationSchema.nullable(),
   })
   .openapi("BlendedSignalSchema");
 

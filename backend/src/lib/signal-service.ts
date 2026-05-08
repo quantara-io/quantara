@@ -8,18 +8,58 @@
  *
  * This is the ONLY place where user-store bootstrap is invoked from the
  * signal read path. It is never called from auth routes or JWT middleware.
+ *
+ * Read path:
+ *   signals_v2 table — PK: pair, SK: emittedAtSignalId (ISO8601#uuid).
+ *   Queried with ScanIndexForward: false, Limit: 1 to get the latest signal
+ *   for a pair, or Limit: N to get recent signals across all pairs.
+ *
+ *   The table is written by the indicator Lambda handler (ingestion service).
+ *   If the table is empty (no signals emitted yet), these functions return
+ *   null / [] — that is the correct empty-state behavior, not a bug.
+ *   Once the indicator handler has emitted at least one signal for a pair,
+ *   the read path returns it without any further code changes.
  */
 
-import type { BlendedSignal } from "@quantara/shared";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import type { BlendedSignal, Timeframe } from "@quantara/shared";
 import { PAIRS, type TradingPair } from "@quantara/shared";
 import { getOrCreateUserRecord } from "./user-store.js";
 
 export type { TradingPair };
 export { PAIRS };
 
+const SIGNALS_V2_TABLE =
+  process.env.TABLE_SIGNALS_V2 ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+
+const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+/** Map a raw DynamoDB item to a BlendedSignal. */
+function itemToBlendedSignal(item: Record<string, unknown>): BlendedSignal {
+  return {
+    pair: item.pair as string,
+    type: item.type as BlendedSignal["type"],
+    confidence: item.confidence as number,
+    volatilityFlag: item.volatilityFlag as boolean,
+    gateReason: (item.gateReason as BlendedSignal["gateReason"]) ?? null,
+    rulesFired: (item.rulesFired as string[]) ?? [],
+    perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
+    weightsUsed: (item.weightsUsed as Record<Timeframe, number>) ?? {},
+    asOf: item.asOf as number,
+    emittingTimeframe: item.emittingTimeframe as Timeframe,
+    risk: (item.risk as BlendedSignal["risk"]) ?? null,
+  };
+}
+
 /**
  * Fetch the latest signal for a pair, enriching with the user's risk profile.
  * Bootstraps the user record on first call.
+ *
+ * Returns null when no signal has been emitted for this pair yet — this is
+ * normal during early deployment before the indicator handler has processed
+ * sufficient candle data for the pair.
  *
  * @param userId  Authenticated user id (AuthContext.userId).
  * @param pair    Trading pair — must be a member of PAIRS.
@@ -34,24 +74,54 @@ export async function getSignalForUser(
   // Lazy bootstrap — creates record with tier="free" on first authenticated request.
   await getOrCreateUserRecord(userId, email);
 
-  // Signal fetch is a placeholder — real implementation wires to the signals
-  // DynamoDB table (see admin.service.ts getSignals for the query pattern).
-  // `pair` is the lookup key; returning null is valid until the query is wired.
-  void pair;
-  return null;
+  const result = await client.send(
+    new QueryCommand({
+      TableName: SIGNALS_V2_TABLE,
+      KeyConditionExpression: "#pair = :pair",
+      ExpressionAttributeNames: { "#pair": "pair" },
+      ExpressionAttributeValues: { ":pair": pair },
+      ScanIndexForward: false,
+      Limit: 1,
+    }),
+  );
+
+  const item = result.Items?.[0];
+  if (!item) return null;
+  return itemToBlendedSignal(item);
 }
 
 /**
- * Fetch all latest signals, bootstrapping the user record if needed.
+ * Fetch all latest signals (one per pair), bootstrapping the user record if needed.
+ *
+ * Returns an empty array when no signals have been emitted yet — correct
+ * empty-state behavior while the indicator handler warms up.
  *
  * @param userId  Authenticated user id.
  * @param email   Optional email from JWT claims.
- * @returns       Array of latest BlendedSignals (empty when none are available).
+ * @returns       Array of latest BlendedSignals (one per pair, empty when none available).
  */
 export async function getAllSignalsForUser(
   userId: string,
   email?: string,
 ): Promise<BlendedSignal[]> {
   await getOrCreateUserRecord(userId, email);
-  return [];
+
+  // Fetch the latest signal for each pair in parallel.
+  const results = await Promise.all(
+    PAIRS.map(async (pair) => {
+      const result = await client.send(
+        new QueryCommand({
+          TableName: SIGNALS_V2_TABLE,
+          KeyConditionExpression: "#pair = :pair",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: { ":pair": pair },
+          ScanIndexForward: false,
+          Limit: 1,
+        }),
+      );
+      return result.Items?.[0] ? itemToBlendedSignal(result.Items[0]) : null;
+    }),
+  );
+
+  return results.filter((s): s is BlendedSignal => s !== null);
 }

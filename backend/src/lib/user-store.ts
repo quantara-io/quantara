@@ -12,7 +12,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { UserProfile, Tier } from "@quantara/shared";
-import { defaultRiskProfiles } from "@quantara/shared";
+import { defaultRiskProfiles, mergeTierRiskProfiles } from "@quantara/shared";
 
 const USERS_TABLE =
   process.env.TABLE_USERS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}users`;
@@ -120,7 +120,6 @@ export async function getOrCreateUserRecord(
  * preserved on upgrade/downgrade.
  */
 export async function updateUserTier(userId: string, newTier: Tier): Promise<UserProfile> {
-  const { mergeTierRiskProfiles } = await import("@quantara/shared");
   const existing = await getOrCreateUserRecord(userId);
   const updatedProfile: UserProfile = {
     ...existing,
