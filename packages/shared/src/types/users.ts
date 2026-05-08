@@ -8,6 +8,19 @@ export type UserType = (typeof USER_TYPES)[number];
 /** Free tier → "conservative"; any paid tier → "moderate". */
 export type Tier = "free" | "paid";
 
+/**
+ * Map an Aldero tierId string to Quantara's two-value Tier enum.
+ *
+ * - "111" is the free tier (priceMonthly === 0).
+ * - Any other known tierId is a paid tier.
+ * - Unknown tierId strings fall back to "free" to avoid accidentally granting
+ *   paid defaults to a user whose tier cannot be resolved.
+ */
+export function tierIdToTier(tierId: string | undefined | null): Tier {
+  if (!tierId) return "free";
+  return tierId === "111" ? "free" : "paid";
+}
+
 export interface UserProfile {
   userId: string;
   email: string;

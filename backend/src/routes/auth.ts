@@ -1,6 +1,9 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 
+import { tierIdToTier } from "@quantara/shared";
+
 import { alderoPost, alderoGet, AlderoError } from "../lib/aldero-client.js";
+import { logger } from "../lib/logger.js";
 import {
   SignupRequest,
   LoginRequest,
@@ -13,6 +16,7 @@ import {
 } from "../lib/schemas/auth.js";
 import { ErrorResponse } from "../lib/schemas/common.js";
 import { requireAuth } from "../middleware/require-auth.js";
+import { bootstrapUser } from "../lib/user-store.js";
 
 const auth = new OpenAPIHono();
 
@@ -92,6 +96,26 @@ auth.openapi(signupRoute, async (c) => {
   const body = c.req.valid("json");
   try {
     const result = (await alderoPost("/v1/auth/signup", body)) as Record<string, unknown>;
+
+    // Resolve tier from the Aldero signup response (user sub + tierId claim).
+    // If unavailable, tierIdToTier falls back to "free" — still correct for
+    // new free signups; paid users whose tier claim is missing will have their
+    // riskProfiles re-derived from their true tier on the first authenticated
+    // read via getEffectiveRiskProfiles.
+    const userId = (result.user as Record<string, unknown> | undefined)?.id as string | undefined;
+    const tierId = (result.user as Record<string, unknown> | undefined)?.tierId as
+      | string
+      | undefined;
+    if (userId) {
+      try {
+        await bootstrapUser(userId, tierIdToTier(tierId));
+      } catch (bootstrapErr) {
+        // Log but do not fail the signup — the user is already created in Aldero.
+        // Lazy bootstrap will run on their first authenticated request.
+        logger.error({ err: bootstrapErr, userId }, "signup: bootstrapUser failed");
+      }
+    }
+
     return c.json({ success: true as const, data: result } as any);
   } catch (err) {
     if (err instanceof AlderoError) {

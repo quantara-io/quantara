@@ -1,8 +1,10 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
-import { ADVISORY_DISCLAIMER } from "@quantara/shared";
+import { ADVISORY_DISCLAIMER, PAIRS } from "@quantara/shared";
+import type { TradingPair } from "@quantara/shared";
 
 import { requireAuth } from "../middleware/require-auth.js";
+import { ErrorResponse } from "../lib/schemas/common.js";
 import {
   SignalsResponse,
   SignalByPairResponse,
@@ -42,10 +44,28 @@ const signalByPairRoute = createRoute({
       content: { "application/json": { schema: SignalByPairResponse } },
       description: "Signal for pair",
     },
+    404: {
+      content: { "application/json": { schema: ErrorResponse } },
+      description: "Unknown trading pair",
+    },
   },
 });
 genie.openapi(signalByPairRoute, (c) => {
-  const { pair } = c.req.valid("param");
+  const { pair: rawPair } = c.req.valid("param");
+  // Normalise BTC-USDT → BTC/USDT so both dash and slash forms are accepted.
+  const pair = rawPair.replace(/-/g, "/");
+  if (!PAIRS.includes(pair as TradingPair)) {
+    return c.json(
+      {
+        success: false as const,
+        error: {
+          code: "INVALID_PAIR",
+          message: `Pair must be one of: ${PAIRS.join(", ")}`,
+        },
+      },
+      404 as 404,
+    ) as any;
+  }
   return c.json({
     success: true as const,
     data: { pair, signal: null, disclaimer: ADVISORY_DISCLAIMER },

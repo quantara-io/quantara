@@ -1,5 +1,45 @@
 import { z } from "@hono/zod-openapi";
 
+/**
+ * Mirrors the shared TimeframeVote interface — per-timeframe vote produced by
+ * scoreTimeframe in ingestion/src/signals/score.ts.  Declared here so the
+ * OpenAPI contract exposes the full wire shape of BlendedSignalSchema.
+ */
+export const TimeframeVoteSchema = z
+  .object({
+    type: z.enum(["buy", "sell", "hold"]),
+    confidence: z.number().min(0).max(1),
+    rulesFired: z.array(z.string()),
+    bullishScore: z.number(),
+    bearishScore: z.number(),
+    volatilityFlag: z.boolean(),
+    gateReason: z.enum(["vol", "dispersion", "stale"]).nullable(),
+    asOf: z.number(),
+  })
+  .openapi("TimeframeVoteSchema");
+
+/**
+ * Mirrors the shared BlendedSignal interface — full wire shape returned by the
+ * ingestion pipeline and surfaced via the genie route.  The perTimeframe and
+ * weightsUsed fields were missing from the previous schema; adding them aligns
+ * the OpenAPI contract with the DynamoDB-persisted shape.
+ */
+export const BlendedSignalSchema = z
+  .object({
+    pair: z.string(),
+    type: z.enum(["buy", "sell", "hold"]),
+    confidence: z.number().min(0).max(1),
+    volatilityFlag: z.boolean(),
+    gateReason: z.enum(["vol", "dispersion", "stale"]).nullable(),
+    rulesFired: z.array(z.string()),
+    perTimeframe: z.record(z.string(), TimeframeVoteSchema.nullable()).optional(),
+    weightsUsed: z.record(z.string(), z.number()).optional(),
+    asOf: z.number(),
+    emittingTimeframe: z.string(),
+    risk: z.unknown().nullable().optional(),
+  })
+  .openapi("BlendedSignalSchema");
+
 export const ExchangePricePoint = z
   .object({
     exchange: z.string(),

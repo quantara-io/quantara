@@ -24,6 +24,8 @@ export interface AuthContext {
   authMethod?: string;
   sessionId?: string;
   role?: string;
+  /** Aldero tierId claim — used to resolve Tier at bootstrap time. */
+  tierId?: string;
 }
 
 export async function authenticate(authHeader: string | undefined): Promise<AuthContext> {
@@ -51,6 +53,7 @@ export async function authenticate(authHeader: string | undefined): Promise<Auth
       authMethod: payload.auth_method as string | undefined,
       sessionId: payload.session_id as string | undefined,
       role: payload.role as string | undefined,
+      tierId: payload.tier_id as string | undefined,
     };
   } catch (err) {
     if (err instanceof UnauthorizedError) throw err;

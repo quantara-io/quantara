@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const alderoPostMock = vi.fn();
 const alderoGetMock = vi.fn();
+const bootstrapUserMock = vi.fn();
 
 vi.mock("../lib/aldero-client.js", async () => {
   const actual =
@@ -12,6 +13,11 @@ vi.mock("../lib/aldero-client.js", async () => {
     alderoGet: alderoGetMock,
   };
 });
+
+// Mock user-store so tests don't touch DynamoDB
+vi.mock("../lib/user-store.js", () => ({
+  bootstrapUser: bootstrapUserMock,
+}));
 
 // Pass-through requireAuth that injects a fake auth context. The real
 // middleware is covered by middleware/require-auth.test.ts.
@@ -34,6 +40,8 @@ beforeEach(() => {
   vi.resetModules();
   alderoPostMock.mockReset();
   alderoGetMock.mockReset();
+  bootstrapUserMock.mockReset();
+  bootstrapUserMock.mockResolvedValue(undefined);
 });
 
 async function loadApp() {
@@ -85,6 +93,54 @@ describe("POST /signup", () => {
       email: "a@b.com",
       password: "password123",
     });
+  });
+
+  it("awaits bootstrapUser synchronously with tier=free for tierId=111", async () => {
+    alderoPostMock.mockResolvedValue({ accessToken: "at", user: { id: "u1", tierId: "111" } });
+    const app = await loadApp();
+    const res = await app.request("/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "a@b.com", password: "password123" }),
+    });
+    expect(res.status).toBe(200);
+    expect(bootstrapUserMock).toHaveBeenCalledWith("u1", "free");
+  });
+
+  it("bootstraps with tier=paid for any non-free tierId", async () => {
+    alderoPostMock.mockResolvedValue({ accessToken: "at", user: { id: "u2", tierId: "222" } });
+    const app = await loadApp();
+    await app.request("/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "b@b.com", password: "password123" }),
+    });
+    expect(bootstrapUserMock).toHaveBeenCalledWith("u2", "paid");
+  });
+
+  it("falls back to tier=free when tierId is absent from the Aldero response", async () => {
+    // Aldero may omit tierId on some older response shapes
+    alderoPostMock.mockResolvedValue({ accessToken: "at", user: { id: "u3" } });
+    const app = await loadApp();
+    await app.request("/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "c@b.com", password: "password123" }),
+    });
+    expect(bootstrapUserMock).toHaveBeenCalledWith("u3", "free");
+  });
+
+  it("returns 200 even when bootstrapUser throws (non-fatal)", async () => {
+    alderoPostMock.mockResolvedValue({ accessToken: "at", user: { id: "u4", tierId: "222" } });
+    bootstrapUserMock.mockRejectedValue(new Error("DynamoDB offline"));
+    const app = await loadApp();
+    const res = await app.request("/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "d@b.com", password: "password123" }),
+    });
+    // Signup must succeed even when bootstrap fails
+    expect(res.status).toBe(200);
   });
 
   it("translates AlderoError into a SIGNUP_FAILED error response", async () => {
