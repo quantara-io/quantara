@@ -73,11 +73,7 @@ genie.openapi(signalByPairRoute, async (c) => {
   }
 
   const auth = c.get("auth");
-  const signal = await getSignalForUser(
-    auth.userId,
-    pair as (typeof PAIRS)[number],
-    auth.email,
-  );
+  const signal = await getSignalForUser(auth.userId, pair as (typeof PAIRS)[number], auth.email);
   return c.json(
     {
       success: true as const,

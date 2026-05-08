@@ -28,6 +28,16 @@ export const Signal = z
 const TimeframeEnum = z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]);
 
 /**
+ * Subset of TimeframeEnum that the multi-horizon blender actually emits.
+ * Per §5.2 of SIGNALS_AND_RISK.md, blending uses only 15m/1h/4h/1d (1m and 5m
+ * are too noisy for the headline signal). The indicator-handler writes
+ * BlendedSignal records with perTimeframe/weightsUsed keyed only on these 4 TFs;
+ * the schema must reflect the production write shape, otherwise OpenAPI
+ * response validation rejects real data.
+ */
+const BlendTimeframeEnum = z.enum(["15m", "1h", "4h", "1d"]);
+
+/**
  * Per-timeframe vote produced by scoreTimeframe.
  * Mirrors the TimeframeVote interface from @quantara/shared so the OpenAPI
  * spec exposes a typed schema instead of an opaque blob.
@@ -88,12 +98,17 @@ export const BlendedSignalSchema = z
     rulesFired: z.array(z.string()),
 
     // Per-timeframe vote breakdown — null when a TF had no valid data.
-    perTimeframe: z.record(TimeframeEnum, TimeframeVoteSchema.nullable()),
+    // Keyed only on the 4 blender TFs (§5.2); 1m/5m are not part of blended signals.
+    // z.record permits missing keys, so a real persisted item with just 15m/1h/4h/1d passes.
+    perTimeframe: z.record(BlendTimeframeEnum, TimeframeVoteSchema.nullable()),
     // Post-renormalization weights per timeframe (§5.6).
-    weightsUsed: z.record(TimeframeEnum, z.number()),
+    weightsUsed: z.record(BlendTimeframeEnum, z.number()),
 
     // Lifecycle / identifying
     asOf: z.number().describe("Unix ms of the latest TF close that triggered this blend"),
+    // Match the canonical Timeframe type (all 6) — in practice the indicator-handler
+    // only emits the 4 blender TFs, but typing this against the wider Timeframe keeps
+    // BlendedSignalSchema assignable to BlendedSignal without a manual narrowing cast.
     emittingTimeframe: TimeframeEnum,
 
     // Risk recommendation — null when type === "hold"

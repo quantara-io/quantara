@@ -11,6 +11,8 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+import { defaultRiskProfiles } from "@quantara/shared";
+
 const sendMock = vi.fn();
 
 vi.mock("@aws-sdk/client-dynamodb", () => ({
@@ -98,7 +100,7 @@ describe("putUser", () => {
       displayName: "",
       userType: "retail" as const,
       tier: "free" as const,
-      riskProfiles: {} as any,
+      riskProfiles: defaultRiskProfiles("free"),
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
@@ -122,7 +124,7 @@ describe("putUser", () => {
       displayName: "",
       userType: "retail" as const,
       tier: "free" as const,
-      riskProfiles: {} as any,
+      riskProfiles: defaultRiskProfiles("free"),
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
@@ -139,7 +141,7 @@ describe("putUser", () => {
       displayName: "",
       userType: "retail" as const,
       tier: "free" as const,
-      riskProfiles: {} as any,
+      riskProfiles: defaultRiskProfiles("free"),
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     };

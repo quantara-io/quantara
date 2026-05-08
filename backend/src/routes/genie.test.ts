@@ -10,6 +10,26 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Minimal response shapes for the test assertions. Keeps `body.x` access typed
+// without claiming structural equivalence with the live Signal/RiskRecommendation —
+// tests only assert presence/types of top-level fields, not the inner shape.
+type SignalsBody = {
+  success: boolean;
+  data: { signals: unknown[]; disclaimer: string };
+};
+type SignalByPairBody = {
+  success: boolean;
+  data: { signal: unknown | null; disclaimer: string };
+  error?: { code: string; message?: string };
+};
+type HistoryBody = {
+  success: boolean;
+  data: {
+    history: unknown[];
+    meta: { page: number; pageSize: number; total: number; hasMore: boolean };
+  };
+};
+
 // Mock signal-service so tests don't touch DynamoDB.
 const getSignalForUserMock = vi.fn();
 const getAllSignalsForUserMock = vi.fn();
@@ -57,7 +77,7 @@ describe("GET /signals", () => {
     const app = await loadApp();
     const res = await app.request("/signals");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
+    const body = (await res.json()) as SignalsBody;
     expect(body.success).toBe(true);
     expect(body.data.signals).toEqual([]);
     expect(typeof body.data.disclaimer).toBe("string");
@@ -67,10 +87,7 @@ describe("GET /signals", () => {
     getAllSignalsForUserMock.mockResolvedValue([]);
     const app = await loadApp();
     await app.request("/signals");
-    expect(getAllSignalsForUserMock).toHaveBeenCalledWith(
-      fakeAuth.userId,
-      fakeAuth.email,
-    );
+    expect(getAllSignalsForUserMock).toHaveBeenCalledWith(fakeAuth.userId, fakeAuth.email);
   });
 });
 
@@ -84,7 +101,7 @@ describe("GET /signals/:pair — valid pair", () => {
     const app = await loadApp();
     const res = await app.request("/signals/BTC%2FUSDT");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
+    const body = (await res.json()) as SignalByPairBody & { data: { pair: string } };
     expect(body.success).toBe(true);
     expect(body.data.pair).toBe("BTC/USDT");
     expect(body.data.signal).toBeNull();
@@ -94,11 +111,7 @@ describe("GET /signals/:pair — valid pair", () => {
     getSignalForUserMock.mockResolvedValue(null);
     const app = await loadApp();
     await app.request("/signals/ETH%2FUSDT");
-    expect(getSignalForUserMock).toHaveBeenCalledWith(
-      fakeAuth.userId,
-      "ETH/USDT",
-      fakeAuth.email,
-    );
+    expect(getSignalForUserMock).toHaveBeenCalledWith(fakeAuth.userId, "ETH/USDT", fakeAuth.email);
   });
 });
 
@@ -107,10 +120,10 @@ describe("GET /signals/:pair — invalid pair", () => {
     const app = await loadApp();
     const res = await app.request("/signals/FAKE%2FPAIR");
     expect(res.status).toBe(404);
-    const body = (await res.json()) as any;
+    const body = (await res.json()) as SignalByPairBody;
     expect(body.success).toBe(false);
-    expect(body.error.code).toBe("UNKNOWN_PAIR");
-    expect(body.error.message).toContain("FAKE/PAIR");
+    expect(body.error?.code).toBe("UNKNOWN_PAIR");
+    expect(body.error?.message).toContain("FAKE/PAIR");
   });
 
   it("does NOT call getSignalForUser for invalid pairs", async () => {
@@ -123,9 +136,9 @@ describe("GET /signals/:pair — invalid pair", () => {
     const app = await loadApp();
     const res = await app.request("/signals/btc-usdt");
     expect(res.status).toBe(404);
-    const body = (await res.json()) as any;
+    const body = (await res.json()) as SignalByPairBody;
     expect(body.success).toBe(false);
-    expect(body.error.code).toBe("UNKNOWN_PAIR");
+    expect(body.error?.code).toBe("UNKNOWN_PAIR");
   });
 });
 
@@ -138,7 +151,7 @@ describe("GET /history", () => {
     const app = await loadApp();
     const res = await app.request("/history");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
+    const body = (await res.json()) as HistoryBody;
     expect(body.success).toBe(true);
     expect(body.data.history).toEqual([]);
     expect(body.data.meta.page).toBe(1);
@@ -151,7 +164,7 @@ describe("GET /history", () => {
     const app = await loadApp();
     const res = await app.request("/history?page=3&pageSize=5");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
+    const body = (await res.json()) as HistoryBody;
     expect(body.data.meta.page).toBe(3);
     expect(body.data.meta.pageSize).toBe(5);
   });

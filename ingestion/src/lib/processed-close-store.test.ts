@@ -176,8 +176,6 @@ describe("clearProcessedClose", () => {
 
     const { clearProcessedClose } = await import("./processed-close-store.js");
     // Should not throw — clearProcessedClose is best-effort.
-    await expect(
-      clearProcessedClose("BTC/USDT", "15m", 1700000900000),
-    ).resolves.toBeUndefined();
+    await expect(clearProcessedClose("BTC/USDT", "15m", 1700000900000)).resolves.toBeUndefined();
   });
 });

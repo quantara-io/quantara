@@ -23,34 +23,34 @@
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { BlendedSignal, Timeframe } from "@quantara/shared";
+import type { BlendedSignal } from "@quantara/shared";
 import { PAIRS, type TradingPair } from "@quantara/shared";
+
+import { BlendedSignalSchema } from "./schemas/genie.js";
 import { getOrCreateUserRecord } from "./user-store.js";
 
 export type { TradingPair };
 export { PAIRS };
 
 const SIGNALS_V2_TABLE =
-  process.env.TABLE_SIGNALS_V2 ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+  process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
-/** Map a raw DynamoDB item to a BlendedSignal. */
+/**
+ * Map a raw DynamoDB item to a BlendedSignal.
+ *
+ * Validates against BlendedSignalSchema rather than blind-casting — schemas
+ * exist to gate trust at the system boundary. If the persisted shape diverges
+ * from the schema (e.g. an indicator-handler regression writes garbage),
+ * we throw early at parse time with a clear error rather than propagating
+ * undefined fields to callers.
+ */
 function itemToBlendedSignal(item: Record<string, unknown>): BlendedSignal {
-  return {
-    pair: item.pair as string,
-    type: item.type as BlendedSignal["type"],
-    confidence: item.confidence as number,
-    volatilityFlag: item.volatilityFlag as boolean,
-    gateReason: (item.gateReason as BlendedSignal["gateReason"]) ?? null,
-    rulesFired: (item.rulesFired as string[]) ?? [],
-    perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
-    weightsUsed: (item.weightsUsed as Record<Timeframe, number>) ?? {},
-    asOf: item.asOf as number,
-    emittingTimeframe: item.emittingTimeframe as Timeframe,
-    risk: (item.risk as BlendedSignal["risk"]) ?? null,
-  };
+  const parsed = BlendedSignalSchema.parse(item);
+  // The parsed shape is structurally identical to BlendedSignal; cast through unknown to
+  // satisfy TypeScript without a runtime trip (parse already validated).
+  return parsed as unknown as BlendedSignal;
 }
 
 /**
