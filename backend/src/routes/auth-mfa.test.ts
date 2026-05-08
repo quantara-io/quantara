@@ -340,6 +340,18 @@ describe("GET /mfa/authenticators", () => {
     ]);
   });
 
+  it("returns available: ['totp','email','sms'] — consistent with GET /mfa/methods", async () => {
+    alderoGetMock.mockResolvedValue([]);
+    const app = await loadApp();
+    const res = await app.request("/mfa/authenticators", {
+      headers: { Authorization: "Bearer user-jwt" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    // SMS must be present here to stay consistent with GET /mfa/methods (issue #110)
+    expect(body.data.available).toEqual(["totp", "email", "sms"]);
+  });
+
   it("handles non-array responses by returning an empty list", async () => {
     alderoGetMock.mockResolvedValue({ not: "an array" });
     const app = await loadApp();
