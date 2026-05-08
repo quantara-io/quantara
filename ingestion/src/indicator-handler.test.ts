@@ -32,8 +32,12 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
 // ---------------------------------------------------------------------------
 
 const tryClaimProcessedCloseMock = vi.fn();
+const commitProcessedCloseMock = vi.fn();
+const clearProcessedCloseMock = vi.fn();
 vi.mock("./lib/processed-close-store.js", () => ({
   tryClaimProcessedClose: tryClaimProcessedCloseMock,
+  commitProcessedClose: commitProcessedCloseMock,
+  clearProcessedClose: clearProcessedCloseMock,
 }));
 
 const getCandles = vi.fn();
@@ -188,6 +192,8 @@ beforeEach(() => {
   vi.resetModules();
   send.mockReset();
   tryClaimProcessedCloseMock.mockReset();
+  commitProcessedCloseMock.mockReset();
+  clearProcessedCloseMock.mockReset();
   getCandles.mockReset();
   canonicalizeCandleMock.mockReset();
   getLastFireBarsMock.mockReset();
@@ -205,6 +211,8 @@ beforeEach(() => {
 
   // Default mocks.
   tryClaimProcessedCloseMock.mockResolvedValue(true);
+  commitProcessedCloseMock.mockResolvedValue(undefined);
+  clearProcessedCloseMock.mockResolvedValue(undefined);
   getCandles.mockResolvedValue([makeCandle()]);
   canonicalizeCandleMock.mockReturnValue({
     consensus: makeCandle({ exchange: "consensus" }),
@@ -562,6 +570,116 @@ describe("stale-vote sentinel on consensus skip", () => {
     // buildIndicatorState should have been called, meaning we proceeded normally.
     expect(buildIndicatorStateMock).toHaveBeenCalled();
     // Indicator state was processed and persisted.
+    expect(putIndicatorStateMock).toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1: Candle slot scan (newest-first array with in-progress bar at index 0)
+// ---------------------------------------------------------------------------
+
+describe("candle slot scan — picks bar matching lastClose, not index 0", () => {
+  it("picks the closed bar at index 1 when index 0 is an in-progress newer bar", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    const barMs = 15 * 60 * 1000;
+    // Simulate backfill writing a newer in-progress bar ahead of the just-closed bar.
+    const inProgressCandle = makeCandle({
+      closeTime: TEST_LAST_CLOSE_15M + barMs, // next bar — not yet closed
+      isClosed: false,
+    });
+    const justClosedCandle = makeCandle({
+      closeTime: TEST_LAST_CLOSE_15M, // this is the bar that just closed
+      isClosed: true,
+    });
+    // Newest-first: in-progress bar is index 0, just-closed bar is index 1.
+    getCandles.mockResolvedValue([inProgressCandle, justClosedCandle]);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // canonicalizeCandle should have been called with the just-closed bar as the
+    // exchange-latest entry, NOT the in-progress bar.
+    expect(canonicalizeCandleMock).toHaveBeenCalled();
+    const candlesPassedToCanon = canonicalizeCandleMock.mock.calls[0]![0] as Record<
+      string,
+      { closeTime: number } | null
+    >;
+    for (const ex of Object.keys(candlesPassedToCanon)) {
+      const entry = candlesPassedToCanon[ex];
+      if (entry !== null) {
+        // Every non-null entry must be the just-closed bar, not the in-progress one.
+        expect(entry.closeTime).toBe(TEST_LAST_CLOSE_15M);
+      }
+    }
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2: Marker written after vote persist (clear on error → retry not skipped)
+// ---------------------------------------------------------------------------
+
+describe("marker lifecycle — commit after vote, clear on error", () => {
+  it("calls commitProcessedClose after vote is persisted on the happy path", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler({});
+
+    // commitProcessedClose must be called (once per pair × 1 closed TF).
+    expect(commitProcessedCloseMock).toHaveBeenCalledTimes(5);
+    // clearProcessedClose must NOT be called on the success path.
+    expect(clearProcessedCloseMock).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it("calls clearProcessedClose on error so the second invocation is NOT skipped", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    // Simulate a failure after candle read but before vote persist.
+    // putIndicatorState throws — the pipeline should catch, clear the marker,
+    // then re-throw so the outer handler loop continues with other pairs.
+    putIndicatorStateMock.mockRejectedValue(new Error("DDB write failed"));
+
+    const { handler } = await import("./indicator-handler.js");
+    // Handler swallows per-pair errors and logs them — it should not throw at top level.
+    await expect(handler({})).resolves.toBeUndefined();
+
+    // The marker must be cleared (not committed) when the pipeline threw.
+    expect(clearProcessedCloseMock).toHaveBeenCalled();
+    expect(commitProcessedCloseMock).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it("second invocation for same close is NOT skipped after a cleared marker", async () => {
+    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
+    vi.setSystemTime(now);
+
+    // First invocation: claim succeeds, pipeline throws, marker cleared.
+    putIndicatorStateMock.mockRejectedValueOnce(new Error("transient failure"));
+
+    const { handler: handlerFirst } = await import("./indicator-handler.js");
+    await handlerFirst({});
+
+    // The marker was cleared — tryClaimProcessedClose would return true again on retry.
+    // Simulate the retry by resetting the claim mock to return true again.
+    tryClaimProcessedCloseMock.mockResolvedValue(true);
+    putIndicatorStateMock.mockResolvedValue(undefined); // recovered
+
+    vi.resetModules();
+    const { handler: handlerSecond } = await import("./indicator-handler.js");
+    await handlerSecond({});
+
+    // Second invocation should have processed work (not been short-circuited).
     expect(putIndicatorStateMock).toHaveBeenCalled();
 
     vi.useRealTimers();
