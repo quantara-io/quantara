@@ -453,7 +453,7 @@ authMfa.openapi(listRoute, async (c) => {
   }));
   return c.json({
     success: true as const,
-    data: { available: ["totp", "email"] as const, enrolled },
+    data: { available: ["totp", "email", "sms"] as const, enrolled },
   });
 });
 
