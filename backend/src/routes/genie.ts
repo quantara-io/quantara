@@ -1,8 +1,9 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
-import { ADVISORY_DISCLAIMER } from "@quantara/shared";
+import { ADVISORY_DISCLAIMER, PAIRS } from "@quantara/shared";
 
 import { requireAuth } from "../middleware/require-auth.js";
+import { getSignalForUser, getAllSignalsForUser } from "../lib/signal-service.js";
 import {
   SignalsResponse,
   SignalByPairResponse,
@@ -26,9 +27,18 @@ const signalsRoute = createRoute({
     },
   },
 });
-genie.openapi(signalsRoute, (c) =>
-  c.json({ success: true as const, data: { signals: [], disclaimer: ADVISORY_DISCLAIMER } }),
-);
+genie.openapi(signalsRoute, async (c) => {
+  const auth = c.get("auth");
+  const signals = await getAllSignalsForUser(auth.userId, auth.email);
+  return c.json({ success: true as const, data: { signals, disclaimer: ADVISORY_DISCLAIMER } });
+});
+
+const pairNotFoundSchema = z
+  .object({
+    success: z.literal(false),
+    error: z.object({ code: z.string(), message: z.string() }),
+  })
+  .openapi("PairNotFoundResponse");
 
 const signalByPairRoute = createRoute({
   method: "get",
@@ -42,14 +52,35 @@ const signalByPairRoute = createRoute({
       content: { "application/json": { schema: SignalByPairResponse } },
       description: "Signal for pair",
     },
+    404: {
+      content: { "application/json": { schema: pairNotFoundSchema } },
+      description: "Unknown trading pair",
+    },
   },
 });
-genie.openapi(signalByPairRoute, (c) => {
+genie.openapi(signalByPairRoute, async (c) => {
   const { pair } = c.req.valid("param");
-  return c.json({
-    success: true as const,
-    data: { pair, signal: null, disclaimer: ADVISORY_DISCLAIMER },
-  });
+
+  // Whitelist pair against the canonical PAIRS constant.
+  if (!(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false as const,
+        error: { code: "UNKNOWN_PAIR", message: `Unknown trading pair: ${pair}` },
+      } satisfies z.infer<typeof pairNotFoundSchema>,
+      404,
+    );
+  }
+
+  const auth = c.get("auth");
+  const signal = await getSignalForUser(auth.userId, pair as (typeof PAIRS)[number], auth.email);
+  return c.json(
+    {
+      success: true as const,
+      data: { pair, signal, disclaimer: ADVISORY_DISCLAIMER },
+    } satisfies z.infer<typeof SignalByPairResponse>,
+    200,
+  );
 });
 
 const historyRoute = createRoute({

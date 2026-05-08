@@ -133,8 +133,6 @@ export async function clearProcessedClose(
     );
   } catch (err) {
     // Best-effort — log and continue.
-    console.warn(
-      `[ProcessedCloseStore] Failed to clear marker ${key}: ${(err as Error).message}`,
-    );
+    console.warn(`[ProcessedCloseStore] Failed to clear marker ${key}: ${(err as Error).message}`);
   }
 }
