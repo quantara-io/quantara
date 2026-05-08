@@ -182,6 +182,9 @@ resource "aws_iam_role_policy" "ingestion_ecs_dynamodb" {
         "${aws_dynamodb_table.indicator_state.arn}/index/*",
         aws_dynamodb_table.signals_v2.arn,
         "${aws_dynamodb_table.signals_v2.arn}/index/*",
+        aws_dynamodb_table.ratifications.arn,
+        "${aws_dynamodb_table.ratifications.arn}/index/*",
+        aws_dynamodb_table.ratification_cache.arn,
       ]
     }]
   })
@@ -271,6 +274,8 @@ resource "aws_ecs_task_definition" "ingestion" {
       { name = "MARKET_EVENTS_QUEUE_URL", value = aws_sqs_queue.market_events.url },
       { name = "TABLE_INDICATOR_STATE", value = aws_dynamodb_table.indicator_state.name },
       { name = "TABLE_SIGNALS_V2", value = aws_dynamodb_table.signals_v2.name },
+      { name = "TABLE_RATIFICATIONS", value = aws_dynamodb_table.ratifications.name },
+      { name = "TABLE_RATIFICATION_CACHE", value = aws_dynamodb_table.ratification_cache.name },
     ]
 
     secrets = [
