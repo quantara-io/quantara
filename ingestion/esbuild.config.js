@@ -46,6 +46,13 @@ await build({
   outfile: "dist/enrichment-handler.js",
 });
 
+// Lambda: indicator computation + scoring + blending (Phase 4b)
+await build({
+  ...shared,
+  entryPoints: ["src/indicator-handler.ts"],
+  outfile: "dist/indicator-handler.js",
+});
+
 // Fargate: long-running streaming service
 await build({
   ...shared,
@@ -53,4 +60,4 @@ await build({
   outfile: "dist/service.js",
 });
 
-console.log("Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/service.js");
+console.log("Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/service.js");
