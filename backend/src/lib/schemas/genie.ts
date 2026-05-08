@@ -24,11 +24,42 @@ export const Signal = z
   })
   .openapi("Signal");
 
+// Timeframe enum — mirrors the canonical TIMEFRAMES constant from @quantara/shared.
+const TimeframeEnum = z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]);
+
+/**
+ * BlendedSignalSchema — the full user-facing signal shape that the signal-service
+ * emits. Carries per-timeframe votes for transparency and post-renormalization
+ * weights (§5.6 of SIGNALS_AND_RISK.md).
+ */
+export const BlendedSignalSchema = z
+  .object({
+    pair: z.string(),
+    type: z.enum(["buy", "sell", "hold"]),
+    confidence: z.number().min(0).max(1),
+    volatilityFlag: z.boolean(),
+    gateReason: z.enum(["vol", "dispersion", "stale"]).nullable(),
+    rulesFired: z.array(z.string()),
+
+    // Per-timeframe vote breakdown — null when a TF had no valid data.
+    perTimeframe: z.record(TimeframeEnum, z.unknown().nullable()),
+    // Post-renormalization weights per timeframe (§5.6).
+    weightsUsed: z.record(TimeframeEnum, z.number()),
+
+    // Lifecycle / identifying
+    asOf: z.number().describe("Unix ms of the latest TF close that triggered this blend"),
+    emittingTimeframe: TimeframeEnum,
+
+    // Risk recommendation — null when type === "hold"
+    risk: z.unknown().nullable(),
+  })
+  .openapi("BlendedSignalSchema");
+
 export const SignalsResponse = z
   .object({
     success: z.literal(true),
     data: z.object({
-      signals: z.array(Signal),
+      signals: z.array(BlendedSignalSchema),
       disclaimer: z.string(),
     }),
   })
@@ -39,7 +70,7 @@ export const SignalByPairResponse = z
     success: z.literal(true),
     data: z.object({
       pair: z.string(),
-      signal: Signal.nullable(),
+      signal: BlendedSignalSchema.nullable(),
       disclaimer: z.string(),
     }),
   })

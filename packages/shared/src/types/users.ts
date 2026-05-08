@@ -13,7 +13,13 @@ export interface UserProfile {
   email: string;
   displayName: string;
   userType: UserType;
-  tierId: string;
+  /**
+   * Subscription tier. Optional for backwards-compatibility — existing DDB records
+   * without this field default to "free" on read (see getOrCreateUserRecord).
+   * Replaces the old `tierId: string` field (renamed for clarity; "free"/"paid" are
+   * not opaque identifiers, they are the canonical Tier values).
+   */
+  tier?: Tier;
   bio?: string;
   professionalBackground?: string;
   avatarUrl?: string;
