@@ -11,6 +11,7 @@ import type { PriceSnapshot } from "./fetcher.js";
 
 const WATCHDOG_INTERVAL_MS = 60_000;
 const STALE_THRESHOLD_MS = 5 * 60_000;
+const RECONNECT_THRESHOLD_MS = 10 * 60_000;
 const COINBASE_BACKFILL_INTERVAL_MS = 30_000;
 
 /**
@@ -26,11 +27,23 @@ export type OhlcvRow = [number, ...(string | number | null)[]];
 interface StreamState {
   exchange: ExchangeId;
   pair: TradingPair;
+  /** When the current loop generation started — used so a stream that has not
+   *  yet received its first message gets a fair grace period before the
+   *  watchdog flags it for restart (instead of treating `lastDataAt = 0` as
+   *  infinite age). */
+  startedAt: number;
   lastDataAt: number;
   running: boolean;
+  /** Per-stream abort controller so the watchdog can restart one stream without affecting others. */
+  abortController: AbortController;
+  /** Bumped on every watchdog-driven restart. Each loop captures its own
+   *  generation at start; if a hung await eventually resolves on a now-stale
+   *  loop, the gen check exits before writing stale data over what the
+   *  replacement loop has produced. ccxt's watch APIs don't honor AbortSignal,
+   *  so old loops cannot be force-unblocked — but this prevents them from
+   *  poisoning state. */
+  restartGeneration: number;
 }
-
-const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const METADATA_TABLE =
   process.env.TABLE_METADATA ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
@@ -38,10 +51,17 @@ const METADATA_TABLE =
 export class MarketStreamManager {
   private streams: Map<string, StreamState> = new Map();
   private exchanges: Map<ExchangeId, any> = new Map();
+  /** Manager-wide controller: aborted only on stop() to tear down everything. */
   private abortController = new AbortController();
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   /** Tracks the last closeTime (ms) we successfully wrote for each coinbase pair. */
   private coinbaseLastCloseTime: Map<TradingPair, number> = new Map();
+  /** DynamoDB document client — created per-instance so mocks are applied correctly in tests. */
+  private readonly ddbClient: DynamoDBDocumentClient;
+
+  constructor() {
+    this.ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  }
 
   getStatus(): Record<string, any> {
     const connections: Record<string, any> = {};
@@ -86,8 +106,11 @@ export class MarketStreamManager {
         this.streams.set(key, {
           exchange: exchangeId,
           pair,
+          startedAt: Date.now(),
           lastDataAt: 0,
           running: false,
+          abortController: new AbortController(),
+          restartGeneration: 0,
         });
 
         this.startTickerStream(exchangeId, exchange, pair);
@@ -109,7 +132,12 @@ export class MarketStreamManager {
 
   async stop(): Promise<void> {
     console.log("[Stream] Stopping...");
+    // Abort the manager-wide controller first so every stream loop exits.
     this.abortController.abort();
+    // Also abort each per-stream controller to unblock any sleeping loops.
+    for (const state of this.streams.values()) {
+      state.abortController.abort();
+    }
 
     if (this.watchdogTimer) {
       clearInterval(this.watchdogTimer);
@@ -130,12 +158,25 @@ export class MarketStreamManager {
     const symbol = getSymbol(exchangeId, pair);
     const key = `${exchangeId}:${pair}`;
 
+    // Capture the per-stream signal AND the loop generation at start time.
+    // The while-loop guard checks both: signal-aborted catches normal restart;
+    // gen-mismatch catches the case where an old loop's hung `watchTicker`
+    // eventually resolves AFTER the watchdog already started a replacement
+    // loop (ccxt doesn't honor AbortSignal, so the await can outlive its
+    // controller).
+    const startState = this.streams.get(key);
+    const streamSignal = startState?.abortController.signal;
+    const myGen = startState?.restartGeneration ?? 0;
+
     const run = async () => {
-      while (!this.abortController.signal.aborted) {
+      while (!this.abortController.signal.aborted && !streamSignal?.aborted) {
         try {
           const ticker = await exchange.watchTicker(symbol);
           const state = this.streams.get(key);
-          if (state) state.lastDataAt = Date.now();
+          // Old-loop check: if the watchdog has restarted this stream, exit
+          // without writing stale data over the replacement loop's freshness.
+          if (!state || state.restartGeneration !== myGen) break;
+          state.lastDataAt = Date.now();
 
           const snapshot: PriceSnapshot = {
             exchange: exchangeId,
@@ -151,7 +192,7 @@ export class MarketStreamManager {
 
           await storePriceSnapshots([snapshot]);
         } catch (err) {
-          if (this.abortController.signal.aborted) break;
+          if (this.abortController.signal.aborted || streamSignal?.aborted) break;
           console.error(`[Stream] Ticker error ${key}: ${(err as Error).message}`);
           await sleep(5000);
         }
@@ -170,10 +211,19 @@ export class MarketStreamManager {
     const key = `${exchangeId}:${pair}`;
     const timeframe: Timeframe = "1m";
 
+    // Capture signal + generation at invocation time — same reasoning as startTickerStream.
+    const startState = this.streams.get(key);
+    const streamSignal = startState?.abortController.signal;
+    const myGen = startState?.restartGeneration ?? 0;
+
     const run = async () => {
-      while (!this.abortController.signal.aborted) {
+      while (!this.abortController.signal.aborted && !streamSignal?.aborted) {
         try {
           const ohlcv = await exchange.watchOHLCV(symbol, timeframe);
+
+          const state = this.streams.get(key);
+          // Old-loop check: bail before writing if a watchdog restart happened.
+          if (!state || state.restartGeneration !== myGen) break;
 
           for (const [ts, open, high, low, close, volume] of ohlcv) {
             if (ts == null) continue;
@@ -199,10 +249,9 @@ export class MarketStreamManager {
             }
           }
 
-          const state = this.streams.get(key);
-          if (state) state.lastDataAt = Date.now();
+          state.lastDataAt = Date.now();
         } catch (err) {
-          if (this.abortController.signal.aborted) break;
+          if (this.abortController.signal.aborted || streamSignal?.aborted) break;
           console.error(`[Stream] OHLCV error ${key}: ${(err as Error).message}`);
           await sleep(5000);
         }
@@ -236,9 +285,25 @@ export class MarketStreamManager {
     const exchangeId: ExchangeId = "coinbase";
     const symbol = getSymbol(exchangeId, pair);
     const timeframe: Timeframe = "1m";
+    const key = `${exchangeId}:${pair}`;
+
+    // Capture signal + generation at invocation time — same reasoning as startTickerStream.
+    // The watchdog can swap out state.abortController for a fresh one on
+    // restart; this local stays bound to the controller that was active
+    // when THIS loop started, so it exits cleanly when its controller fires.
+    const startState = this.streams.get(key);
+    const streamSignal = startState?.abortController.signal;
+    const myGen = startState?.restartGeneration ?? 0;
+
+    // Combined signal: abort on per-stream OR manager-wide abort. We use the
+    // per-stream signal for sleeps so a watchdog restart wakes the old loop
+    // immediately instead of holding the runner for up to 30s. `stop()`
+    // cascades the manager-wide abort to every per-stream signal too, so
+    // shutdown still propagates.
+    const sleepSignal = streamSignal ?? this.abortController.signal;
 
     const run = async () => {
-      while (!this.abortController.signal.aborted) {
+      while (!this.abortController.signal.aborted && !streamSignal?.aborted) {
         try {
           const ohlcv: OhlcvRow[] = await exchange.fetchOHLCV(symbol, timeframe, undefined, 2);
 
@@ -246,7 +311,7 @@ export class MarketStreamManager {
           // A bar is closed if its open-timestamp + 60_000 <= now.
           const closedBar = pickClosedBar(ohlcv, Date.now());
           if (!closedBar) {
-            await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, this.abortController.signal);
+            await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, sleepSignal);
             continue;
           }
 
@@ -256,9 +321,13 @@ export class MarketStreamManager {
           // Idempotent skip: if we already wrote this bar, do nothing.
           const lastCloseTime = this.coinbaseLastCloseTime.get(pair);
           if (lastCloseTime === closeTime) {
-            await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, this.abortController.signal);
+            await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, sleepSignal);
             continue;
           }
+
+          // Old-loop check: skip the write if a watchdog restart happened.
+          const state = this.streams.get(key);
+          if (!state || state.restartGeneration !== myGen) break;
 
           const candle: Candle = {
             exchange: exchangeId,
@@ -282,16 +351,14 @@ export class MarketStreamManager {
           console.log(`[CoinbaseBackfill] wrote ${pair}@${new Date(closeTime).toISOString()}`);
 
           // Update stream freshness so the watchdog sees coinbase as alive.
-          const key = `${exchangeId}:${pair}`;
-          const state = this.streams.get(key);
-          if (state) state.lastDataAt = Date.now();
+          state.lastDataAt = Date.now();
         } catch (err) {
-          if (this.abortController.signal.aborted) break;
+          if (this.abortController.signal.aborted || streamSignal?.aborted) break;
           console.error(`[CoinbaseBackfill] error for ${pair}: ${(err as Error).message}`);
           // Do not rethrow — one pair's failure must not kill other pairs.
         }
 
-        await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, this.abortController.signal);
+        await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, sleepSignal);
       }
     };
 
@@ -314,12 +381,60 @@ export class MarketStreamManager {
     }
 
     for (const [key, state] of this.streams) {
-      const isStale = !state.lastDataAt || now - state.lastDataAt > STALE_THRESHOLD_MS;
+      // Effective last-seen: max of actual data and loop start. Streams that
+      // have not yet received their first message get a fair grace period
+      // equal to the threshold instead of being treated as infinitely stale
+      // on the very first watchdog tick.
+      const effectiveLastSeen = Math.max(state.lastDataAt, state.startedAt);
+      const ageMs = now - effectiveLastSeen;
+      const hasNeverReceived = state.lastDataAt === 0;
+      const isStale = ageMs > STALE_THRESHOLD_MS;
+
       if (isStale) {
-        console.warn(
-          `[Watchdog] Stream ${key} stale (last data ${state.lastDataAt ? Math.round((now - state.lastDataAt) / 1000) + "s ago" : "never"})`,
-        );
+        const ageDesc = hasNeverReceived
+          ? `none yet, ${Math.round(ageMs / 1000)}s since start`
+          : `${Math.round(ageMs / 1000)}s ago`;
+        console.warn(`[Watchdog] Stream ${key} stale (last data ${ageDesc})`);
       }
+
+      // Restart streams that have been stale long enough to warrant action.
+      if (ageMs > RECONNECT_THRESHOLD_MS) {
+        if (!this.abortController.signal.aborted) {
+          const ageDesc = hasNeverReceived
+            ? `${Math.round(ageMs / 1000)}s since start, no data yet`
+            : `${Math.round(ageMs / 1000)}s`;
+          console.warn(`[Watchdog] Restarting stream ${key} (no data for ${ageDesc})`);
+
+          // Abort just this stream's loop; other streams are unaffected.
+          // ccxt's watch APIs don't honor AbortSignal — a hung await won't
+          // unblock here. The restartGeneration bump prevents the old loop
+          // (whenever it eventually unblocks) from poisoning state. Sleeping
+          // loops (Coinbase backfill) DO wake immediately because abortableSleep
+          // races against the per-stream signal.
+          state.abortController.abort();
+
+          // Reset state for the new loop generation.
+          state.lastDataAt = 0;
+          state.startedAt = Date.now();
+          state.abortController = new AbortController();
+          state.restartGeneration += 1;
+
+          const exchange = this.exchanges.get(state.exchange);
+          if (exchange) {
+            // Always restart the ticker stream (all exchanges support watchTicker).
+            this.startTickerStream(state.exchange, exchange, state.pair);
+
+            const supportsOHLCV = !!exchange.has?.watchOHLCV;
+            if (supportsOHLCV) {
+              this.startOHLCVStream(state.exchange, exchange, state.pair);
+            } else if (state.exchange === "coinbase") {
+              // Coinbase uses REST polling instead of watchOHLCV.
+              this.startCoinbaseBackfillLoop(exchange, state.pair);
+            }
+          }
+        }
+      }
+
       const map = pairStaleness.get(state.pair);
       if (map) map[state.exchange] = isStale;
     }
@@ -327,20 +442,26 @@ export class MarketStreamManager {
     // Persist staleness to ingestion-metadata so the indicator handler's gateStale
     // check has a live producer (P2 #1 fix).
     for (const [pair, stalenessMap] of pairStaleness) {
-      ddbClient
-        .send(
-          new PutCommand({
-            TableName: METADATA_TABLE,
-            Item: {
-              metaKey: `exchange-staleness#${pair}`,
-              staleness: stalenessMap,
-              updatedAt: new Date().toISOString(),
-            },
-          }),
-        )
-        .catch((err: Error) => {
-          console.error(`[Watchdog] Failed to persist staleness for ${pair}: ${err.message}`);
-        });
+      try {
+        this.ddbClient
+          .send(
+            new PutCommand({
+              TableName: METADATA_TABLE,
+              Item: {
+                metaKey: `exchange-staleness#${pair}`,
+                staleness: stalenessMap,
+                updatedAt: new Date().toISOString(),
+              },
+            }),
+          )
+          .catch((err: Error) => {
+            console.error(`[Watchdog] Failed to persist staleness for ${pair}: ${err.message}`);
+          });
+      } catch (err) {
+        console.error(
+          `[Watchdog] Failed to persist staleness for ${pair}: ${(err as Error).message}`,
+        );
+      }
     }
   }
 }
