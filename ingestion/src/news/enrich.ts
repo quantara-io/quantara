@@ -30,11 +30,15 @@ const DEDUP_WINDOW_HOURS = 24;
 // isn't supported." The org SCP permits `bedrock:InvokeModel*` cross-region.
 const HAIKU_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
-// Stable model tag stored on sentiment + embedding records. Decoupled from
-// the invocation ID so AWS-side rotations (different inference profile,
-// regional change, etc.) don't invalidate the embedding-cache cross-model
-// dedup safety check. Bump this only when the underlying *model* changes
-// in a way that makes prior outputs incompatible (e.g. Haiku 4.5 → 5.x).
+// Stable model tag stamped on the `model` field of `SentimentResult`.
+// Decoupled from the invocation ID so AWS-side rotations (different inference
+// profile, regional change, etc.) don't change what callers see. The
+// pre-existing test "model tag is always claude-haiku-4-5" enforces this
+// stability contract. Bump only when the underlying *model* changes in a way
+// that makes prior sentiment outputs incompatible (e.g. Haiku 4.5 → 5.x).
+//
+// Note: this is unrelated to the embedding cache, which keys on
+// `EMBEDDING_MODEL` (OpenAI's text-embedding-3-small) and never reads this tag.
 const HAIKU_MODEL_TAG = "anthropic.claude-haiku-4-5";
 
 // ---------------------------------------------------------------------------
