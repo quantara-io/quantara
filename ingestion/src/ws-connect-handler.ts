@@ -55,8 +55,7 @@ interface WsConnectResult {
 // Config
 // ---------------------------------------------------------------------------
 
-const AUTH_BASE_URL =
-  process.env.AUTH_BASE_URL ?? "https://quantara-sandbox.aldero.io";
+const AUTH_BASE_URL = process.env.AUTH_BASE_URL ?? "https://quantara-sandbox.aldero.io";
 const APP_ID = process.env.APP_ID ?? "";
 const TABLE_CONNECTION_REGISTRY =
   process.env.TABLE_CONNECTION_REGISTRY ??
@@ -78,9 +77,7 @@ let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 
 function getJWKS(): ReturnType<typeof createRemoteJWKSet> {
   if (!jwks) {
-    jwks = createRemoteJWKSet(
-      new URL(`${AUTH_BASE_URL}/.well-known/jwks.json`),
-    );
+    jwks = createRemoteJWKSet(new URL(`${AUTH_BASE_URL}/.well-known/jwks.json`));
   }
   return jwks;
 }
@@ -185,10 +182,7 @@ export const handler: Handler<WsConnectEvent, WsConnectResult> = async (event) =
     return { statusCode: 500, body: "Internal Server Error" };
   }
 
-  logger.info(
-    { connectionId, userId, pairs, ttl },
-    "ws $connect: connection registered",
-  );
+  logger.info({ connectionId, userId, pairs, ttl }, "ws $connect: connection registered");
 
   return { statusCode: 200 };
 };

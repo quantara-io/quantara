@@ -27,13 +27,13 @@
 // to ingestion/package.json devDependencies before merging.
 //
 // @ts-expect-error missing dep — see note above
-import { ApiGatewayManagementApiClient, PostToConnectionCommand, GoneException } from "@aws-sdk/client-apigatewaymanagementapi";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
-  DynamoDBDocumentClient,
-  ScanCommand,
-  DeleteCommand,
-} from "@aws-sdk/lib-dynamodb";
+  ApiGatewayManagementApiClient,
+  PostToConnectionCommand,
+  GoneException,
+} from "@aws-sdk/client-apigatewaymanagementapi";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, ScanCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { DynamoDBStreamHandler, DynamoDBRecord } from "aws-lambda";
 import pino from "pino";
@@ -146,9 +146,7 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
   if (record.eventName !== "INSERT") return;
   if (!record.dynamodb?.NewImage) return;
 
-  const signal = unmarshall(
-    record.dynamodb.NewImage as Parameters<typeof unmarshall>[0],
-  );
+  const signal = unmarshall(record.dynamodb.NewImage as Parameters<typeof unmarshall>[0]);
 
   const pair = signal["pair"] as string | undefined;
   if (!pair) {
@@ -156,7 +154,10 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     return;
   }
 
-  logger.info({ pair, signalId: signal["signalId"] ?? signal["createdAt"] }, "fanout: processing INSERT");
+  logger.info(
+    { pair, signalId: signal["signalId"] ?? signal["createdAt"] },
+    "fanout: processing INSERT",
+  );
 
   // Find all subscribers for this pair
   let subscribers: RegistryRow[];

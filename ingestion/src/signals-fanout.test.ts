@@ -65,7 +65,8 @@ beforeEach(() => {
   vi.resetModules();
   ddbSend.mockReset();
   postToConnectionMock.mockReset();
-  process.env.WEBSOCKET_API_ENDPOINT = "https://example.execute-api.us-west-2.amazonaws.com/$default";
+  process.env.WEBSOCKET_API_ENDPOINT =
+    "https://example.execute-api.us-west-2.amazonaws.com/$default";
   process.env.TABLE_CONNECTION_REGISTRY = "quantara-test-connection-registry";
 });
 
@@ -76,9 +77,7 @@ beforeEach(() => {
 describe("findSubscribersForPair", () => {
   it("scans with contains() filter on subscribedPairs", async () => {
     ddbSend.mockResolvedValue({
-      Items: [
-        { connectionId: "conn-1", userId: "u1", subscribedPairs: ["BTC/USDT"] },
-      ],
+      Items: [{ connectionId: "conn-1", userId: "u1", subscribedPairs: ["BTC/USDT"] }],
       LastEvaluatedKey: undefined,
     });
 
@@ -236,9 +235,7 @@ describe("handler", () => {
     expect(postToConnectionMock).toHaveBeenCalledTimes(2);
 
     // DeleteCommand should have been called for the stale connection
-    const deleteCalls = ddbSend.mock.calls.filter(
-      (c) => c[0].__cmd === "Delete",
-    );
+    const deleteCalls = ddbSend.mock.calls.filter((c) => c[0].__cmd === "Delete");
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0][0].input.Key.connectionId).toBe("conn-stale");
   });
@@ -275,10 +272,7 @@ describe("handler", () => {
     const { handler } = await import("./signals-fanout.js");
     await handler(
       {
-        Records: [
-          makeInsertRecord("BTC/USDT"),
-          makeInsertRecord("BTC/USDT"),
-        ],
+        Records: [makeInsertRecord("BTC/USDT"), makeInsertRecord("BTC/USDT")],
       } as any,
       {} as any,
       () => {},
