@@ -1,25 +1,33 @@
 /**
  * Phase 5a news enrichment: pair-tagging, sentiment classification, embedding dedup.
  *
- * LLM calls (pair-tagging + sentiment) use Bedrock Haiku via the existing
- * @aws-sdk/client-bedrock-runtime (no new SDK dependency).
+ * All LLM calls use Bedrock via @aws-sdk/client-bedrock-runtime:
+ *   - Pair-tagging + sentiment   → Anthropic Claude Haiku (cross-region inference profile)
+ *   - Embedding dedup            → Amazon Titan Text Embeddings v2 (direct foundation model)
  *
- * Embedding dedup calls the OpenAI REST API directly via fetch (Node 24 built-in),
- * authenticated via an SSM-cached API key. The model is pinned to a single named
- * constant so that upgrades are search-replaceable.
+ * Authentication is via the Lambda's IAM role (SigV4) — no API keys, no outbound
+ * to non-AWS endpoints, no SSM-stored secrets. Both model IDs are pinned to named
+ * constants so upgrades are search-replaceable.
  */
 
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** PINNED — changing this constant requires a migration job to re-embed cached vectors. */
-export const EMBEDDING_MODEL = "text-embedding-3-small";
+/**
+ * PINNED — changing this constant requires a migration job to re-embed cached
+ * vectors. The `model` field on every `EmbeddingCacheItem` records which model
+ * produced the vector; cross-model comparisons are deliberately skipped at
+ * dedup time (different geometries are not directly comparable).
+ */
+export const EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
+
+/** Titan v2 supports 256 / 512 / 1024 dims; 1024 is highest quality. */
+const EMBEDDING_DIMENSIONS = 1024;
 
 const DEDUP_THRESHOLD = 0.85; // cosine similarity above this → duplicate
 const DEDUP_WINDOW_HOURS = 24;
@@ -38,7 +46,7 @@ const HAIKU_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 // that makes prior sentiment outputs incompatible (e.g. Haiku 4.5 → 5.x).
 //
 // Note: this is unrelated to the embedding cache, which keys on
-// `EMBEDDING_MODEL` (OpenAI's text-embedding-3-small) and never reads this tag.
+// `EMBEDDING_MODEL` (Amazon Titan Text Embeddings v2) and never reads this tag.
 const HAIKU_MODEL_TAG = "anthropic.claude-haiku-4-5";
 
 // ---------------------------------------------------------------------------
@@ -47,35 +55,10 @@ const HAIKU_MODEL_TAG = "anthropic.claude-haiku-4-5";
 
 const bedrock = new BedrockRuntimeClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const ssm = new SSMClient({});
 
-const ENVIRONMENT = process.env.ENVIRONMENT ?? "dev";
 const EMBEDDING_CACHE_TABLE =
   process.env.TABLE_EMBEDDING_CACHE ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}embedding-cache`;
-
-// ---------------------------------------------------------------------------
-// OpenAI API key (SSM-cached)
-// ---------------------------------------------------------------------------
-
-let _openAiKey: string | null = null;
-
-async function getOpenAiKey(): Promise<string> {
-  if (_openAiKey) return _openAiKey;
-  if (process.env.OPENAI_API_KEY) {
-    _openAiKey = process.env.OPENAI_API_KEY;
-    return _openAiKey;
-  }
-  const param = await ssm.send(
-    new GetParameterCommand({
-      Name: `/quantara/${ENVIRONMENT}/openai-api-key`,
-      WithDecryption: true,
-    }),
-  );
-  _openAiKey = param.Parameter?.Value ?? "";
-  if (!_openAiKey) throw new Error("SSM /quantara/<env>/openai-api-key is empty");
-  return _openAiKey;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -242,25 +225,30 @@ async function scanEmbeddingCache(sinceEpochSeconds: number): Promise<EmbeddingC
 }
 
 // ---------------------------------------------------------------------------
-// Embedding (OpenAI REST via fetch — no openai package dependency)
+// Embedding (Bedrock Titan v2 via InvokeModel)
 // ---------------------------------------------------------------------------
 
 async function fetchEmbedding(text: string): Promise<number[]> {
-  const apiKey = await getOpenAiKey();
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model: EMBEDDING_MODEL, input: text }),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`OpenAI embeddings API error ${res.status}: ${err}`);
+  const response = await bedrock.send(
+    new InvokeModelCommand({
+      modelId: EMBEDDING_MODEL,
+      contentType: "application/json",
+      accept: "application/json",
+      body: JSON.stringify({
+        inputText: text,
+        dimensions: EMBEDDING_DIMENSIONS,
+        normalize: true,
+      }),
+    }),
+  );
+  const json = JSON.parse(new TextDecoder().decode(response.body)) as {
+    embedding: number[];
+    inputTextTokenCount?: number;
+  };
+  if (!Array.isArray(json.embedding) || json.embedding.length === 0) {
+    throw new Error(`Bedrock Titan returned empty embedding for input length ${text.length}`);
   }
-  const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
-  return json.data[0].embedding;
+  return json.embedding;
 }
 
 // ---------------------------------------------------------------------------
