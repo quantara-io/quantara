@@ -3,7 +3,10 @@
  *
  * Covers:
  *   - findSubscribersForPair: scans registry with correct filter, handles pagination
- *   - handler: skips non-INSERT events, skips records without pair
+ *   - handler: processes INSERT events (new signals)
+ *   - handler: processes MODIFY events (Phase B1 — ratification verdict updates)
+ *   - handler: skips non-INSERT/MODIFY events (REMOVE — DDB Streams uses INSERT/MODIFY/REMOVE only)
+ *   - handler: skips records without pair
  *   - handler: calls postToConnection for each subscriber
  *   - handler: deletes stale connections on GoneException
  *   - handler: continues on non-Gone postToConnection errors
@@ -149,9 +152,34 @@ function makeModifyRecord(pair: string) {
 }
 
 describe("handler", () => {
-  it("skips MODIFY events", async () => {
+  it("processes MODIFY events (Phase B1 ratification verdict push)", async () => {
+    ddbSend.mockResolvedValue({
+      Items: [{ connectionId: "conn-1", userId: "u1", subscribedPairs: ["BTC/USDT"] }],
+      LastEvaluatedKey: undefined,
+    });
+    postToConnectionMock.mockResolvedValue({});
+
     const { handler } = await import("./signals-fanout.js");
     await handler({ Records: [makeModifyRecord("BTC/USDT")] } as any, {} as any, () => {});
+
+    // MODIFY should trigger a registry scan and push — same path as INSERT
+    expect(ddbSend).toHaveBeenCalledTimes(1);
+    expect(postToConnectionMock).toHaveBeenCalledTimes(1);
+    const call = postToConnectionMock.mock.calls[0][0];
+    expect(call.input.ConnectionId).toBe("conn-1");
+  });
+
+  it("skips REMOVE events (DDB Streams emits INSERT/MODIFY/REMOVE only — no DELETE)", async () => {
+    const { handler } = await import("./signals-fanout.js");
+    await handler(
+      {
+        Records: [
+          { eventName: "REMOVE", eventID: "x", dynamodb: { NewImage: { pair: "BTC/USDT" } } },
+        ],
+      } as any,
+      {} as any,
+      () => {},
+    );
     expect(ddbSend).not.toHaveBeenCalled();
     expect(postToConnectionMock).not.toHaveBeenCalled();
   });

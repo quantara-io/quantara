@@ -450,5 +450,12 @@ resource "aws_dynamodb_table" "signals_v2" {
     enabled        = true
   }
 
+  # Phase B1 (#132): DDB Streams feed signals-fanout for WebSocket push.
+  # Stage-1 INSERT (algo signal with ratificationStatus="pending") and
+  # stage-2 MODIFY (ratification UPDATE) both surface to subscribers.
+  # NEW_IMAGE only: fanout needs the post-write payload, not the before-image.
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
+
   point_in_time_recovery { enabled = true }
 }

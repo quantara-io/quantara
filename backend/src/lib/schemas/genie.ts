@@ -124,6 +124,38 @@ export const BlendedSignalSchema = z
     // The next regular TF close emits a fresh row with invalidatedAt = null.
     invalidatedAt: z.string().nullable().optional(),
     invalidationReason: z.string().nullable().optional(),
+
+    // Phase B1 — two-stage ratification status.
+    // null / absent = pre-B1 row.
+    ratificationStatus: z
+      .enum(["pending", "ratified", "downgraded", "not-required"])
+      .nullable()
+      .optional(),
+
+    // Populated by stage-2 write when status is "downgraded" or the LLM emitted
+    // a fresh "ratified" verdict. May be null/absent when:
+    //   - status is "pending" (stage-2 hasn't fired)
+    //   - status is "not-required" (gated)
+    //   - status is "ratified" via cache hit (top-level type/confidence carry the verdict)
+    //   - row predates Phase B1 (#132)
+    ratificationVerdict: z
+      .object({
+        type: z.enum(["buy", "sell", "hold"]),
+        confidence: z.number(),
+        reasoning: z.string(),
+      })
+      .nullable()
+      .optional(),
+
+    // Populated when ratificationStatus is "downgraded". Preserves the original algo signal.
+    algoVerdict: z
+      .object({
+        type: z.enum(["buy", "sell", "hold"]),
+        confidence: z.number(),
+        reasoning: z.string(),
+      })
+      .nullable()
+      .optional(),
   })
   .openapi("BlendedSignalSchema");
 

@@ -35,7 +35,7 @@ import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
 import { putIndicatorState } from "./lib/indicator-state-store.js";
-import { makeSignalId } from "./lib/signal-store.js";
+import { makeSignalId, updateSignalRatification } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
 import { blendTimeframeVotes, isTrivialChange } from "./signals/blend.js";
@@ -210,13 +210,103 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     return;
   }
 
-  // Step 4 — Compute indicators + blend → conditional Put.
+  // Step 4 — Compute indicators + blend → two-stage write (Phase B1).
   const blended = await computeBlendedSignal(pair, timeframe, closeTime);
   if (!blended) {
     console.log(
       `[IndicatorHandler] ${pair}/${timeframe}: no blended signal produced (all TF votes null or insufficient candles).`,
     );
     return;
+  }
+
+  // Phase B1 two-stage ratification:
+  //   Stage 1 — run ratifySignal immediately to determine ratificationStatus.
+  //             Returns synchronously with ratificationStatus = "pending" |
+  //             "not-required" | "ratified" (cache hit). When status is
+  //             "pending", the result also exposes kickoffRatification(), which
+  //             the caller invokes ONLY AFTER the stage-1 DDB Put commits.
+  //   Stage 2 — the onStage2 callback fires when the LLM verdict is ready;
+  //             it calls updateSignalRatification to UPDATE the DDB row.
+  //
+  // Race-free ordering: kickoffRatification is the synchronization barrier.
+  // We never start the LLM stream before stage-1 Put is durable, so any
+  // stage-2 UPDATE is guaranteed to find a row to update.
+
+  let stage1Signal = blended;
+  let kickoffRatification: (() => Promise<void>) | undefined;
+
+  try {
+    const sentiment = await buildSentimentBundle(pair);
+    const ratifyResult = await ratifySignal(
+      {
+        pair,
+        candidate: blended,
+        perTimeframe: blended.perTimeframe,
+        sentiment,
+        whaleSummary: null,
+        pricePoints: [],
+        fearGreed: {
+          value: (await getFearGreedCached()) ?? 50,
+          trend24h: sentiment.fearGreed.trend24h ?? 0,
+        },
+      },
+      // onStage2: called when the LLM stream completes (or falls back on error).
+      // Performs the stage-2 DDB UPDATE so the row transitions from "pending" to final.
+      // Retries up to 3 times on transient failures so a single DDB throttle
+      // or 5xx doesn't permanently leave the row stuck on "pending".
+      // ConditionalCheckFailedException is NOT retried — it means the row is
+      // already in a final state (handled inside updateSignalRatification).
+      async (stage2Payload) => {
+        const MAX_ATTEMPTS = 3;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            const updated = await updateSignalRatification({
+              pair,
+              sk,
+              ratificationStatus: stage2Payload.ratificationStatus,
+              ratificationVerdict: stage2Payload.ratificationVerdict,
+              algoVerdict: stage2Payload.algoVerdict,
+            });
+            if (updated) {
+              console.log(
+                `[IndicatorHandler] ${pair}/${timeframe}: stage-2 ratification UPDATE written (status=${stage2Payload.ratificationStatus}, attempt=${attempt}).`,
+              );
+            } else {
+              // Conditional check failed — row missing (race-lost stage-1)
+              // or already in a final state. Either is benign; log distinctly
+              // so operators can tell this from a successful UPDATE.
+              console.log(
+                `[IndicatorHandler] ${pair}/${timeframe}: stage-2 UPDATE skipped (row missing or already final, status=${stage2Payload.ratificationStatus}, attempt=${attempt}).`,
+              );
+            }
+            return;
+          } catch (updateErr) {
+            const isLastAttempt = attempt === MAX_ATTEMPTS;
+            console.warn(
+              `[IndicatorHandler] ${pair}/${timeframe}: stage-2 UPDATE attempt ${attempt}/${MAX_ATTEMPTS} failed${isLastAttempt ? " (giving up)" : ", retrying"}:`,
+              updateErr,
+            );
+            if (isLastAttempt) {
+              // Final attempt failed — log and continue. Stage-1 "pending"
+              // row remains until the next signal supersedes it; not crashing
+              // is better than failing the whole stream batch and re-processing
+              // every record on retry.
+              return;
+            }
+            // Linear backoff: 100ms, 200ms before next attempt.
+            await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+          }
+        }
+      },
+    );
+
+    stage1Signal = ratifyResult.signal;
+    kickoffRatification = ratifyResult.kickoffRatification;
+  } catch (err) {
+    console.warn(
+      `[IndicatorHandler] ${pair}: ratification setup failed, using algo signal — ${(err as Error).message}`,
+    );
+    // stage1Signal stays as blended (no ratificationStatus field → pre-B1 compatible)
   }
 
   // Use the same signalId/emittedAt shape as signal-store.putSignal so admin.service
@@ -235,18 +325,23 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
           emittedAt,
           closeTime,
           timeframe,
-          type: blended.type,
-          confidence: blended.confidence,
-          volatilityFlag: blended.volatilityFlag,
-          gateReason: blended.gateReason,
-          rulesFired: blended.rulesFired,
-          perTimeframe: blended.perTimeframe,
-          weightsUsed: blended.weightsUsed,
-          asOf: blended.asOf,
-          emittingTimeframe: blended.emittingTimeframe,
-          risk: blended.risk ?? null,
-          invalidatedAt: blended.invalidatedAt ?? null,
-          invalidationReason: blended.invalidationReason ?? null,
+          type: stage1Signal.type,
+          confidence: stage1Signal.confidence,
+          volatilityFlag: stage1Signal.volatilityFlag,
+          gateReason: stage1Signal.gateReason,
+          rulesFired: stage1Signal.rulesFired,
+          perTimeframe: stage1Signal.perTimeframe,
+          weightsUsed: stage1Signal.weightsUsed,
+          asOf: stage1Signal.asOf,
+          emittingTimeframe: stage1Signal.emittingTimeframe,
+          risk: stage1Signal.risk ?? null,
+          invalidatedAt: stage1Signal.invalidatedAt ?? null,
+          invalidationReason: stage1Signal.invalidationReason ?? null,
+          // Phase B1: persist ratificationStatus so clients see "pending" immediately.
+          // "not-required" and "ratified" (cache hit) are already final on stage-1.
+          ratificationStatus: stage1Signal.ratificationStatus ?? null,
+          ratificationVerdict: stage1Signal.ratificationVerdict ?? null,
+          algoVerdict: stage1Signal.algoVerdict ?? null,
           // 90-day TTL
           ttl: Math.floor(Date.now() / 1000) + 86_400 * 90,
         },
@@ -257,7 +352,7 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     );
 
     console.log(
-      `[IndicatorHandler] ${pair}/${timeframe}: signal written (type=${blended.type} confidence=${blended.confidence.toFixed(3)}).`,
+      `[IndicatorHandler] ${pair}/${timeframe}: stage-1 signal written (type=${stage1Signal.type} confidence=${stage1Signal.confidence.toFixed(3)} ratificationStatus=${stage1Signal.ratificationStatus ?? "n/a"}).`,
     );
   } catch (err) {
     // With @aws-sdk/lib-dynamodb the Document Client may surface conditional
@@ -278,6 +373,31 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
       return;
     }
     throw err;
+  }
+
+  // Now that stage-1 is durable, kick off the LLM stream. kickoffRatification
+  // is undefined for gated/cache-hit paths — those have no stage-2.
+  //
+  // Wrap in try/catch defensively: runLlmStream is designed to swallow its own
+  // errors (LLM API errors invoke the fallback path; persistence errors are
+  // logged but don't propagate). But cache lookup or putRatificationRecord
+  // could in principle throw an unexpected error (DDB throttle on cache, schema
+  // mismatch). We do NOT want such errors to fail the Lambda invocation here:
+  // stage-1 is already committed. Failing the invocation would trigger a stream
+  // retry, the retried handler would see signals-v2 has the row already, return
+  // early — and stage-2 never fires. Result: row stuck on "pending" forever.
+  //
+  // Better to log and move on. The signal still has a usable algo verdict;
+  // the next signal supersedes it on the next close-boundary.
+  if (kickoffRatification) {
+    try {
+      await kickoffRatification();
+    } catch (kickoffErr) {
+      console.error(
+        `[IndicatorHandler] ${pair}/${timeframe}: kickoffRatification threw — stage-1 row may remain on "pending":`,
+        kickoffErr,
+      );
+    }
   }
 }
 
@@ -414,7 +534,10 @@ async function getFearGreedCached(): Promise<number | null> {
  * Pulls 250 bars per exchange, canonicalizes, builds IndicatorState, scores,
  * persists vote, then blends all 4 TF votes for the pair.
  *
- * Returns the final BlendedSignal (after ratification), or null if insufficient data.
+ * Returns the **pre-ratification** blended signal (or null if insufficient
+ * data). Phase B1 (#132): ratification runs in `processCandleClose` AFTER
+ * the stage-1 Put commits, so callers should treat this as the algo-only
+ * candidate and not assume LLM has touched it.
  */
 async function computeBlendedSignal(
   pair: string,
@@ -527,44 +650,15 @@ async function computeBlendedSignal(
     return null;
   }
 
-  // §7.5 Ratification gate.
-  let final = blended;
-  try {
-    const sentiment = await buildSentimentBundle(pair);
-    const ratifyResult = await ratifySignal({
-      pair,
-      candidate: blended,
-      perTimeframe: perTimeframeVotes,
-      sentiment,
-      whaleSummary: null,
-      pricePoints: [],
-      fearGreed: {
-        value: fearGreed ?? 50,
-        trend24h: sentiment.fearGreed.trend24h ?? 0,
-      },
-    });
-    final = ratifyResult.signal;
-    if (!ratifyResult.fellBackToAlgo) {
-      console.log(
-        `[IndicatorHandler] ${pair}: ratified → type=${final.type} confidence=${final.confidence.toFixed(3)}`,
-      );
-    }
-  } catch (err) {
-    console.warn(
-      `[IndicatorHandler] ${pair}: ratification failed, using algo signal — ${(err as Error).message}`,
-    );
-    final = blended;
-  }
-
   const previous = await getLatestSignalForPair(pair);
-  const trivial = isTrivialChange(previous, final);
+  const trivial = isTrivialChange(previous, blended);
   if (!trivial) {
     console.log(
-      `[IndicatorHandler] non-trivial signal change for ${pair}: type=${final.type} confidence=${final.confidence.toFixed(3)}`,
+      `[IndicatorHandler] non-trivial signal change for ${pair}: type=${blended.type} confidence=${blended.confidence.toFixed(3)}`,
     );
   }
 
-  return final;
+  return blended;
 }
 
 /**

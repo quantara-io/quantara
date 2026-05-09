@@ -69,4 +69,30 @@ export interface BlendedSignal {
   // The next regular TF close emits a fresh signal row with invalidatedAt = null.
   invalidatedAt?: string | null;
   invalidationReason?: string | null; // e.g. "Breaking news: Coinbase delists ETH staking"
+
+  // Phase B1 — two-stage ratification status (§B1 of LATENCY_PLAN.md).
+  // null / absent = pre-B1 row; "pending" = LLM ratification in flight;
+  // "not-required" = hold signal or clear confidence — no LLM call needed;
+  // "ratified" = LLM confirmed the algo signal (or graceful fallback); "downgraded" = LLM changed the signal.
+  ratificationStatus?: "pending" | "ratified" | "downgraded" | "not-required" | null;
+
+  // Populated by stage-2 write when status is "downgraded" or when the LLM
+  // produced a fresh "ratified" verdict on this slot.
+  // May be null / absent when:
+  //   - ratificationStatus is "pending" (stage-2 hasn't fired yet)
+  //   - ratificationStatus is "not-required" (gated, no LLM call)
+  //   - ratificationStatus is "ratified" via cache hit (the cached signal IS
+  //     the verdict; the top-level type/confidence on this row carries it)
+  //   - row predates Phase B1 (#132)
+  // Consumers that need the verdict's reasoning specifically should fall
+  // back to rulesFired when ratificationVerdict is null.
+  ratificationVerdict?: {
+    type: "buy" | "sell" | "hold";
+    confidence: number;
+    reasoning: string;
+  } | null;
+
+  // Populated when status is "downgraded". Preserves the original algo signal so the UI
+  // can show what changed (e.g. "Algo: buy 0.75 → LLM: hold 0.55").
+  algoVerdict?: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string } | null;
 }
