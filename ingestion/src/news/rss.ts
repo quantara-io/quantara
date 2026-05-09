@@ -121,11 +121,15 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
   return records;
 }
 
-// Collision-resistant newsId: SHA-256 truncated to 16 hex chars (64 bits).
-// 2^32 IDs see a 50% collision risk at ~50K items (birthday bound), which the
-// prior 32-bit hashString hit easily. With 64 bits the bound is ~5B items —
-// well past the lifetime news volume. Now that newsId is the sole dedup key,
-// any collision = silent article drop, so collision resistance is critical.
+// Collision-resistant newsId: SHA-256 truncated to 16 hex chars (64-bit space).
+// Birthday-bound 50%-collision thresholds (≈ 1.18·√N for hash-space N):
+//   - 32-bit (≈4.3·10⁹): 50% collision at ~77K items. The prior `hashString`
+//     was 32 bits and would silently lose articles long before that as the
+//     news volume grew (already at risk during a heavy news day).
+//   - 64-bit (≈1.8·10¹⁹): 50% collision at ~5·10⁹ items, well past any
+//     plausible lifetime article count.
+// Now that newsId is the sole dedup key, any collision = silent article drop,
+// so 64 bits is the conservative choice — not 32, not 48.
 function newsIdHash(seed: string): string {
   return createHash("sha256").update(seed).digest("hex").slice(0, 16);
 }

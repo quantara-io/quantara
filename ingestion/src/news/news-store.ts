@@ -152,6 +152,11 @@ export async function storeNewsRecords(records: NewsRecord[]): Promise<NewsRecor
         { newsId: record.newsId, publishedAt: record.publishedAt, source: record.source },
         "[NewsStore] duplicate skip",
       );
+      // Track DDB-hit duplicates too: if the same newsId reappears later
+      // in this same batch, the seenInBatch guard short-circuits it before
+      // a second redundant Query is issued. Without this we'd burn an
+      // extra RCU per repeat for any article that's already in DDB.
+      seenInBatch.add(record.newsId);
     } else {
       logger.debug(
         {
