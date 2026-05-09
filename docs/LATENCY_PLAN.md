@@ -6,15 +6,15 @@ For the full signal architecture, see `docs/SIGNALS_AND_RISK.md`. This doc is a 
 
 ## Latency baseline (today, before any of this work)
 
-| Hop                              | Time         | Notes                                                                                     |
-| -------------------------------- | ------------ | ----------------------------------------------------------------------------------------- |
-| Exchange WS → DDB candles        | 50–200ms     | Exchange-side network + Fargate processing + DDB write                                    |
-| EventBridge cron tick            | **0–60s**    | **Indicator handler runs every minute; up to 60s wait after a close**                     |
-| Compute + signal write           | 500ms–1s     | Indicator math, blend, DDB Put                                                            |
-| LLM ratification (when fired)    | 1–3s         | Sonnet 4.6 API call; gates fired or borderline confidence only                            |
-| Client polling                   | **0–30s**    | **Web/admin client polls `/api/genie/signals` on its own schedule**                       |
-| **End-to-end (non-ratified)**    | **~30–90s**  |                                                                                           |
-| **End-to-end (ratified)**        | **~30–95s**  |                                                                                           |
+| Hop                           | Time        | Notes                                                                 |
+| ----------------------------- | ----------- | --------------------------------------------------------------------- |
+| Exchange WS → DDB candles     | 50–200ms    | Exchange-side network + Fargate processing + DDB write                |
+| EventBridge cron tick         | **0–60s**   | **Indicator handler runs every minute; up to 60s wait after a close** |
+| Compute + signal write        | 500ms–1s    | Indicator math, blend, DDB Put                                        |
+| LLM ratification (when fired) | 1–3s        | Sonnet 4.6 API call; gates fired or borderline confidence only        |
+| Client polling                | **0–30s**   | **Web/admin client polls `/api/genie/signals` on its own schedule**   |
+| **End-to-end (non-ratified)** | **~30–90s** |                                                                       |
+| **End-to-end (ratified)**     | **~30–95s** |                                                                       |
 
 The two big chunks are the 0–60s scheduler lag (cron-driven indicator) and the 0–30s polling lag (client-driven refresh). Everything else is sub-second.
 
@@ -24,9 +24,9 @@ The two big chunks are the 0–60s scheduler lag (cron-driven indicator) and the
 
 **Target latency after Phase A: 3–5s non-ratified, 5–9s ratified.** This matches the v6 SLO in `SIGNALS_AND_RISK.md` §1.
 
-| Issue | Work | Cuts | Status |
-| --- | --- | --- | --- |
-| **#116** | WebSocket push channel — API Gateway WebSocket + `$connect`/`$disconnect` Lambdas + connection-registry table + signals-fanout Lambda subscribed to `signals` table DDB Streams | ~30s polling lag → ≤1s | dispatched |
+| Issue    | Work                                                                                                                                                                                     | Cuts                      | Status                 |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---------------------- |
+| **#116** | WebSocket push channel — API Gateway WebSocket + `$connect`/`$disconnect` Lambdas + connection-registry table + signals-fanout Lambda subscribed to `signals` table DDB Streams          | ~30s polling lag → ≤1s    | dispatched             |
 | **#117** | Event-driven indicator handler — replace EventBridge `cron(* * * * ? *)` with DDB Streams on `candles` table + close-quorum table + deterministic signals-v2 PK/SK + Candle.source field | 0–60s scheduler lag → ~5s | spec'd, not dispatched |
 
 Both are independent (no file overlap; #116 is backend/infra/web-facing Lambdas; #117 is ingestion + candle-table infra). Can dispatch in parallel.
@@ -46,12 +46,14 @@ Both are independent (no file overlap; #116 is backend/infra/web-facing Lambdas;
 **Issue:** to be filed after Phase A lands.
 
 **Today (after Phase A):**
+
 - Algo signal computed in ~1s after quorum
 - Ratification waits to complete (1–3s API call) before writing to `signals` table
 - WebSocket push fires after ratification finishes
 - User sees the signal at ~5–9s post-close
 
 **Phase B1 design:**
+
 - Algo signal writes to `signals` table immediately (with `ratificationStatus: "pending"`)
 - WebSocket push fires at ~3s post-close — user sees the algo verdict + reasoning
 - Ratification runs async via Anthropic streaming API
@@ -61,6 +63,7 @@ Both are independent (no file overlap; #116 is backend/infra/web-facing Lambdas;
 **Trade-off:** in the rare case ratification downgrades, users briefly see a signal that gets corrected. Mitigation: hold the algo signal at a "tentative" UI state for ratification-eligible signals (gates fired or borderline) until the verdict streams.
 
 **Effort:** 1–2 weeks
+
 - Backend: extend ratification path to use Anthropic streaming API
 - Backend: emit second `signals` row update on downgrade
 - WebSocket: signals-fanout pushes UPDATE events (#116 v1 only pushes INSERT — extend to UPDATE)
@@ -99,13 +102,16 @@ The admin demo can ship while B1 is in progress; B1 just adds a second push even
 **Cuts:** 200–500ms on every push
 
 **Today (after Phase A):**
+
 - Final signal writes to `signals` table
 - DDB Streams emits event → signals-fanout Lambda → postToConnection per connection
 
 **C2 design:**
+
 - The Lambda that writes the final ratified signal directly calls `postToConnection` for each subscribed client; no separate signals-fanout Lambda
 
 **Trade-off:**
+
 - Tighter coupling: signal-writing Lambda now owns fanout responsibility
 - Harder to test: can't test fanout in isolation
 - Larger error blast radius: a fanout error in the writer affects signal persistence ordering
@@ -117,13 +123,16 @@ The admin demo can ship while B1 is in progress; B1 just adds a second push even
 **Cuts:** 200–500ms
 
 **Today (after Phase A):**
+
 - MarketStreamManager (Fargate) writes candle to DDB
 - DDB Streams emits event → IndicatorLambda invocation
 
 **C3 design:**
+
 - MarketStreamManager directly invokes IndicatorLambda synchronously (or via SQS) after writing the candle; bypasses DDB Streams ingest
 
 **Trade-off:**
+
 - Loses stream-retry idempotency property — if the invocation fails, no automatic retry from the streams subsystem
 - Tighter coupling between Fargate ingestion and Lambda computation
 - Harder to debug a missed signal: was the candle written? Was the invocation made?
@@ -145,6 +154,7 @@ The admin demo can ship while B1 is in progress; B1 just adds a second push even
 **Cost:** reduces ratification spend from $20–150/month to $5–50/month (Haiku 4.5 is ~10× cheaper than Sonnet 4.6)
 
 **Risk:** Haiku may miss subtle context that Sonnet catches. Validation suite needs:
+
 - Backtest against ~100 historical ratification calls
 - Compare Haiku verdict vs Sonnet verdict
 - Define "Sonnet-must-handle" edge cases by feature pattern (e.g., specific rule combinations, news context, multi-pair correlation)
@@ -185,6 +195,7 @@ Run a subset of the signal pipeline on 1m/5m candle closes for **data collection
 **Cuts:** ~5s post-close → ~100ms per-tick
 
 **Effort:** months
+
 - Rewrite Phase 1 indicators to rolling-window math (EMA, MACD, RSI all need different update logic)
 - Rewrite Phase 2 scoring to emit continuous probabilities
 - Rewrite Phase 3 blending — multi-horizon blending of continuous probabilities is a different math problem
@@ -238,14 +249,14 @@ Phase E — Tick-level streaming
 
 ## Latency targets at each phase
 
-| Phase | Non-ratified p99 | Ratified p99 | Notes                                             |
-| ----- | ---------------- | ------------ | ------------------------------------------------- |
-| Today | ~30–90s          | ~30–95s      | Cron-bound + polling-bound                        |
-| A     | 5s               | 9s           | Matches v6 SLO                                    |
-| B     | 5s               | 5s           | Ratification streams; perceived latency unified   |
-| C     | 2–3s             | 2–3s         | Tail fixes; varies by which of C1/C2/C3 ship      |
-| D     | 2–3s             | 2–3s         | Cost win, not latency win                         |
-| E     | ~100ms           | ~100ms       | Different product; not committed                  |
+| Phase | Non-ratified p99 | Ratified p99 | Notes                                           |
+| ----- | ---------------- | ------------ | ----------------------------------------------- |
+| Today | ~30–90s          | ~30–95s      | Cron-bound + polling-bound                      |
+| A     | 5s               | 9s           | Matches v6 SLO                                  |
+| B     | 5s               | 5s           | Ratification streams; perceived latency unified |
+| C     | 2–3s             | 2–3s         | Tail fixes; varies by which of C1/C2/C3 ship    |
+| D     | 2–3s             | 2–3s         | Cost win, not latency win                       |
+| E     | ~100ms           | ~100ms       | Different product; not committed                |
 
 ---
 
