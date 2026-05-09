@@ -47,32 +47,61 @@ function getSentimentShockMagnitudeFloor(): number {
 
 /**
  * Windows that are eligible for shock detection (comma-separated).
- * Default: "4h".
+ * Default: "4h". When the env var is set but every value is invalid (typo,
+ * unsupported window), fall back to ["4h"] and warn — silently disabling
+ * shock detection due to a typo would be a footgun.
  */
 function getSentimentShockWindows(): AggregationWindow[] {
-  const raw = process.env.SENTIMENT_SHOCK_WINDOWS ?? "4h";
-  return raw
+  const raw = process.env.SENTIMENT_SHOCK_WINDOWS;
+  if (raw === undefined || raw === "") return ["4h"];
+  const parsed = raw
     .split(",")
     .map((s: string) => s.trim())
     .filter((s: string): s is AggregationWindow => s === "4h" || s === "24h");
+  if (parsed.length === 0) {
+    console.warn(
+      `[SentimentShock] SENTIMENT_SHOCK_WINDOWS=${JSON.stringify(raw)} contains no valid windows (expected "4h" / "24h"); falling back to ["4h"].`,
+    );
+    return ["4h"];
+  }
+  return parsed;
 }
 
 /**
  * Per-pair cooldown: don't re-fire for the same pair within this many minutes.
- * Default: 5.
+ * Default: 5. Must be a positive finite number; 0 or negative disables/inverts
+ * the cooldown silently, which is rejected with a warn + fallback.
  */
 function getSentimentShockCooldownMinutes(): number {
-  const v = parseInt(process.env.SENTIMENT_SHOCK_COOLDOWN_MINUTES ?? "");
-  return isFinite(v) ? v : 5;
+  const raw = process.env.SENTIMENT_SHOCK_COOLDOWN_MINUTES;
+  if (raw === undefined || raw === "") return 5;
+  const v = parseInt(raw, 10);
+  if (!Number.isFinite(v) || v <= 0) {
+    console.warn(
+      `[SentimentShock] SENTIMENT_SHOCK_COOLDOWN_MINUTES=${JSON.stringify(raw)} is not a positive integer; falling back to 5.`,
+    );
+    return 5;
+  }
+  return v;
 }
 
 /**
  * Per-pair hourly cap: max shock ratifications per pair per hour.
- * Default: 6.
+ * Default: 6. Must be a positive finite integer; 0 makes
+ * `recentShocks.length >= 0` always true (suppresses every shock) and a
+ * negative cap inverts the comparison. Both are rejected.
  */
 function getSentimentShockMaxPerPairPerHour(): number {
-  const v = parseInt(process.env.SENTIMENT_SHOCK_MAX_PER_PAIR_PER_HOUR ?? "");
-  return isFinite(v) ? v : 6;
+  const raw = process.env.SENTIMENT_SHOCK_MAX_PER_PAIR_PER_HOUR;
+  if (raw === undefined || raw === "") return 6;
+  const v = parseInt(raw, 10);
+  if (!Number.isFinite(v) || v <= 0) {
+    console.warn(
+      `[SentimentShock] SENTIMENT_SHOCK_MAX_PER_PAIR_PER_HOUR=${JSON.stringify(raw)} is not a positive integer; falling back to 6.`,
+    );
+    return 6;
+  }
+  return v;
 }
 
 // ---------------------------------------------------------------------------

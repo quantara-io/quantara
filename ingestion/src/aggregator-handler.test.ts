@@ -2,7 +2,9 @@
  * aggregator-handler.test.ts
  *
  * Integration-style test for the SQS → aggregator → DDB path.
- * All AWS SDK calls are mocked at the module boundary so no real AWS access is needed.
+ * All AWS SDK calls and downstream collaborators (aggregator,
+ * sentiment-shock, news/bundle's `getFearGreed`) are mocked at the module
+ * boundary so no real AWS access is needed.
  *
  * This test exercises the failure mode that PR #75's unit tests missed:
  * the handler must fan out to all mentionedPairs and call recomputeSentimentAggregate
@@ -24,13 +26,29 @@ vi.mock("./news/sentiment-shock.js", () => ({
   maybeFireSentimentShockRatification: maybeFireShockMock,
 }));
 
+// ---- Mock news/bundle so getFearGreed doesn't hit the metadata table ----
+// The handler reads F&G unconditionally before the shock-flag check,
+// so even with the shock pipeline gated off this needs a stub.
+const getFearGreedMock = vi.fn();
+vi.mock("./news/bundle.js", () => ({
+  getFearGreed: getFearGreedMock,
+}));
+
 beforeEach(() => {
   vi.resetModules();
   recomputeMock.mockReset();
   maybeFireShockMock.mockReset();
+  getFearGreedMock.mockReset();
   // Return the shape the handler expects: { aggregate, previousAggregate }
   recomputeMock.mockResolvedValue({ aggregate: {}, previousAggregate: null });
   maybeFireShockMock.mockResolvedValue(undefined);
+  getFearGreedMock.mockResolvedValue({
+    value: 50,
+    classification: "Neutral",
+    lastTimestamp: "2026-05-09T00:00:00.000Z",
+    history: [],
+    trend24h: 0,
+  });
 });
 
 function makeSqsEvent(
