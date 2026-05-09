@@ -263,6 +263,41 @@ describe("ratifySignal — cache hit", () => {
     expect(recordItem.cacheHit).toBe(true);
     expect(recordItem.costUsd).toBe(0);
   });
+
+  it("preserves ratificationVerdict on cache hit so buildInterpretation routes to llm-ratified", async () => {
+    const { ratifySignal } = await import("./ratify.js");
+    const { buildInterpretation } = await import("@quantara/shared");
+    const ctx = makeContext();
+
+    // Cached signal carries the LLM verdict the way ratify.ts now writes it:
+    // ratificationVerdict.reasoning + source: "llm" populated before putCachedRatification.
+    const cachedSignal: BlendedSignal = {
+      ...makeCandidate({ type: "hold", confidence: 0.6 }),
+      ratificationStatus: "ratified",
+      ratificationVerdict: {
+        type: "hold",
+        confidence: 0.6,
+        reasoning:
+          "Macro overhang from CPI print and rejection at the prior 4h high warrant downgrading to hold.",
+        source: "llm",
+      },
+      algoVerdict: null,
+    };
+
+    ddbSendMock.mockResolvedValueOnce({ Items: [], Count: 0 }); // rate limit
+    ddbSendMock.mockResolvedValueOnce({ Count: 0 }); // daily cap
+    ddbSendMock.mockResolvedValueOnce({ Item: { signal: cachedSignal } }); // cache hit
+    ddbSendMock.mockResolvedValue({}); // putRatificationRecord
+
+    const result = await ratifySignal(ctx);
+    expect(result.cacheHit).toBe(true);
+    expect(result.signal.ratificationVerdict?.reasoning).toContain("CPI print");
+    expect(result.signal.ratificationVerdict?.source).toBe("llm");
+
+    const interp = buildInterpretation(result.signal);
+    expect(interp.source).toBe("llm-ratified");
+    expect(interp.text).toContain("CPI print");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ import {
 } from "./prompt.js";
 import { validateRatification } from "./validate.js";
 import { putRatificationRecord, type InvokedReason } from "../lib/ratification-store.js";
+import type { RatificationVerdictRecord } from "../lib/signal-store.js";
 
 // ---------------------------------------------------------------------------
 // Model config (pinned per issue spec)
@@ -114,8 +115,13 @@ export interface RatifyResult {
 /** Payload supplied to the stage-2 callback once the LLM verdict is ready. */
 export interface Stage2Payload {
   ratificationStatus: "ratified" | "downgraded";
-  ratificationVerdict: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string };
-  algoVerdict: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string } | null;
+  /**
+   * The verdict to persist. `source` distinguishes a real LLM verdict from
+   * the graceful fallback that copies the algo verdict when the LLM call
+   * fails (see `invokeStage2Fallback`).
+   */
+  ratificationVerdict: RatificationVerdictRecord;
+  algoVerdict: RatificationVerdictRecord | null;
   /** The final signal after ratification (updated fields) */
   finalSignal: BlendedSignal;
 }
@@ -424,10 +430,34 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
   }
 
   // ------------------------------------------------------------------
-  // Success: persist + invoke stage-2
+  // Success: build the final signal, then persist + invoke stage-2
   // ------------------------------------------------------------------
   const ratified = validation.ratified;
-  await putCachedRatification(cacheKey, ratified);
+
+  const isDowngraded =
+    parsedResponse.type !== context.candidate.type ||
+    parsedResponse.confidence < context.candidate.confidence - 1e-6;
+
+  const ratificationStatus = isDowngraded ? "downgraded" : "ratified";
+  const ratificationVerdict: RatificationVerdictRecord = {
+    type: parsedResponse.type,
+    confidence: parsedResponse.confidence,
+    reasoning: validation.reasoning,
+    source: "llm",
+  };
+
+  const finalSignal: BlendedSignal = {
+    ...ratified,
+    ratificationStatus,
+    ratificationVerdict,
+    algoVerdict: isDowngraded ? algoVerdict : null,
+  };
+
+  // Cache the *final* signal (with ratificationVerdict.reasoning + source: "llm")
+  // so a later cache hit can surface the LLM narrative through buildInterpretation.
+  // Without this, the cached row would have ratificationStatus "ratified" but no
+  // verdict, and the cache-hit consumer would render the narrative as algo-only.
+  await putCachedRatification(cacheKey, finalSignal);
 
   await putRatificationRecord({
     pair: context.pair,
@@ -437,31 +467,13 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
     llmRawResponse,
     cacheHit: false,
     validation: { ok: true },
-    ratified,
+    ratified: finalSignal,
     fellBackToAlgo: false,
     latencyMs: Date.now() - startMs,
     costUsd,
     invokedReason,
     invokedAt,
   });
-
-  const isDowngraded =
-    parsedResponse.type !== context.candidate.type ||
-    parsedResponse.confidence < context.candidate.confidence - 1e-6;
-
-  const ratificationStatus = isDowngraded ? "downgraded" : "ratified";
-  const ratificationVerdict = {
-    type: parsedResponse.type,
-    confidence: parsedResponse.confidence,
-    reasoning: validation.reasoning,
-  };
-
-  const finalSignal: BlendedSignal = {
-    ...ratified,
-    ratificationStatus,
-    ratificationVerdict,
-    algoVerdict: isDowngraded ? algoVerdict : null,
-  };
 
   console.log(
     `[Ratifier] Ratified ${context.pair}: ${finalSignal.type} conf=${finalSignal.confidence.toFixed(3)} status=${ratificationStatus}`,
@@ -494,8 +506,14 @@ async function invokeStage2Fallback(params: {
   const { context, algoVerdict, onStage2 } = params;
   if (!onStage2) return;
 
-  // Graceful fallback: treat algo as the verdict so the signal is never stuck on "pending"
-  const fallbackVerdict = algoVerdict;
+  // Graceful fallback: treat algo as the verdict so the signal is never stuck
+  // on "pending". Tag the verdict with `source: "algo-fallback"` so downstream
+  // readers (notably `buildInterpretation`) can distinguish a real LLM
+  // ratification from this fallback and avoid labelling it "LLM ratified".
+  const fallbackVerdict: RatificationVerdictRecord = {
+    ...algoVerdict,
+    source: "algo-fallback",
+  };
   const finalSignal: BlendedSignal = {
     ...context.candidate,
     ratificationStatus: "ratified",

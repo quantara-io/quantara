@@ -32,6 +32,8 @@ import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { DynamoDBStreamHandler, DynamoDBRecord } from "aws-lambda";
 import pino from "pino";
 
+import { buildInterpretation } from "@quantara/shared";
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -169,7 +171,35 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
 
   logger.info({ pair, count: subscribers.length }, "fanout: pushing to subscribers");
 
-  const payload = Buffer.from(JSON.stringify(signal));
+  // Attach consolidated interpretation so clients do not have to stitch
+  // ratificationVerdict + rulesFired themselves. Computed at fanout time
+  // for both INSERT (stage-1 pending) and MODIFY (stage-2 ratified/downgraded).
+  const enrichedSignal = {
+    ...signal,
+    interpretation: buildInterpretation({
+      pair: signal["pair"] as string,
+      type: signal["type"] as "buy" | "sell" | "hold",
+      rulesFired: Array.isArray(signal["rulesFired"]) ? (signal["rulesFired"] as string[]) : [],
+      ratificationStatus: (signal["ratificationStatus"] ?? null) as
+        | "pending"
+        | "ratified"
+        | "downgraded"
+        | "not-required"
+        | null,
+      ratificationVerdict: (signal["ratificationVerdict"] ?? null) as {
+        type: "buy" | "sell" | "hold";
+        confidence: number;
+        reasoning: string;
+      } | null,
+      algoVerdict: (signal["algoVerdict"] ?? null) as {
+        type: "buy" | "sell" | "hold";
+        confidence: number;
+        reasoning: string;
+      } | null,
+    }),
+  };
+
+  const payload = Buffer.from(JSON.stringify(enrichedSignal));
   const apigw = getApigwClient();
 
   await Promise.allSettled(

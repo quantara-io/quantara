@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { PAIRS } from "@quantara/shared";
-import type { BlendedSignal, RiskRecommendation, TimeframeVote } from "@quantara/shared";
+import type {
+  BlendedSignal,
+  RiskRecommendation,
+  SignalInterpretation,
+  TimeframeVote,
+} from "@quantara/shared";
 
 import { apiFetch } from "../lib/api";
 import { getAccessToken } from "../lib/auth";
@@ -199,28 +204,86 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
         </span>
       </div>
 
-      {/* Reasoning. BlendedSignal has no free-text `reasoning` field — the
-          algo verdict is attributed via `rulesFired`. The `invalidationReason`
-          field belongs to the (separate) Phase 6b breaking-news invalidation
-          banner above, not the rules block. When Phase B1 (#132) lands a
-          `ratificationReasoning` field this is where it'll render. */}
-      <div className="text-sm text-slate-300">
-        {signal.rulesFired.length > 0 ? (
-          <ul className="list-disc list-inside space-y-0.5 text-slate-400 text-xs">
-            {signal.rulesFired.map((rule) => (
-              <li key={rule}>{rule}</li>
-            ))}
-          </ul>
-        ) : (
-          <span className="text-slate-600 text-xs italic">No rules attributed</span>
-        )}
-      </div>
+      {/* Interpretation — Phase B2 (#171).
+          interpretation.text is the consolidated user-facing narrative sourced from
+          either the LLM ratification reasoning or the algo rulesFired summary.
+          When source === "llm-downgraded", also show the algo → LLM transition. */}
+      {signal.interpretation ? (
+        <InterpretationBlock
+          interpretation={signal.interpretation}
+          finalType={signal.type}
+          finalConfidence={signal.confidence}
+        />
+      ) : (
+        /* Pre-B2 fallback: render rulesFired list as before */
+        <div className="text-sm text-slate-300">
+          {signal.rulesFired.length > 0 ? (
+            <ul className="list-disc list-inside space-y-0.5 text-slate-400 text-xs">
+              {signal.rulesFired.map((rule) => (
+                <li key={rule}>{rule}</li>
+              ))}
+            </ul>
+          ) : (
+            <span className="text-slate-600 text-xs italic">No rules attributed</span>
+          )}
+        </div>
+      )}
 
       {/* Per-timeframe breakdown */}
       <PerTimeframeTable perTimeframe={signal.perTimeframe} weightsUsed={signal.weightsUsed} />
 
       {/* Risk recommendation */}
       {signal.risk != null && signal.type !== "hold" && <RiskBlock risk={signal.risk} />}
+    </div>
+  );
+}
+
+function InterpretationBlock({
+  interpretation,
+  finalType,
+  finalConfidence,
+}: {
+  interpretation: SignalInterpretation;
+  /** Final signal type after ratification — used to render the "→ LLM: hold 50%" tail on downgraded transitions. */
+  finalType: "buy" | "sell" | "hold";
+  /** Final signal confidence after ratification. */
+  finalConfidence: number;
+}) {
+  const sourceLabel =
+    interpretation.source === "llm-ratified"
+      ? "LLM ratified"
+      : interpretation.source === "llm-downgraded"
+        ? "LLM downgraded"
+        : "Algo";
+
+  const sourceClass =
+    interpretation.source === "llm-ratified"
+      ? "bg-emerald-950/40 border-emerald-900 text-emerald-400"
+      : interpretation.source === "llm-downgraded"
+        ? "bg-amber-950/40 border-amber-900 text-amber-400"
+        : "bg-slate-900 border-slate-800 text-slate-400";
+
+  return (
+    <div className={`rounded border px-3 py-2 space-y-1.5 ${sourceClass}`}>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-widest opacity-70">
+          {sourceLabel}
+        </span>
+      </div>
+      <p className="text-sm leading-snug">{interpretation.text}</p>
+      {interpretation.source === "llm-downgraded" && interpretation.originalAlgo && (
+        <p className="text-xs text-slate-500">
+          Algo:{" "}
+          <span className="font-mono text-slate-400">
+            {interpretation.originalAlgo.type}{" "}
+            {Math.round(interpretation.originalAlgo.confidence * 100)}%
+          </span>{" "}
+          &rarr; LLM:{" "}
+          <span className="font-mono text-amber-400">
+            {finalType} {Math.round(finalConfidence * 100)}%
+          </span>
+        </p>
+      )}
     </div>
   );
 }

@@ -28,6 +28,9 @@ export {
 export { PAIRS, type TradingPair } from "./constants/pairs.js";
 export { VOL_GATE_THRESHOLDS } from "./constants/vol-gates.js";
 
+// Signal interpretation helper — Phase B2 (#171)
+export { buildInterpretation } from "./signals/interpretation.js";
+
 // Risk helpers (Gap 1 — moved from ingestion/src/risk/ so backend can import)
 export { attachRiskRecommendation } from "./risk/attach.js";
 export {

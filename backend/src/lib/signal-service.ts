@@ -28,6 +28,7 @@ import {
   PAIRS,
   type TradingPair,
   attachRiskRecommendation,
+  buildInterpretation,
   defaultRiskProfiles,
 } from "@quantara/shared";
 import type { z } from "@hono/zod-openapi";
@@ -69,7 +70,16 @@ function itemToBlendedSignal(item: Record<string, unknown>): BlendedSignal {
   const parsed = BlendedSignalSchema.parse(item);
   // The parsed shape is structurally identical to BlendedSignal; cast through unknown to
   // satisfy TypeScript without a runtime trip (parse already validated).
-  return parsed as unknown as BlendedSignal;
+  const signal = parsed as unknown as BlendedSignal;
+
+  // Phase B2 (#171) — always populate interpretation so clients get a consolidated
+  // narrative without having to stitch ratificationVerdict + rulesFired themselves.
+  // buildInterpretation is pure and handles all ratificationStatus values including null.
+  if (!signal.interpretation) {
+    signal.interpretation = buildInterpretation(signal);
+  }
+
+  return signal;
 }
 
 /**

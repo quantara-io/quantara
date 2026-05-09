@@ -74,6 +74,25 @@ export const RiskRecommendationSchema = z
   .openapi("RiskRecommendation");
 
 /**
+ * Consolidated user-facing interpretation — Phase B2 (#171).
+ * Clients should render interpretation.text prominently instead of
+ * stitching ratificationVerdict + rulesFired themselves.
+ */
+export const SignalInterpretationSchema = z
+  .object({
+    source: z.enum(["llm-ratified", "llm-downgraded", "algo-only"]),
+    text: z.string(),
+    originalAlgo: z
+      .object({
+        type: z.enum(["buy", "sell", "hold"]),
+        confidence: z.number(),
+        reasoning: z.string(),
+      })
+      .optional(),
+  })
+  .openapi("SignalInterpretation");
+
+/**
  * BlendedSignalSchema — the full user-facing signal shape that the signal-service
  * emits. Carries per-timeframe votes for transparency and post-renormalization
  * weights (§5.6 of SIGNALS_AND_RISK.md).
@@ -143,6 +162,9 @@ export const BlendedSignalSchema = z
         type: z.enum(["buy", "sell", "hold"]),
         confidence: z.number(),
         reasoning: z.string(),
+        // "algo-fallback" → graceful fallback wrote the algo verdict because
+        // the LLM call failed. Readers treat this as algo-only narrative.
+        source: z.enum(["llm", "algo-fallback"]).optional(),
       })
       .nullable()
       .optional(),
@@ -156,6 +178,10 @@ export const BlendedSignalSchema = z
       })
       .nullable()
       .optional(),
+
+    // Phase B2 (#171) — consolidated user-facing interpretation.
+    // Optional so pre-B2 rows (and test fixtures) remain valid.
+    interpretation: SignalInterpretationSchema.nullable().optional(),
   })
   .openapi("BlendedSignalSchema");
 
