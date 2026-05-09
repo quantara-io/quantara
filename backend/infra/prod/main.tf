@@ -10,21 +10,25 @@ terraform {
 
   # Per-account state — bucket + lock table colocated with the prod workload
   # they describe. See infra issue #1.
+  #
+  # Credentials resolve from the SDK chain so the same config works locally
+  # (AWS_PROFILE=quantara-prod before terraform init) and in CI (OIDC env vars
+  # from aws-actions/configure-aws-credentials). Don't hardcode `profile` —
+  # CI has no ~/.aws/config file.
   backend "s3" {
     bucket         = "quantara-tf-state-prod"
     key            = "backend/prod/terraform.tfstate"
     region         = "us-west-2"
-    profile        = "quantara-prod"
     dynamodb_table = "quantara-tf-locks-prod"
     encrypt        = true
   }
 }
 
-# Provider uses the prod profile directly per infra issue #1 (per-account
-# state). No cross-account assume-role needed.
+# Provider uses the prod account directly per infra issue #1 (per-account
+# state). No cross-account assume-role needed. Credentials come from the
+# SDK chain (AWS_PROFILE env locally, OIDC env vars in CI).
 provider "aws" {
-  region  = "us-west-2"
-  profile = var.aws_profile
+  region = "us-west-2"
 
   default_tags {
     tags = {
@@ -57,12 +61,6 @@ output "lambda_function_name" {
 
 output "table_names" {
   value = module.backend.table_names
-}
-
-variable "aws_profile" {
-  description = "AWS CLI profile that resolves directly to a role in the prod account (per-account state per infra issue #1)."
-  type        = string
-  default     = "quantara-prod"
 }
 
 variable "prod_account_id" {

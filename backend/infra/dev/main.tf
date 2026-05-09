@@ -10,22 +10,25 @@ terraform {
 
   # Per-account state — bucket + lock table colocated with the dev workload
   # they describe. See infra issue #1.
+  #
+  # Credentials resolve from the SDK chain so the same config works locally
+  # (AWS_PROFILE=quantara-dev before terraform init) and in CI (OIDC env vars
+  # from aws-actions/configure-aws-credentials). Don't hardcode `profile` —
+  # CI has no ~/.aws/config file.
   backend "s3" {
     bucket         = "quantara-tf-state-dev"
     key            = "backend/dev/terraform.tfstate"
     region         = "us-west-2"
-    profile        = "quantara-dev"
     dynamodb_table = "quantara-tf-locks-dev"
     encrypt        = true
   }
 }
 
-# Provider uses the dev profile directly per infra issue #1 (per-account
-# state). No cross-account assume-role needed; the SSO session for
-# `quantara-dev` resolves to a role in the dev account.
+# Provider uses the dev account directly per infra issue #1 (per-account
+# state). No cross-account assume-role needed. Credentials come from the
+# SDK chain (AWS_PROFILE env locally, OIDC env vars in CI).
 provider "aws" {
-  region  = "us-west-2"
-  profile = var.aws_profile
+  region = "us-west-2"
 
   default_tags {
     tags = {
@@ -39,12 +42,12 @@ provider "aws" {
 module "backend" {
   source = "../modules/quantara-backend"
 
-  environment      = "dev"
-  app_source_dir   = "${path.module}/../.."
-  auth_base_url    = "https://quantara-sandbox.aldero.io"
-  app_id           = var.aldero_app_id
-  cors_origin = "https://d3tavvh2o76dc5.cloudfront.net,${module.admin.cloudfront_url}"
-  log_level   = "debug"
+  environment    = "dev"
+  app_source_dir = "${path.module}/../.."
+  auth_base_url  = "https://quantara-sandbox.aldero.io"
+  app_id         = var.aldero_app_id
+  cors_origin    = "https://d3tavvh2o76dc5.cloudfront.net,${module.admin.cloudfront_url}"
+  log_level      = "debug"
 }
 
 module "admin" {
@@ -91,12 +94,6 @@ output "admin_bucket_name" {
 
 output "admin_distribution_id" {
   value = module.admin.cloudfront_distribution_id
-}
-
-variable "aws_profile" {
-  description = "AWS CLI profile that resolves directly to a role in the dev account (per-account state per infra issue #1)."
-  type        = string
-  default     = "quantara-dev"
 }
 
 variable "dev_account_id" {
