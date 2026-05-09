@@ -116,6 +116,11 @@ admin.put("/whitelist", async (c) => {
   return c.json({ success: true, data: await setWhitelist(body.ips) });
 });
 
+// Allowed timeframes match the blender's emit set in
+// ingestion/src/signals/blend.ts. Validating here prevents accidental
+// expensive queries on garbage strings.
+const VALID_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
+
 admin.get("/genie-metrics", async (c) => {
   const sinceRaw = c.req.query("since");
   if (sinceRaw !== undefined) {
@@ -132,7 +137,29 @@ admin.get("/genie-metrics", async (c) => {
   }
 
   const pair = c.req.query("pair");
+  if (pair !== undefined && !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
   const timeframe = c.req.query("timeframe");
+  if (timeframe !== undefined && !(VALID_TIMEFRAMES as readonly string[]).includes(timeframe)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
 
   const metrics = await getGenieMetrics(sinceRaw, pair, timeframe);
   return c.json({ success: true, data: metrics });

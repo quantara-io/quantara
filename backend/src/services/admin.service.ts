@@ -581,8 +581,10 @@ const SIGNAL_OUTCOMES_TABLE =
   process.env.TABLE_SIGNAL_OUTCOMES ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signal-outcomes`;
 
-// All monitored pairs — used when no pair filter is specified.
-const ALL_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"] as const;
+// Reuse the file-level PAIRS constant for the genie-metrics fan-out so the
+// pair list is sourced from one place. (Was a duplicate ALL_PAIRS array
+// before — drift hazard whenever pairs are added or removed.)
+export const SUPPORTED_PAIRS = PAIRS;
 
 // Sonnet 4.6 pricing ($3/1M input, $15/1M output) — NOT the same as Haiku.
 // Ratification records store costUsd directly so this is only a fallback reference.
@@ -759,12 +761,16 @@ async function querySignalsForWindow(
 }
 
 /**
- * Query all signal-outcome records for a set of pairs where resolvedAt >= sinceIso.
- * signal-outcomes table PK=pair, SK=signalId. FilterExpression on resolvedAt.
+ * Query signal-outcome records for a set of pairs where resolvedAt is in
+ * `[sinceIso, untilIso]`. signal-outcomes table PK=pair, SK=signalId, so
+ * the time range is enforced via FilterExpression — DynamoDB still scans
+ * the partition before filtering. Acceptable today (small partitions per
+ * pair); if cost becomes an issue, add a GSI keyed on resolvedAt.
  */
 async function queryOutcomesForWindow(
   pairs: readonly string[],
   sinceIso: string,
+  untilIso: string,
 ): Promise<OutcomeRow[]> {
   const rows: OutcomeRow[] = [];
 
@@ -776,9 +782,13 @@ async function queryOutcomesForWindow(
           new QueryCommand({
             TableName: SIGNAL_OUTCOMES_TABLE,
             KeyConditionExpression: "#pair = :pair",
-            FilterExpression: "#resolvedAt >= :since",
+            FilterExpression: "#resolvedAt BETWEEN :since AND :until",
             ExpressionAttributeNames: { "#pair": "pair", "#resolvedAt": "resolvedAt" },
-            ExpressionAttributeValues: { ":pair": pair, ":since": sinceIso },
+            ExpressionAttributeValues: {
+              ":pair": pair,
+              ":since": sinceIso,
+              ":until": untilIso,
+            },
             ExclusiveStartKey: lastKey,
           }),
         );
@@ -808,7 +818,7 @@ export async function getGenieMetrics(
   const windowEnd = new Date().toISOString();
   const windowStart = since ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const pairs = pair ? [pair] : ALL_PAIRS;
+  const pairs = pair ? [pair] : SUPPORTED_PAIRS;
 
   // signals_v2 is the source of truth for `signalCount` and ratification-
   // pathway partitioning. ratifications is the source for cost + gating
@@ -816,7 +826,7 @@ export async function getGenieMetrics(
   const [signalRows, ratRows, outcomeRows] = await Promise.all([
     querySignalsForWindow(pairs, windowStart, windowEnd),
     queryRatificationsForWindow(pairs, windowStart, windowEnd),
-    queryOutcomesForWindow(pairs, windowStart),
+    queryOutcomesForWindow(pairs, windowStart, windowEnd),
   ]);
 
   // Apply timeframe filter consistently across signals and outcomes so all
