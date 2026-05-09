@@ -280,6 +280,19 @@ resource "aws_iam_role_policy" "enrichment_dynamodb" {
           aws_dynamodb_table.news_events_by_pair.arn,
         ]
       },
+      {
+        # `recordLlmUsage` (ingestion/src/lib/metadata-store.ts) writes
+        # day-bucketed `llm_usage#YYYY-MM-DD` rows to the metadata table from
+        # both the active path (enrichment/bedrock.ts) and Phase 5a
+        # (news/enrich.ts), which share this Lambda role.
+        Effect = "Allow"
+        Action = [
+          "dynamodb:UpdateItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.ingestion_metadata.arn,
+        ]
+      },
     ]
   })
 }
