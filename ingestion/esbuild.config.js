@@ -14,6 +14,7 @@ const shared = {
     "@aws-sdk/client-sqs",
     "@aws-sdk/client-ssm",
     "@aws-sdk/client-bedrock-runtime",
+    "@aws-sdk/client-apigatewaymanagementapi",
     "ccxt",
   ],
 };
@@ -67,6 +68,28 @@ await build({
   outfile: "dist/service.js",
 });
 
+// Lambda: WebSocket $connect — JWT verify + connection-registry write (§16)
+await build({
+  ...shared,
+  entryPoints: ["src/ws-connect-handler.ts"],
+  outfile: "dist/ws-connect-handler.js",
+});
+
+// Lambda: WebSocket $disconnect — connection-registry delete (§16)
+await build({
+  ...shared,
+  entryPoints: ["src/ws-disconnect-handler.ts"],
+  outfile: "dist/ws-disconnect-handler.js",
+});
+
+// Lambda: DDB Streams fanout — push ratified signals to WebSocket subscribers (§16)
+// IMPORTANT: subscribed to `signals` table (ratified), NOT `signals-v2` (pre-ratification).
+await build({
+  ...shared,
+  entryPoints: ["src/signals-fanout.ts"],
+  outfile: "dist/signals-fanout.js",
+});
+
 console.log(
-  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/service.js",
+  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js",
 );

@@ -31,7 +31,13 @@ output "table_names" {
     sentiment_aggregates  = aws_dynamodb_table.sentiment_aggregates.name
     ratifications         = aws_dynamodb_table.ratifications.name
     ratification_cache    = aws_dynamodb_table.ratification_cache.name
+    connection_registry   = aws_dynamodb_table.connection_registry.name
   }
+}
+
+output "websocket_url" {
+  description = "WebSocket API endpoint URL (wss://)"
+  value       = aws_apigatewayv2_api.websocket.api_endpoint
 }
 
 output "data_archive_bucket" {
