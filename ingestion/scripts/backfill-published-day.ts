@@ -4,20 +4,30 @@
  * One-time idempotent backfill: scans the news-events table and populates the
  * `publishedDay` attribute (YYYY-MM-DD) on every row that is missing it.
  *
- * `publishedDay` is the partition key for the `published-day-index` GSI that
- * powers the new paginated admin News feed. Rows without this attribute are
- * invisible to the GSI query.
+ * `publishedDay` is the partition key for the upcoming `published-day-index`
+ * GSI that powers the new paginated admin News feed. The deploy order is:
+ *
+ *   1. Merge this PR (writers populate `publishedDay` on every new row)
+ *   2. Run THIS script — populate `publishedDay` on existing rows
+ *   3. Apply Terraform to add the GSI (separate PR)
+ *   4. Merge the backend / frontend PR that queries the GSI
+ *
+ * Steps 2 and 3 are intentionally ordered: if the GSI is added before the
+ * backfill, it will be sparse and the admin feed will return empty pages
+ * until the backfill completes.
  *
  * Idempotency: rows that already have `publishedDay` are skipped (no write).
  * Safe to re-run multiple times.
  *
- * Usage:
+ * Usage (run directly with tsx — script is not bundled by esbuild):
+ *
+ *   AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- DRY_RUN=true \
+ *     npx tsx ingestion/scripts/backfill-published-day.ts
+ *
  *   AWS_PROFILE=quantara-dev TABLE_PREFIX=quantara-dev- \
  *     npx tsx ingestion/scripts/backfill-published-day.ts
  *
- * Or in CI / Lambda after the GSI is deployed:
- *   AWS_REGION=us-west-2 TABLE_NEWS_EVENTS=quantara-prod-news-events \
- *     node dist/backfill-published-day.js
+ * Honours `DRY_RUN=true` for a no-write preview.
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -30,6 +40,45 @@ const NEWS_TABLE =
 
 const DRY_RUN = process.env.DRY_RUN === "true";
 
+// Retry tunables for transient DynamoDB throttling. On-demand tables can still
+// surface `ProvisionedThroughputExceededException` / `ThrottlingException`
+// during burst writes against a large table, so retry with exponential
+// backoff + jitter rather than aborting the whole backfill.
+const MAX_RETRIES = 5;
+const BASE_DELAY_MS = 100;
+const RETRYABLE_ERROR_NAMES = new Set([
+  "ProvisionedThroughputExceededException",
+  "ThrottlingException",
+  "RequestLimitExceeded",
+  "InternalServerError",
+]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(op: () => Promise<T>, label: string): Promise<T> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await op();
+    } catch (err: unknown) {
+      const name = (err as { name?: string }).name ?? "";
+      if (!RETRYABLE_ERROR_NAMES.has(name) || attempt >= MAX_RETRIES) {
+        throw err;
+      }
+      // Exponential backoff with full jitter: delay ∈ [0, BASE * 2^attempt].
+      const cap = BASE_DELAY_MS * 2 ** attempt;
+      const delay = Math.floor(Math.random() * cap);
+      attempt++;
+      console.warn(
+        `[backfill] ${label} hit ${name} (attempt ${attempt}/${MAX_RETRIES}); retrying in ${delay}ms`,
+      );
+      await sleep(delay);
+    }
+  }
+}
+
 async function backfill(): Promise<void> {
   console.log(`[backfill] Target table: ${NEWS_TABLE}`);
   console.log(`[backfill] Dry run: ${DRY_RUN}`);
@@ -41,12 +90,16 @@ async function backfill(): Promise<void> {
   let lastEvaluatedKey: Record<string, unknown> | undefined;
 
   do {
-    const result = await client.send(
-      new ScanCommand({
-        TableName: NEWS_TABLE,
-        ProjectionExpression: "newsId, publishedAt, publishedDay",
-        ...(lastEvaluatedKey ? { ExclusiveStartKey: lastEvaluatedKey } : {}),
-      }),
+    const result = await withRetry(
+      () =>
+        client.send(
+          new ScanCommand({
+            TableName: NEWS_TABLE,
+            ProjectionExpression: "newsId, publishedAt, publishedDay",
+            ...(lastEvaluatedKey ? { ExclusiveStartKey: lastEvaluatedKey } : {}),
+          }),
+        ),
+      "Scan",
     );
 
     const items = (result.Items ?? []) as Array<{
@@ -85,15 +138,19 @@ async function backfill(): Promise<void> {
       }
 
       try {
-        await client.send(
-          new UpdateCommand({
-            TableName: NEWS_TABLE,
-            Key: { newsId: item.newsId, publishedAt: item.publishedAt },
-            UpdateExpression: "SET publishedDay = :day",
-            ExpressionAttributeValues: { ":day": publishedDay },
-            // Only write if publishedDay is still absent (idempotent guard against concurrent backfills).
-            ConditionExpression: "attribute_not_exists(publishedDay)",
-          }),
+        await withRetry(
+          () =>
+            client.send(
+              new UpdateCommand({
+                TableName: NEWS_TABLE,
+                Key: { newsId: item.newsId, publishedAt: item.publishedAt },
+                UpdateExpression: "SET publishedDay = :day",
+                ExpressionAttributeValues: { ":day": publishedDay },
+                // Only write if publishedDay is still absent (idempotent guard against concurrent backfills).
+                ConditionExpression: "attribute_not_exists(publishedDay)",
+              }),
+            ),
+          `Update ${item.newsId}`,
         );
         updated++;
         if (updated % 100 === 0) {
