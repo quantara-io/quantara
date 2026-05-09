@@ -18,6 +18,7 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
   ScanCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Scan", input })),
   GetCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Get", input })),
   QueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Query", input })),
+  BatchGetCommand: vi.fn().mockImplementation((input) => ({ __cmd: "BatchGet", input })),
 }));
 
 vi.mock("@aws-sdk/client-ecs", () => ({
@@ -121,34 +122,153 @@ describe("setWhitelist", () => {
   });
 });
 
+describe("encodeNewsCursor / decodeNewsCursor", () => {
+  it("round-trips a cursor with only a day", async () => {
+    const { encodeNewsCursor, decodeNewsCursor } = await importService();
+    const cursor = { day: "2026-05-09" };
+    expect(decodeNewsCursor(encodeNewsCursor(cursor))).toEqual(cursor);
+  });
+
+  it("round-trips a cursor with a day and lastEvaluatedKey", async () => {
+    const { encodeNewsCursor, decodeNewsCursor } = await importService();
+    const cursor = {
+      day: "2026-05-08",
+      lastEvaluatedKey: { newsId: "abc", publishedAt: "2026-05-08T10:00:00Z", publishedDay: "2026-05-08" },
+    };
+    expect(decodeNewsCursor(encodeNewsCursor(cursor))).toEqual(cursor);
+  });
+
+  it("returns null for invalid base64", async () => {
+    const { decodeNewsCursor } = await importService();
+    expect(decodeNewsCursor("not-valid-base64!!!")).toBeNull();
+  });
+
+  it("returns null for valid base64 but wrong shape (missing day)", async () => {
+    const { decodeNewsCursor } = await importService();
+    const bad = Buffer.from(JSON.stringify({ notDay: "foo" })).toString("base64url");
+    expect(decodeNewsCursor(bad)).toBeNull();
+  });
+});
+
 describe("getNews", () => {
-  it("returns news sorted desc by publishedAt and trimmed to limit", async () => {
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { Key?: unknown } }) => {
-      if (cmd.__cmd === "Scan") {
-        return {
-          Items: [
-            { newsId: "a", publishedAt: "2026-04-01T00:00:00Z", title: "old" },
-            { newsId: "b", publishedAt: "2026-04-25T00:00:00Z", title: "new" },
-            { newsId: "c", publishedAt: "2026-04-10T00:00:00Z", title: "mid" },
-          ],
-        };
-      }
-      // Get for fear-greed
-      return { Item: { value: 55, classification: "Greed" } };
+  it("queries the GSI by publishedDay and returns items newest-first", async () => {
+    const mockItems = [
+      { newsId: "b", publishedAt: "2026-05-09T12:00:00Z", publishedDay: "2026-05-09", title: "new" },
+      { newsId: "a", publishedAt: "2026-05-09T08:00:00Z", publishedDay: "2026-05-09", title: "old" },
+    ];
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Query") return { Items: mockItems };
+      if (cmd.__cmd === "Get") return { Item: { value: 55, classification: "Greed" } };
+      return {};
     });
 
     const { getNews } = await importService();
     const result = await getNews(2);
     expect(result.news).toHaveLength(2);
     expect(result.news[0].title).toBe("new");
-    expect(result.news[1].title).toBe("mid");
+    expect(result.news[1].title).toBe("old");
     expect(result.fearGreed).toEqual({ value: 55, classification: "Greed" });
   });
 
-  it("returns an empty result when scan throws", async () => {
+  it("walks back to the previous day when current day has fewer rows than limit", async () => {
+    // Today returns 1 item; yesterday returns 2 more.
+    const todayItem = { newsId: "t1", publishedAt: "2026-05-09T10:00:00Z", publishedDay: "2026-05-09" };
+    const yesterdayItems = [
+      { newsId: "y1", publishedAt: "2026-05-08T23:00:00Z", publishedDay: "2026-05-08" },
+      { newsId: "y2", publishedAt: "2026-05-08T12:00:00Z", publishedDay: "2026-05-08" },
+    ];
+    let callCount = 0;
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          callCount++;
+          const day = cmd.input?.ExpressionAttributeValues?.[":day"] as string | undefined;
+          if (day === "2026-05-09") return { Items: [todayItem] };
+          if (day === "2026-05-08") return { Items: yesterdayItems };
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    // Freeze "today" to 2026-05-09 so todayUtc() returns "2026-05-09".
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T15:00:00Z"));
+
+    const { getNews } = await importService();
+    const result = await getNews(3);
+    expect(result.news).toHaveLength(3);
+    expect(result.news[0].newsId).toBe("t1");
+    expect(result.news[1].newsId).toBe("y1");
+    expect(result.news[2].newsId).toBe("y2");
+    expect(callCount).toBeGreaterThanOrEqual(2);
+
+    vi.useRealTimers();
+  });
+
+  it("stops walking at the lookback limit even if fewer than limit rows found", async () => {
+    // Every day returns 0 items — should stop after NEWS_LOOKBACK_DAYS days.
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      if (cmd.__cmd === "Query") return { Items: [] };
+      return {};
+    });
+
+    const { getNews } = await importService();
+    const result = await getNews(50);
+    // Should return empty, not hang.
+    expect(result.news).toHaveLength(0);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("emits nextCursor when the page is full", async () => {
+    const items = Array.from({ length: 2 }, (_, i) => ({
+      newsId: `n${i}`,
+      publishedAt: `2026-05-09T${String(12 - i).padStart(2, "0")}:00:00Z`,
+      publishedDay: "2026-05-09",
+    }));
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      if (cmd.__cmd === "Query") return { Items: items };
+      return {};
+    });
+
+    const { getNews } = await importService();
+    const result = await getNews(2);
+    expect(result.news).toHaveLength(2);
+    // nextCursor must be a non-null string since we filled the page.
+    expect(typeof result.nextCursor).toBe("string");
+  });
+
+  it("resumes from cursor on next page call", async () => {
+    const { getNews, encodeNewsCursor } = await importService();
+    const cursor = encodeNewsCursor({ day: "2026-05-08" });
+
+    const page2Items = [
+      { newsId: "p2a", publishedAt: "2026-05-08T20:00:00Z", publishedDay: "2026-05-08" },
+    ];
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const day = cmd.input?.ExpressionAttributeValues?.[":day"] as string | undefined;
+          if (day === "2026-05-08") return { Items: page2Items };
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    const result = await getNews(50, cursor);
+    expect(result.news[0].newsId).toBe("p2a");
+  });
+
+  it("returns an empty result and null nextCursor when Query throws", async () => {
     dynamoSend.mockRejectedValue(new Error("throttled"));
     const { getNews } = await importService();
-    expect(await getNews()).toEqual({ news: [], fearGreed: null });
+    const result = await getNews();
+    expect(result).toEqual({ news: [], fearGreed: null, nextCursor: null });
   });
 });
 

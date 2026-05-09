@@ -43,6 +43,7 @@ interface NewsItem {
 interface NewsData {
   news: NewsItem[];
   fearGreed: { value: number; classification: string } | null;
+  nextCursor: string | null;
 }
 
 interface UsageByModel {
@@ -177,24 +178,42 @@ function UsageCard({ usage }: { usage: NewsUsage }) {
   );
 }
 
+const MAX_PAGES = 10;
+
 export function News() {
-  const [data, setData] = useState<NewsData | null>(null);
+  // `pages` holds each loaded page of news items. Page 0 is the first page
+  // (most recent), subsequent pages extend backward in time.
+  const [pages, setPages] = useState<NewsItem[][]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [fearGreed, setFearGreed] = useState<NewsData["fearGreed"]>(null);
   const [usage, setUsage] = useState<NewsUsage | null>(null);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<SentimentFilter>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // Derived flat list of all loaded news items (first page only refreshes via polling).
+  const allNews = pages.flat();
 
   useEffect(() => {
     let cancelled = false;
 
-    async function load() {
+    async function loadFirstPage() {
       const [newsRes, usageRes] = await Promise.all([
         apiFetch<NewsData>("/api/admin/news?limit=50"),
         apiFetch<NewsUsage>("/api/admin/news/usage"),
       ]);
       if (cancelled) return;
       if (newsRes.success && newsRes.data) {
-        setData(newsRes.data);
+        // Replace only the first page on refresh — don't discard pages the
+        // operator loaded via "Load more". If they've paginated, keep pages 1+.
+        setPages((prev) => [newsRes.data!.news, ...prev.slice(1)]);
+        setNextCursor((prev) =>
+          // Only update cursor when on the first page (no additional pages loaded yet),
+          // so re-polling doesn't clobber the pagination state.
+          prev === null || prev === newsRes.data!.nextCursor ? newsRes.data!.nextCursor : prev,
+        );
+        setFearGreed(newsRes.data.fearGreed);
         setError("");
       } else {
         setError(newsRes.error?.message ?? "Failed to load");
@@ -204,13 +223,31 @@ export function News() {
       }
     }
 
-    void load();
-    const id = setInterval(load, 60_000);
+    void loadFirstPage();
+    // Only the first page polls — pagination is for "browse history" mode.
+    const id = setInterval(loadFirstPage, 60_000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
   }, []);
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore || pages.length >= MAX_PAGES) return;
+    setLoadingMore(true);
+    try {
+      const res = await apiFetch<NewsData>(`/api/admin/news?limit=50&cursor=${encodeURIComponent(nextCursor)}`);
+      if (res.success && res.data) {
+        setPages((prev) => [...prev, res.data!.news]);
+        setNextCursor(res.data.nextCursor);
+      }
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  // Compatibility: expose a `data` shape for the JSX below to avoid rewriting the render tree.
+  const data = pages.length > 0 ? { news: allNews, fearGreed } : null;
 
   if (error)
     return (
@@ -221,6 +258,8 @@ export function News() {
   if (!data) return <div className="text-sm text-slate-500">Loading...</div>;
 
   const filtered = data.news.filter((n) => matchesFilter(n, filter));
+  const pagesLoaded = pages.length;
+  const atPageLimit = pagesLoaded >= MAX_PAGES;
 
   const filterPills: { key: SentimentFilter; label: string }[] = [
     { key: "all", label: "All" },
@@ -333,6 +372,29 @@ export function News() {
             </div>
           );
         })}
+      </div>
+
+      {/* Load more / pagination footer */}
+      <div className="flex flex-col items-center gap-2 pt-1">
+        {nextCursor && !atPageLimit && (
+          <button
+            onClick={() => void loadMore()}
+            disabled={loadingMore}
+            className="px-4 py-1.5 rounded border border-slate-700 text-sm text-slate-400 hover:border-slate-500 hover:text-slate-200 disabled:opacity-50 transition-colors"
+          >
+            {loadingMore ? "Loading..." : "Load more"}
+          </button>
+        )}
+        {atPageLimit && (
+          <p className="text-[11px] text-slate-500">
+            {MAX_PAGES} pages loaded. Reload the page to start over.
+          </p>
+        )}
+        {pagesLoaded > 1 && (
+          <p className="text-[11px] text-slate-600">
+            {pagesLoaded} pages loaded &middot; {allNews.length} articles
+          </p>
+        )}
       </div>
     </div>
   );
