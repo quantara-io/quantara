@@ -10,6 +10,9 @@ const getSignalsMock = vi.fn();
 const getGenieMetricsMock = vi.fn();
 const getRatificationsMock = vi.fn();
 const getPipelineStateMock = vi.fn();
+const forceRatificationMock = vi.fn();
+const replayNewsEnrichmentMock = vi.fn();
+const injectSentimentShockMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
@@ -25,6 +28,12 @@ vi.mock("../services/admin.service.js", () => ({
 
 vi.mock("../services/pipeline-state.service.js", () => ({
   getPipelineState: getPipelineStateMock,
+}));
+
+vi.mock("../services/admin-debug.service.js", () => ({
+  forceRatification: forceRatificationMock,
+  replayNewsEnrichment: replayNewsEnrichmentMock,
+  injectSentimentShock: injectSentimentShockMock,
 }));
 
 let currentAuth: Record<string, unknown> = {
@@ -55,6 +64,9 @@ beforeEach(() => {
   getGenieMetricsMock.mockReset();
   getRatificationsMock.mockReset();
   getPipelineStateMock.mockReset();
+  forceRatificationMock.mockReset();
+  replayNewsEnrichmentMock.mockReset();
+  injectSentimentShockMock.mockReset();
   currentAuth = {
     userId: "user_admin",
     email: "admin@example.com",
@@ -682,5 +694,287 @@ describe("GET /pipeline-state", () => {
     const res = await app.request("/pipeline-state");
     expect(res.status).toBe(403);
     expect(getPipelineStateMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /debug/force-ratification
+// ---------------------------------------------------------------------------
+
+describe("POST /debug/force-ratification", () => {
+  it("returns 400 when pair is missing", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/force-ratification", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ timeframe: "1h" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(forceRatificationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when pair is not in the PAIRS list", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/force-ratification", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "FAKE/USDT", timeframe: "1h" }),
+    });
+    expect(res.status).toBe(400);
+    expect(forceRatificationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when timeframe is invalid", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/force-ratification", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", timeframe: "5m" }),
+    });
+    expect(res.status).toBe(400);
+    expect(forceRatificationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 429 when the daily cap is exceeded", async () => {
+    forceRatificationMock.mockResolvedValue({
+      capped: true,
+      capCount: 200,
+      verdict: null,
+      confidence: null,
+      reasoning: null,
+      latencyMs: 0,
+      costUsd: 0,
+      cacheHit: false,
+      fellBackToAlgo: false,
+      recordId: "",
+      rawResponse: null,
+    });
+    const app = await loadApp();
+    const res = await app.request("/debug/force-ratification", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", timeframe: "1h" }),
+    });
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("RATE_LIMITED");
+  });
+
+  it("returns 200 with the ratification result on success", async () => {
+    const mockResult = {
+      verdict: "ratify",
+      confidence: 0.82,
+      reasoning: "Strong signal",
+      latencyMs: 450,
+      costUsd: 0.0003,
+      cacheHit: false,
+      fellBackToAlgo: false,
+      recordId: "rec-123",
+      rawResponse: null,
+    };
+    forceRatificationMock.mockResolvedValue(mockResult);
+    const app = await loadApp();
+    const res = await app.request("/debug/force-ratification", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", timeframe: "1h" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockResult };
+    expect(body.success).toBe(true);
+    expect(body.data.verdict).toBe("ratify");
+    expect(forceRatificationMock).toHaveBeenCalledWith({ pair: "BTC/USDT", timeframe: "1h" });
+  });
+
+  it("is protected by requireAdmin — returns 403 for non-admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/debug/force-ratification", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", timeframe: "1h" }),
+    });
+    expect(res.status).toBe(403);
+    expect(forceRatificationMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /debug/replay-news-enrichment
+// ---------------------------------------------------------------------------
+
+describe("POST /debug/replay-news-enrichment", () => {
+  it("returns 400 when newsId is missing", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/replay-news-enrichment", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(replayNewsEnrichmentMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when newsId is an empty string", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/replay-news-enrichment", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "   " }),
+    });
+    expect(res.status).toBe(400);
+    expect(replayNewsEnrichmentMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 with replay result — mutated is always false", async () => {
+    const mockResult = {
+      newsId: "news-123",
+      title: "BTC ETF approved",
+      storedEnrichment: { sentiment: "bullish" },
+      replayedEnrichment: {
+        mentionedPairs: ["BTC"],
+        sentiment: { score: 0.9, magnitude: 0.8, model: "anthropic.claude-haiku-4-5" },
+        enrichedAt: "2026-05-09T12:00:00Z",
+        latencyMs: 300,
+        costUsd: 0.0002,
+      },
+      mutated: false as const,
+    };
+    replayNewsEnrichmentMock.mockResolvedValue(mockResult);
+    const app = await loadApp();
+    const res = await app.request("/debug/replay-news-enrichment", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "news-123" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockResult };
+    expect(body.success).toBe(true);
+    expect(body.data.mutated).toBe(false);
+    expect(body.data.newsId).toBe("news-123");
+    expect(replayNewsEnrichmentMock).toHaveBeenCalledWith({ newsId: "news-123" });
+  });
+
+  it("is protected by requireAdmin — returns 403 for non-admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/debug/replay-news-enrichment", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "news-123" }),
+    });
+    expect(res.status).toBe(403);
+    expect(replayNewsEnrichmentMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /debug/inject-sentiment-shock
+// ---------------------------------------------------------------------------
+
+describe("POST /debug/inject-sentiment-shock", () => {
+  it("returns 400 when pair is invalid", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/inject-sentiment-shock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "FAKE/USDT", deltaScore: 0.5, deltaMagnitude: 0.1 }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(injectSentimentShockMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when deltaScore is out of range", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/inject-sentiment-shock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", deltaScore: 3, deltaMagnitude: 0 }),
+    });
+    expect(res.status).toBe(400);
+    expect(injectSentimentShockMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when deltaMagnitude is out of range", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/inject-sentiment-shock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", deltaScore: 0.5, deltaMagnitude: 1.5 }),
+    });
+    expect(res.status).toBe(400);
+    expect(injectSentimentShockMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when deltaScore is non-numeric", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/inject-sentiment-shock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", deltaScore: "big", deltaMagnitude: 0.1 }),
+    });
+    expect(res.status).toBe(400);
+    expect(injectSentimentShockMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 with decision=fired when shock is written", async () => {
+    const mockResult = {
+      decision: "fired" as const,
+      reasons: ["shock conditions met", "recordId=test-uuid"],
+      shockRecord: { pair: "BTC/USDT", triggerReason: "sentiment_shock" },
+    };
+    injectSentimentShockMock.mockResolvedValue(mockResult);
+    const app = await loadApp();
+    const res = await app.request("/debug/inject-sentiment-shock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", deltaScore: 0.5, deltaMagnitude: 0.1 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockResult };
+    expect(body.success).toBe(true);
+    expect(body.data.decision).toBe("fired");
+    expect(injectSentimentShockMock).toHaveBeenCalledWith({
+      pair: "BTC/USDT",
+      deltaScore: 0.5,
+      deltaMagnitude: 0.1,
+    });
+  });
+
+  it("returns 200 with decision=skipped when shock conditions are not met", async () => {
+    const mockResult = {
+      decision: "skipped" as const,
+      reasons: ["delta=0.100 < threshold=0.3 — shock not triggered"],
+      shockRecord: null,
+    };
+    injectSentimentShockMock.mockResolvedValue(mockResult);
+    const app = await loadApp();
+    const res = await app.request("/debug/inject-sentiment-shock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "ETH/USDT", deltaScore: 0.1, deltaMagnitude: 0 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockResult };
+    expect(body.success).toBe(true);
+    expect(body.data.decision).toBe("skipped");
+  });
+
+  it("is protected by requireAdmin — returns 403 for non-admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/debug/inject-sentiment-shock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", deltaScore: 0.5, deltaMagnitude: 0.1 }),
+    });
+    expect(res.status).toBe(403);
+    expect(injectSentimentShockMock).not.toHaveBeenCalled();
   });
 });
