@@ -53,11 +53,28 @@ export async function apiFetch<T>(path: string, opts: RequestOpts = {}): Promise
     const at = getAccessToken();
     if (at) headers["Authorization"] = `Bearer ${at}`;
   }
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+
+  // Wrap the entire request — including fetch() itself — so network/CORS
+  // failures surface as a typed envelope instead of an unhandled promise
+  // rejection. Call sites (Genie, Market, Login, News, Whitelist, Overview)
+  // await without try/catch and would otherwise leave the page stuck on
+  // a Loading state with no error visible.
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    return {
+      success: false,
+      error: {
+        code: "NETWORK_ERROR",
+        message: `${path} failed to reach the server: ${(err as Error).message}`,
+      },
+    };
+  }
 
   if (res.status === 401 && !noAuth && retry) {
     const refreshed = await tryRefresh();
@@ -65,11 +82,9 @@ export async function apiFetch<T>(path: string, opts: RequestOpts = {}): Promise
     clearTokens();
   }
 
-  // Defensively parse the body. CloudFront's HTML error pages, gateway
-  // 504s, or any non-JSON response would otherwise throw inside res.json()
-  // and surface as an unhandled promise rejection — pages stuck on Loading
-  // state, no error visible. Wrap the parse and surface as a typed error
-  // envelope so callers see the failure.
+  // CloudFront's HTML error pages, gateway 504s, or any non-JSON response
+  // would otherwise throw inside res.json() and surface as an unhandled
+  // promise rejection. Surface as a typed error envelope instead.
   const contentType = res.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     return {
