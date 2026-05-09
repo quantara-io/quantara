@@ -141,6 +141,10 @@ export async function storeNewsRecords(records: NewsRecord[]): Promise<NewsRecor
         ExpressionAttributeValues: { ":id": record.newsId },
         ProjectionExpression: "newsId",
         Limit: 1,
+        // Strongly-consistent read: a just-written item from a rapid
+        // re-poll must be visible immediately, otherwise a duplicate
+        // (different `publishedAt`, same `newsId`) can slip through.
+        ConsistentRead: true,
       }),
     );
     if (existing.Count && existing.Count > 0) {

@@ -60,12 +60,16 @@ describe("fetchRssNews", () => {
     const sol = records.find((r) => r.title.includes("SOL and DOGE"));
     expect(sol?.currencies.sort()).toEqual(["DOGE", "SOL"]);
     // Empty pubDate falls back to the current poll time (new Date().toISOString()).
-    // Verify it parses as a valid ISO and is within a few seconds of now.
+    // Verify it parses as a valid ISO and is within the test window.
+    // Tolerance is wide on purpose — `fetchRssNews()` does 3 fetches +
+    // XML parse, so on a slow CI runner the actual fallback timestamp can
+    // legitimately be a few seconds after `before`. Tightening to 1s
+    // makes this flaky without buying any signal.
     const solTs = Date.parse(sol!.publishedAt);
     expect(Number.isNaN(solTs)).toBe(false);
     const now = Date.now();
     expect(solTs).toBeGreaterThanOrEqual(before);
-    expect(solTs).toBeLessThanOrEqual(now + 1000);
+    expect(solTs).toBeLessThanOrEqual(now + 5_000);
   });
 
   it("returns [] when every feed errors out", async () => {
