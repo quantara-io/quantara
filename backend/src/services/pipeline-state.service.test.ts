@@ -45,6 +45,10 @@ function makeIndicatorItem(pair: string, exchange: string, timeframe: string) {
 }
 
 function makeSignalItem(pair: string, timeframe: string) {
+  // signals_v2 rows persist `ratificationVerdict` (with `source`) and
+  // `algoVerdict` / `rulesFired`, NOT a top-level `interpretation` field.
+  // The service materialises interpretationText via `buildInterpretation`
+  // on read.
   return {
     pair,
     sk: `${timeframe}#${Date.now()}`,
@@ -52,9 +56,15 @@ function makeSignalItem(pair: string, timeframe: string) {
     type: "buy",
     confidence: 0.85,
     ratificationStatus: "ratified",
+    ratificationVerdict: {
+      type: "buy",
+      confidence: 0.85,
+      reasoning: "Strong upward momentum confirmed.",
+      source: "llm",
+    },
+    rulesFired: ["rsi-oversold", "ema-cross"],
     asOf: Date.now() - 120_000, // 2 minutes ago
     emittedAt: new Date(Date.now() - 120_000).toISOString(),
-    interpretation: { text: "Strong upward momentum confirmed." },
   };
 }
 
@@ -234,30 +244,60 @@ describe("getPipelineState", () => {
     expect(getCount).toBe(2); // 4h + 24h, fetched once per pair
   });
 
-  it("includes a `consensus` column with rolled-up cross-tf signal lookup", async () => {
-    sendMock.mockImplementation((cmd: { _type: string; KeyConditionExpression?: string }) => {
-      if (cmd._type === "QueryCommand") {
-        // For the signals_v2 consensus query the tfPrefix filter is dropped:
-        // KeyConditionExpression is "#pair = :pair" exactly.
-        const expr = cmd.KeyConditionExpression ?? "";
-        if (expr === "#pair = :pair") {
-          return Promise.resolve({
-            Items: [
-              { pair: "BTC/USDT", sk: "1d#5", type: "sell", confidence: 0.7, asOf: Date.now() },
-            ],
-          });
+  it("derives the `consensus` cell from the freshest per-tf signal (NOT reverse-lex sk order)", async () => {
+    // Per-tf signals: 4h is OLDEST, 15m is FRESHEST.
+    // The previous implementation issued a Query without tfPrefix and took
+    // the first reverse-lex row, which sorts alphabetically by tf prefix
+    // (4h > 1h > 1d > 15m) and would have surfaced the stale 4h row.
+    // The new behaviour picks max-asOf across the per-tf signals.
+    const now = Date.now();
+    const signalsByTf: Record<string, { type: string; asOf: number }> = {
+      "15m": { type: "buy", asOf: now - 60_000 }, // FRESHEST
+      "1h": { type: "hold", asOf: now - 600_000 },
+      "4h": { type: "sell", asOf: now - 3_600_000 }, // OLDEST
+      "1d": { type: "hold", asOf: now - 7_200_000 },
+    };
+
+    sendMock.mockImplementation(
+      (cmd: {
+        _type: string;
+        KeyConditionExpression?: string;
+        ExpressionAttributeValues?: Record<string, string>;
+      }) => {
+        if (cmd._type === "QueryCommand") {
+          const expr = cmd.KeyConditionExpression ?? "";
+          // signals_v2 query is per-tf via begins_with(sk, "<tf>#").
+          if (expr.includes("begins_with")) {
+            const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"] ?? "";
+            const tf = tfPrefix.replace(/#$/, "");
+            const sig = signalsByTf[tf];
+            if (sig) {
+              return Promise.resolve({
+                Items: [
+                  {
+                    pair: "BTC/USDT",
+                    sk: `${tf}#${sig.asOf}`,
+                    type: sig.type,
+                    confidence: 0.7,
+                    asOf: sig.asOf,
+                  },
+                ],
+              });
+            }
+          }
+          return Promise.resolve({ Items: [] });
         }
-        return Promise.resolve({ Items: [] });
-      }
-      if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
-      return Promise.resolve({});
-    });
+        if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
+        return Promise.resolve({});
+      },
+    );
 
     const { getPipelineState } = await import("./pipeline-state.service.js");
     const result = await getPipelineState("BTC/USDT");
     const consensusCell = result.cells.find((c) => c.timeframe === "consensus");
     expect(consensusCell).toBeDefined();
-    expect(consensusCell?.signal.type).toBe("sell");
+    // Max-asOf across the four real-tf signals is 15m → "buy".
+    expect(consensusCell?.signal.type).toBe("buy");
   });
 
   it("returns an empty cells array if filterPair does not match any configured pair", async () => {
@@ -267,6 +307,10 @@ describe("getPipelineState", () => {
   });
 
   it("truncates interpretationText to 160 chars", async () => {
+    // signals_v2 rows do NOT persist a top-level `interpretation` field —
+    // the service runs `buildInterpretation` on read. A long
+    // ratificationVerdict.reasoning on a "ratified" row with source="llm"
+    // produces a long interpretation.text, which the service truncates.
     const longText = "A".repeat(300);
     sendMock.mockImplementation((cmd: { _type: string; KeyConditionExpression?: string }) => {
       if (cmd._type === "QueryCommand") {
@@ -280,7 +324,14 @@ describe("getPipelineState", () => {
                 type: "sell",
                 confidence: 0.7,
                 asOf: Date.now() - 1000,
-                interpretation: { text: longText },
+                ratificationStatus: "ratified",
+                ratificationVerdict: {
+                  type: "sell",
+                  confidence: 0.7,
+                  reasoning: longText,
+                  source: "llm",
+                },
+                rulesFired: ["rsi-overbought"],
               },
             ],
           });
@@ -295,6 +346,41 @@ describe("getPipelineState", () => {
     const result = await getPipelineState("BTC/USDT");
     const cell = result.cells[0];
     expect(cell.signal.interpretationText?.length).toBe(160);
+  });
+
+  it("computes interpretationText via buildInterpretation for algoOnly rows (no ratificationVerdict)", async () => {
+    // An algo-only row has no ratificationVerdict / ratificationStatus —
+    // the previous implementation would fall back to null. With
+    // buildInterpretation, the cell gets a rules-summary string built from
+    // pair + rulesFired.
+    sendMock.mockImplementation((cmd: { _type: string; KeyConditionExpression?: string }) => {
+      if (cmd._type === "QueryCommand") {
+        const expr = cmd.KeyConditionExpression ?? "";
+        if (expr.includes("begins_with")) {
+          return Promise.resolve({
+            Items: [
+              {
+                pair: "BTC/USDT",
+                sk: "15m#12345",
+                type: "buy",
+                confidence: 0.6,
+                asOf: Date.now() - 1000,
+                rulesFired: ["rsi-oversold", "ema-cross"],
+                // No ratificationStatus / ratificationVerdict — algo-only.
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ Items: [] });
+      }
+      if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
+      return Promise.resolve({});
+    });
+
+    const { getPipelineState } = await import("./pipeline-state.service.js");
+    const result = await getPipelineState("BTC/USDT");
+    const cell = result.cells[0];
+    expect(cell.signal.interpretationText).toBe("BTC/USDT: rsi-oversold + ema-cross");
   });
 
   it("surfaces up to 5 ratification history items", async () => {

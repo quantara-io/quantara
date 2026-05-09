@@ -44,9 +44,6 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
         aws_dynamodb_table.campaigns.arn,
         aws_dynamodb_table.signals_v2.arn, "${aws_dynamodb_table.signals_v2.arn}/index/*",
         aws_dynamodb_table.indicator_state.arn,
-        # Read-only — pipeline-state.service.ts in the admin route reads
-        # 4h + 24h sentiment aggregates per pair for the Pipeline State page.
-        aws_dynamodb_table.sentiment_aggregates.arn,
       ]
     }]
   })
@@ -134,10 +131,15 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
         Resource = "arn:aws:dynamodb:${var.aws_region}:*:table/${local.prefix}-*"
       },
       {
-        # Read-only access for the admin Market and News pages, which Query
-        # and GetItem from ingestion-owned tables. Without this, calls fail
-        # with AccessDeniedException and the admin endpoints silently return
-        # empty results.
+        # Read-only access for the admin Market, News, and Pipeline State
+        # pages. These Query and GetItem from ingestion-owned tables.
+        # Without this block, calls fail with AccessDeniedException and the
+        # admin endpoints silently return empty results.
+        #
+        # `sentiment_aggregates` belongs HERE (not in `lambda_dynamodb`)
+        # because the API never writes to it — only the ingestion
+        # aggregator writes. Having it in the over-broad statement was
+        # over-permissive (Put/Update/Delete were granted unnecessarily).
         Effect = "Allow"
         Action = ["dynamodb:Query", "dynamodb:GetItem"]
         Resource = [
@@ -147,6 +149,7 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
           aws_dynamodb_table.ingestion_metadata.arn,
           aws_dynamodb_table.signals_v2.arn,
           aws_dynamodb_table.indicator_state.arn,
+          aws_dynamodb_table.sentiment_aggregates.arn,
         ]
       },
     ]

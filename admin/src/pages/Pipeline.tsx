@@ -270,10 +270,12 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
           </section>
         )}
 
-        {/* Ratification history */}
+        {/* Recent signals — sourced from signals_v2 (NOT the ratifications
+            audit table). For per-call LLM ratification history, use the
+            Ratifications page (issue #185 / PR #196). */}
         <section>
           <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
-            Ratification History (last {cell.signal.recentHistory.length})
+            Recent Signals (last {cell.signal.recentHistory.length})
           </h3>
           {cell.signal.recentHistory.length === 0 ? (
             <p className="text-xs text-slate-600">No history</p>

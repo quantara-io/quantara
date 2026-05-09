@@ -9,7 +9,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 
-import { PAIRS } from "@quantara/shared";
+import { PAIRS, buildInterpretation, type BlendedSignal } from "@quantara/shared";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -184,33 +184,33 @@ function emptyIndicator(): IndicatorStateCell {
   };
 }
 
-async function fetchSignal(pair: string, timeframe: PipelineTimeframe): Promise<SignalCell> {
+/**
+ * Fetch the latest signal for a real timeframe (15m / 1h / 4h / 1d).
+ *
+ * Note: the `consensus` pseudo-timeframe is NOT handled here. The previous
+ * implementation issued a Query without the `tfPrefix` filter and took the
+ * first row in reverse-lex order — but `signals_v2.sk` = `tf#closeTime`, so
+ * reverse-lex ordering goes alphabetically by tf prefix first (4h > 1h >
+ * 1d > 15m). A stale 4h row would beat a fresh 15m. Consensus is now
+ * derived in `getPipelineState` by picking the freshest of the four real-tf
+ * signals already fetched for the pair.
+ */
+async function fetchSignal(
+  pair: string,
+  timeframe: Exclude<PipelineTimeframe, "consensus">,
+): Promise<SignalCell> {
   try {
     // Fetch latest 5 items (newest first) for the side-panel history view.
-    // For the `consensus` column, drop the tfPrefix filter so the freshest
-    // signal across ANY emitting timeframe is surfaced.
-    const result =
-      timeframe === "consensus"
-        ? await client.send(
-            new QueryCommand({
-              TableName: SIGNALS_V2_TABLE,
-              KeyConditionExpression: "#pair = :pair",
-              ExpressionAttributeNames: { "#pair": "pair" },
-              ExpressionAttributeValues: { ":pair": pair },
-              ScanIndexForward: false,
-              Limit: 5,
-            }),
-          )
-        : await client.send(
-            new QueryCommand({
-              TableName: SIGNALS_V2_TABLE,
-              KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :tfPrefix)",
-              ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
-              ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${timeframe}#` },
-              ScanIndexForward: false,
-              Limit: 5,
-            }),
-          );
+    const result = await client.send(
+      new QueryCommand({
+        TableName: SIGNALS_V2_TABLE,
+        KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :tfPrefix)",
+        ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+        ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${timeframe}#` },
+        ScanIndexForward: false,
+        Limit: 5,
+      }),
+    );
 
     const items = (result.Items ?? []) as Record<string, unknown>[];
     if (items.length === 0) return emptySignal();
@@ -219,15 +219,17 @@ async function fetchSignal(pair: string, timeframe: PipelineTimeframe): Promise<
     const asOfMs = (latest.asOf as number | undefined) ?? null;
     const ageSeconds = asOfMs !== null ? Math.round((Date.now() - asOfMs) / 1000) : null;
 
-    // interpretation.text — the signal store materialises this via buildInterpretation;
-    // it may be stored in perTimeframe or at top level depending on version.
-    // We pull from ratificationVerdict.reasoning as fallback.
-    const rawInterpretation = ((latest.interpretation as Record<string, unknown> | undefined)
-      ?.text ??
-      (latest.ratificationVerdict as Record<string, unknown> | undefined)?.reasoning ??
-      null) as string | null;
-
-    const interpretationText = rawInterpretation !== null ? rawInterpretation.slice(0, 160) : null;
+    // signals_v2 rows do NOT persist a top-level `interpretation` field —
+    // signal-store / signal-service materialise it on read via
+    // `buildInterpretation`. Call the same helper here so cells get the
+    // proper algo-only / llm-ratified / llm-downgraded text instead of
+    // silently falling back to ratificationVerdict.reasoning (which is
+    // null for algoOnly signals).
+    const interpretation = buildInterpretation(toBlendedSignalShape(latest));
+    const interpretationText =
+      interpretation.text !== null && interpretation.text !== undefined
+        ? interpretation.text.slice(0, 160)
+        : null;
 
     return {
       type: (latest.type as string | null) ?? null,
@@ -242,6 +244,27 @@ async function fetchSignal(pair: string, timeframe: PipelineTimeframe): Promise<
   } catch {
     return emptySignal();
   }
+}
+
+/**
+ * Coerce a raw DDB item into the shape `buildInterpretation` accepts. Only
+ * the fields it reads matter; missing fields fall back to safe defaults so
+ * the helper can still produce an `algo-only` interpretation for older rows.
+ */
+function toBlendedSignalShape(
+  item: Record<string, unknown>,
+): Pick<
+  BlendedSignal,
+  "ratificationStatus" | "ratificationVerdict" | "algoVerdict" | "rulesFired" | "pair" | "type"
+> {
+  return {
+    pair: (item.pair as BlendedSignal["pair"]) ?? ("BTC/USDT" as BlendedSignal["pair"]),
+    type: (item.type as BlendedSignal["type"]) ?? "hold",
+    ratificationStatus: (item.ratificationStatus as BlendedSignal["ratificationStatus"]) ?? null,
+    ratificationVerdict: (item.ratificationVerdict as BlendedSignal["ratificationVerdict"]) ?? null,
+    algoVerdict: (item.algoVerdict as BlendedSignal["algoVerdict"]) ?? null,
+    rulesFired: Array.isArray(item.rulesFired) ? (item.rulesFired as string[]) : [],
+  };
 }
 
 function emptySignal(): SignalCell {
@@ -330,32 +353,68 @@ export async function getPipelineState(filterPair?: string): Promise<PipelineSta
   );
   const sentimentByPair = new Map(perPairSentiment.map((s) => [s.pair, s]));
 
-  // Fan out per-tf indicator + signal queries concurrently across all cells.
-  const cellPromises: Promise<PipelineCell>[] = [];
+  const REAL_TIMEFRAMES = PIPELINE_TIMEFRAMES.filter(
+    (tf): tf is Exclude<PipelineTimeframe, "consensus"> => tf !== "consensus",
+  );
 
-  for (const pair of pairs) {
-    const sentiment = sentimentByPair.get(pair);
-    for (const timeframe of PIPELINE_TIMEFRAMES) {
-      cellPromises.push(
-        (async (): Promise<PipelineCell> => {
+  // Build all cells per-pair so we can derive the consensus column from the
+  // per-tf signals (rather than issuing a separate buggy reverse-lex Query).
+  const perPairCells = await Promise.all(
+    pairs.map(async (pair): Promise<PipelineCell[]> => {
+      const sentiment = sentimentByPair.get(pair);
+      const sentiment4h = sentiment?.sentiment4h ?? emptySentiment();
+      const sentiment24h = sentiment?.sentiment24h ?? emptySentiment();
+
+      // Fetch all real-tf cells concurrently.
+      const realCells = await Promise.all(
+        REAL_TIMEFRAMES.map(async (timeframe): Promise<PipelineCell> => {
           const [indicator, signal] = await Promise.all([
             fetchIndicatorState(pair, DEFAULT_EXCHANGE, timeframe),
             fetchSignal(pair, timeframe),
           ]);
-          return {
-            pair,
-            timeframe,
-            indicator,
-            signal,
-            sentiment4h: sentiment?.sentiment4h ?? emptySentiment(),
-            sentiment24h: sentiment?.sentiment24h ?? emptySentiment(),
-          };
-        })(),
+          return { pair, timeframe, indicator, signal, sentiment4h, sentiment24h };
+        }),
       );
+
+      // Consensus: indicator from `pair#consensus#15m` (already correct);
+      // signal = freshest of the four real-tf signals already fetched.
+      // Picking the max-asOf signal makes the column "show me the most recent
+      // signal across any timeframe" without depending on lexicographic sk
+      // order (which sorts `15m` after `4h`).
+      const consensusIndicator = await fetchIndicatorState(pair, DEFAULT_EXCHANGE, "consensus");
+      const consensusSignal = pickFreshestSignal(realCells.map((c) => c.signal));
+      const consensusCell: PipelineCell = {
+        pair,
+        timeframe: "consensus",
+        indicator: consensusIndicator,
+        signal: consensusSignal,
+        sentiment4h,
+        sentiment24h,
+      };
+
+      return [...realCells, consensusCell];
+    }),
+  );
+
+  const cells = perPairCells.flat();
+  return { cells, generatedAt: new Date().toISOString() };
+}
+
+/**
+ * Pick the signal with the most recent `closeTime` (parsed as ISO).
+ * Returns an empty signal cell if none of the inputs have a closeTime.
+ */
+function pickFreshestSignal(signals: SignalCell[]): SignalCell {
+  let best: SignalCell | null = null;
+  let bestMs = -Infinity;
+  for (const s of signals) {
+    if (s.closeTime === null) continue;
+    const ms = Date.parse(s.closeTime);
+    if (Number.isNaN(ms)) continue;
+    if (ms > bestMs) {
+      best = s;
+      bestMs = ms;
     }
   }
-
-  const cells = await Promise.all(cellPromises);
-
-  return { cells, generatedAt: new Date().toISOString() };
+  return best ?? emptySignal();
 }
