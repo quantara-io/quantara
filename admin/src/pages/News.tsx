@@ -257,8 +257,12 @@ export function News() {
         {filtered.map((n, i) => {
           const id = n.newsId ?? String(i);
           const isExpanded = expanded.has(id);
-          const pairs = n.currencies ?? [];
-          const hasEnrichment = !!n.enrichment;
+          // Surface the LLM pair-tagging output (Phase 5a) when present,
+          // since that's what this page exists for. Fall back to
+          // source-provided `currencies` for unenriched rows so the chip
+          // strip isn't empty before enrichment runs.
+          const pairs = n.mentionedPairs ?? n.currencies ?? [];
+          const hasEnrichment = !!n.enrichment || !!n.sentiment;
 
           return (
             <div key={id} className="rounded-lg border border-slate-800 bg-slate-900 p-3">

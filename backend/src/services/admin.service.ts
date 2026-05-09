@@ -483,14 +483,24 @@ export async function getNews(limit = 50) {
  */
 export async function getNewsUsage(since: Date): Promise<NewsUsage> {
   try {
-    // Scan for all llm_usage# keys — the table is small (~1 key/day).
-    const scan = await dynamo.send(
-      new ScanCommand({
-        TableName: METADATA_TABLE,
-        FilterExpression: "begins_with(metaKey, :prefix)",
-        ExpressionAttributeValues: { ":prefix": "llm_usage#" },
-      }),
-    );
+    // Paginate the scan via LastEvaluatedKey so a metadata table that grows
+    // past the 1MB single-page cap doesn't silently drop usage rows. The
+    // table is one key per day today, so this rarely loops in practice —
+    // the loop is correctness insurance, not a perf hot path.
+    const items: Record<string, unknown>[] = [];
+    let lastKey: Record<string, unknown> | undefined;
+    do {
+      const page = await dynamo.send(
+        new ScanCommand({
+          TableName: METADATA_TABLE,
+          FilterExpression: "begins_with(metaKey, :prefix)",
+          ExpressionAttributeValues: { ":prefix": "llm_usage#" },
+          ExclusiveStartKey: lastKey,
+        }),
+      );
+      items.push(...((page.Items ?? []) as Record<string, unknown>[]));
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey !== undefined);
 
     const sinceIso = since.toISOString().slice(0, 10); // YYYY-MM-DD
     let articlesEnriched = 0;
@@ -498,7 +508,7 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
     let totalOutputTokens = 0;
     const byModel: NewsUsage["byModel"] = {};
 
-    for (const item of scan.Items ?? []) {
+    for (const item of items) {
       const key = item.metaKey as string; // llm_usage#YYYY-MM-DD
       const dateStr = key.slice("llm_usage#".length);
       if (dateStr < sinceIso) continue; // outside window
