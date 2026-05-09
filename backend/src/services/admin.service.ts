@@ -520,9 +520,13 @@ export async function getNews(
     let currentDay = cursor.day;
     let resumeKey: Record<string, unknown> | undefined = cursor.lastEvaluatedKey;
 
-    // Walk back day-by-day until we have enough items or exhaust the lookback window.
+    // Bound the walk by calendar distance from today, not by iteration count,
+    // so a stale/forged cursor with an old `day` doesn't escape the lookback
+    // window. Initialize from the cursor's day so a day-by-day Query loop
+    // for a cursor older than NEWS_LOOKBACK_DAYS short-circuits before
+    // issuing any reads.
     const startDayMs = dayToMs(todayUtc());
-    let daysWalked = 0;
+    let daysWalked = Math.max(0, Math.round((startDayMs - dayToMs(currentDay)) / 86400000));
 
     while (collected.length < limit && daysWalked < NEWS_LOOKBACK_DAYS) {
       const needed = limit - collected.length;
@@ -543,23 +547,20 @@ export async function getNews(
       const items = (result.Items ?? []) as Record<string, unknown>[];
       collected.push(...items);
 
-      if (result.LastEvaluatedKey && collected.length < limit) {
-        // More rows remain in this day but we have enough total — stop and
-        // return a cursor so the caller can resume from here next page.
-        // (This branch is reached when collected.length === limit exactly
-        //  after this query, which is unusual but handled correctly below.)
-        resumeKey = result.LastEvaluatedKey as Record<string, unknown>;
-        break;
-      }
-
       if (result.LastEvaluatedKey) {
-        // This day has more rows but we already have `limit` items — emit
-        // a cursor pointing to the mid-day position.
+        // DynamoDB Query can return fewer than `Limit` items even when more
+        // matching rows exist for the partition (1 MB response cap). When
+        // that happens with the page still unfilled, we MUST keep querying
+        // the same day with `ExclusiveStartKey` instead of moving on, or
+        // the caller will silently get a short page even though more rows
+        // are available right there. Only break out when the page is full —
+        // the cursor then resumes from this position next page.
         resumeKey = result.LastEvaluatedKey as Record<string, unknown>;
-        break;
+        if (collected.length >= limit) break;
+        continue;
       }
 
-      // Day exhausted: move to the previous calendar day.
+      // No LastEvaluatedKey → day exhausted. Advance to the previous day.
       resumeKey = undefined;
       currentDay = prevDay(currentDay);
       daysWalked = Math.round((startDayMs - dayToMs(currentDay)) / 86400000);

@@ -307,6 +307,79 @@ describe("getNews", () => {
     const result = await getNews();
     expect(result).toEqual({ news: [], fearGreed: null, nextCursor: null });
   });
+
+  it("keeps querying the same day when DynamoDB returns a partial page with LastEvaluatedKey (1 MB cap)", async () => {
+    // Regression: previously, code broke out as soon as LastEvaluatedKey was
+    // present even if collected.length < limit, returning a short page
+    // when DynamoDB had explicitly signalled more rows existed.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
+    const firstPage = [
+      { newsId: "a", publishedAt: "2026-05-09T12:00:00Z", publishedDay: "2026-05-09" },
+    ];
+    const secondPage = [
+      { newsId: "b", publishedAt: "2026-05-09T11:00:00Z", publishedDay: "2026-05-09" },
+      { newsId: "c", publishedAt: "2026-05-09T10:00:00Z", publishedDay: "2026-05-09" },
+    ];
+
+    let callCount = 0;
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      if (cmd.__cmd === "Query") {
+        callCount++;
+        if (callCount === 1) {
+          // Partial page: only 1 item returned, but LastEvaluatedKey indicates more.
+          return { Items: firstPage, LastEvaluatedKey: { newsId: "a" } };
+        }
+        if (callCount === 2) {
+          return { Items: secondPage };
+        }
+        return { Items: [] };
+      }
+      return {};
+    });
+
+    const { getNews } = await importService();
+    const result = await getNews(3);
+
+    expect(result.news).toHaveLength(3);
+    expect(result.news.map((r) => r.newsId)).toEqual(["a", "b", "c"]);
+    // Two queries against the same day (NOT one short-page query then walk
+    // back to yesterday).
+    expect(callCount).toBe(2);
+
+    vi.useRealTimers();
+  });
+
+  it("short-circuits without issuing reads when the cursor's day is older than the lookback window", async () => {
+    // Regression: daysWalked previously initialized to 0, ignoring cursor.day,
+    // so a stale or forged cursor with an old day could still trigger a Query.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
+    const { getNews, encodeNewsCursor } = await importService();
+    // Construct a cursor for a day far older than NEWS_LOOKBACK_DAYS (14).
+    const ancientCursor = encodeNewsCursor({ day: "2025-01-01" });
+
+    let queryCalls = 0;
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      if (cmd.__cmd === "Query") {
+        queryCalls++;
+        return { Items: [] };
+      }
+      return {};
+    });
+
+    const result = await getNews(50, ancientCursor);
+
+    expect(result.news).toHaveLength(0);
+    expect(result.nextCursor).toBeNull();
+    expect(queryCalls).toBe(0);
+
+    vi.useRealTimers();
+  });
 });
 
 describe("getMarket", () => {

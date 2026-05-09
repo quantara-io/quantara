@@ -207,12 +207,18 @@ export function News() {
       if (newsRes.success && newsRes.data) {
         // Replace only the first page on refresh — don't discard pages the
         // operator loaded via "Load more". If they've paginated, keep pages 1+.
-        setPages((prev) => [newsRes.data!.news, ...prev.slice(1)]);
-        setNextCursor((prev) =>
-          // Only update cursor when on the first page (no additional pages loaded yet),
-          // so re-polling doesn't clobber the pagination state.
-          prev === null || prev === newsRes.data!.nextCursor ? newsRes.data!.nextCursor : prev,
-        );
+        // Update `nextCursor` only when the operator has not paginated yet
+        // (`prev.length <= 1`); otherwise the saved boundary may have shifted
+        // because new articles arrived between the original page-0 fetch and
+        // this poll, and applying the new cursor would cause duplicates or
+        // gaps on the next "Load more". Once paginated, the cursor freezes
+        // until the operator reloads.
+        setPages((prev) => {
+          if (prev.length <= 1) {
+            setNextCursor(newsRes.data!.nextCursor);
+          }
+          return [newsRes.data!.news, ...prev.slice(1)];
+        });
         setFearGreed(newsRes.data.fearGreed);
         setError("");
       } else {
