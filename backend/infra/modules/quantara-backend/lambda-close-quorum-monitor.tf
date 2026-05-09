@@ -67,7 +67,7 @@ resource "aws_iam_role_policy" "close_quorum_monitor_policy" {
 resource "aws_lambda_function" "close_quorum_monitor" {
   function_name = "${local.prefix}-close-quorum-monitor"
   role          = aws_iam_role.close_quorum_monitor_lambda.arn
-  handler       = "handlers/close-quorum-monitor.handler"
+  handler       = "close-quorum-monitor.handler"
   runtime       = "nodejs24.x"
   architectures = ["arm64"]
   memory_size   = 128

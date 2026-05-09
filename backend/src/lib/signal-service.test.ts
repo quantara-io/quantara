@@ -227,11 +227,16 @@ describe("getSignalForUser", () => {
   });
 
   it("returns a mapped BlendedSignal when a record exists", async () => {
-    // First call: signals_v2 query → returns fixture
-    // Second call: indicator-state query → returns state (for risk enrichment)
-    sendMock
-      .mockResolvedValueOnce({ Items: [fixtureItem] })
-      .mockResolvedValueOnce({ Items: [indicatorStateItem] });
+    // signal-service queries each blended TF (15m, 1h, 4h, 1d) separately, then
+    // picks the latest by closeTime. Mock the per-TF query branch and the
+    // subsequent indicator-state query.
+    sendMock.mockImplementation((cmd: { ExpressionAttributeValues?: Record<string, unknown> }) => {
+      const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"];
+      if (tfPrefix === "15m#") return Promise.resolve({ Items: [fixtureItem] });
+      if (tfPrefix !== undefined) return Promise.resolve({ Items: [] });
+      // Subsequent indicator-state query (no :tfPrefix EAV).
+      return Promise.resolve({ Items: [indicatorStateItem] });
+    });
     const { getSignalForUser } = await loadService();
     const result = await getSignalForUser("user_1", "BTC/USDT", "user@b.com");
     expect(result).not.toBeNull();
@@ -251,21 +256,28 @@ describe("getSignalForUser", () => {
     expect(getOrCreateUserRecordMock).toHaveBeenCalledWith("user_bootstrap", "boot@b.com");
   });
 
-  it("queries signals_v2 with the correct pair key and Limit 1", async () => {
+  it("queries signals_v2 with the correct pair key, per-TF prefix, and Limit 1", async () => {
     sendMock.mockResolvedValue({ Items: [] });
     const { getSignalForUser } = await loadService();
     await getSignalForUser("user_1", "SOL/USDT");
-    // At minimum one DDB call (signals_v2 query)
-    expect(sendMock).toHaveBeenCalled();
+    // 4 per-TF queries (15m/1h/4h/1d) + 0 indicator-state queries (no signal found).
+    expect(sendMock).toHaveBeenCalledTimes(4);
     const firstCall = sendMock.mock.calls[0][0];
     expect(firstCall.ExpressionAttributeValues[":pair"]).toBe("SOL/USDT");
     expect(firstCall.Limit).toBe(1);
     expect(firstCall.ScanIndexForward).toBe(false);
+    // Each call should target a distinct blended TF prefix.
+    const tfPrefixes = sendMock.mock.calls.map((c) => c[0].ExpressionAttributeValues[":tfPrefix"]);
+    expect(new Set(tfPrefixes)).toEqual(new Set(["15m#", "1h#", "4h#", "1d#"]));
   });
 
   it("propagates null gateReason and risk from the fixture for hold signals", async () => {
     const holdItem = { ...fixtureItem, type: "hold", risk: null, gateReason: "vol" };
-    sendMock.mockResolvedValue({ Items: [holdItem] });
+    sendMock.mockImplementation((cmd: { ExpressionAttributeValues?: Record<string, unknown> }) => {
+      const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"];
+      if (tfPrefix === "15m#") return Promise.resolve({ Items: [holdItem] });
+      return Promise.resolve({ Items: [] });
+    });
     const { getSignalForUser } = await loadService();
     const result = await getSignalForUser("user_1", "BTC/USDT");
     expect(result!.type).toBe("hold");
@@ -276,9 +288,12 @@ describe("getSignalForUser", () => {
   it("calls attachRiskRecommendation for non-hold signals when IndicatorState is available", async () => {
     const enrichedSignal = { ...fixtureItem, risk: { pair: "BTC/USDT", profile: "moderate" } };
     attachRiskRecommendationMock.mockReturnValueOnce(enrichedSignal);
-    sendMock
-      .mockResolvedValueOnce({ Items: [fixtureItem] })
-      .mockResolvedValueOnce({ Items: [indicatorStateItem] });
+    sendMock.mockImplementation((cmd: { ExpressionAttributeValues?: Record<string, unknown> }) => {
+      const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"];
+      if (tfPrefix === "15m#") return Promise.resolve({ Items: [fixtureItem] });
+      if (tfPrefix !== undefined) return Promise.resolve({ Items: [] });
+      return Promise.resolve({ Items: [indicatorStateItem] });
+    });
 
     const { getSignalForUser } = await loadService();
     const result = await getSignalForUser("user_1", "BTC/USDT");
@@ -287,7 +302,12 @@ describe("getSignalForUser", () => {
   });
 
   it("returns signal without enrichment when IndicatorState is unavailable (warm-up)", async () => {
-    sendMock.mockResolvedValueOnce({ Items: [fixtureItem] }).mockResolvedValueOnce({ Items: [] }); // no indicator state
+    sendMock.mockImplementation((cmd: { ExpressionAttributeValues?: Record<string, unknown> }) => {
+      const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"];
+      if (tfPrefix === "15m#") return Promise.resolve({ Items: [fixtureItem] });
+      // Empty for other TFs and for the indicator-state lookup.
+      return Promise.resolve({ Items: [] });
+    });
 
     const { getSignalForUser } = await loadService();
     const result = await getSignalForUser("user_1", "BTC/USDT");
@@ -299,13 +319,17 @@ describe("getSignalForUser", () => {
 
   it("does not fetch IndicatorState for hold signals", async () => {
     const holdItem = { ...fixtureItem, type: "hold", risk: null, gateReason: null };
-    sendMock.mockResolvedValueOnce({ Items: [holdItem] });
+    sendMock.mockImplementation((cmd: { ExpressionAttributeValues?: Record<string, unknown> }) => {
+      const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"];
+      if (tfPrefix === "15m#") return Promise.resolve({ Items: [holdItem] });
+      return Promise.resolve({ Items: [] });
+    });
 
     const { getSignalForUser } = await loadService();
     await getSignalForUser("user_1", "BTC/USDT");
 
-    // Only 1 DDB call — the signals_v2 query; no indicator state fetch needed for hold
-    expect(sendMock).toHaveBeenCalledTimes(1);
+    // 4 per-TF queries (15m/1h/4h/1d). No indicator-state fetch for hold signals.
+    expect(sendMock).toHaveBeenCalledTimes(4);
     expect(attachRiskRecommendationMock).not.toHaveBeenCalled();
   });
 });

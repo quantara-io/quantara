@@ -66,7 +66,16 @@ await build({
 await build({
   ...shared,
   entryPoints: ["src/handlers/close-quorum-monitor.ts"],
-  outfile: "dist/handlers/close-quorum-monitor.js",
+  outfile: "dist/close-quorum-monitor.js",
+});
+
+// Lambda: higher-TF poller — produces live 15m/1h/4h/1d candles via fetchOHLCV.
+// Required by v6 §5.9 + §12.3 — without this, no candles match the indicator
+// FilterCriteria (timeframe in {15m,1h,4h,1d} AND source = "live") and zero signals fire.
+await build({
+  ...shared,
+  entryPoints: ["src/higher-tf-poller-handler.ts"],
+  outfile: "dist/higher-tf-poller-handler.js",
 });
 
 // Fargate: long-running streaming service
@@ -99,5 +108,5 @@ await build({
 });
 
 console.log(
-  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/handlers/close-quorum-monitor.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js",
+  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/close-quorum-monitor.js, dist/higher-tf-poller-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js",
 );

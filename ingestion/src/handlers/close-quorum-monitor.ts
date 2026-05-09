@@ -37,6 +37,11 @@ const SIGNALS_V2_TABLE =
 
 const CW_NAMESPACE = process.env.CW_NAMESPACE ?? "Quantara/Ingestion";
 
+// Must match REQUIRED_EXCHANGE_COUNT in indicator-handler.ts. A close-quorum row
+// expiring with fewer exchanges than this means quorum was never reached and the
+// indicator handler correctly returned early — not a missed close.
+const REQUIRED_EXCHANGE_COUNT = Number(process.env["REQUIRED_EXCHANGE_COUNT"] ?? "2");
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -49,11 +54,25 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
 
     const oldImage = unmarshall(record.dynamodb.OldImage as Record<string, AttributeValue>) as {
       id?: string;
+      exchanges?: Set<string> | string[];
     };
 
     const id = oldImage.id;
     if (!id) {
       console.warn("[CloseQuorumMonitor] REMOVE record missing id field — skipping.");
+      continue;
+    }
+
+    // If quorum was never reached on this row, the indicator handler correctly
+    // returned early without writing a signal. The TTL expiry is normal, not a
+    // missed close — skip the lookup and metric emission to avoid false alarms.
+    const exchanges = oldImage.exchanges;
+    const exchangeCount =
+      exchanges instanceof Set ? exchanges.size : Array.isArray(exchanges) ? exchanges.length : 0;
+    if (exchangeCount < REQUIRED_EXCHANGE_COUNT) {
+      console.log(
+        `[CloseQuorumMonitor] ${id}: only ${exchangeCount}/${REQUIRED_EXCHANGE_COUNT} exchanges at TTL expiry — quorum never reached, not a missed close.`,
+      );
       continue;
     }
 

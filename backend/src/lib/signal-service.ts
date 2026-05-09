@@ -183,23 +183,60 @@ export async function getSignalForUser(
   // Lazy bootstrap — creates record with tier="free" on first authenticated request.
   const user = await getOrCreateUserRecord(userId, email);
 
-  const result = await client.send(
-    new QueryCommand({
-      TableName: SIGNALS_V2_TABLE,
-      KeyConditionExpression: "#pair = :pair",
-      ExpressionAttributeNames: { "#pair": "pair" },
-      ExpressionAttributeValues: { ":pair": pair },
-      ScanIndexForward: false,
-      Limit: 1,
-    }),
-  );
-
-  const item = result.Items?.[0];
+  // signals-v2 SK is `tf#closeTime` (deterministic dedup key, v6 design).
+  // Reverse-scan + Limit=1 alone returns the lexicographically-last (tf, closeTime),
+  // which is the alphabetically-last TF — not the most recent across TFs.
+  // Query each blended TF separately and pick the latest by closeTime.
+  const item = await fetchLatestSignalRow(pair);
   if (!item) return null;
 
   const raw = itemToBlendedSignal(item);
   const riskProfiles = user.riskProfiles ?? defaultRiskProfiles(user.tier ?? "free");
   return enrichWithRisk(raw, riskProfiles);
+}
+
+const BLEND_TIMEFRAMES: readonly Timeframe[] = ["15m", "1h", "4h", "1d"];
+
+/**
+ * Fetch the latest signals-v2 row for `pair` across all blended TFs.
+ *
+ * Issues one Query per TF (4 total) and returns the row with the highest
+ * `closeTime` numeric value. Returns null when no TF has any signal yet.
+ *
+ * Required because v6 signals-v2 SK = `tf#closeTime`: reverse-scan returns
+ * the alphabetically-last TF, not the most recent slot. Per-TF queries
+ * then merge-by-time is the correct latest-overall pattern.
+ */
+async function fetchLatestSignalRow(pair: TradingPair): Promise<Record<string, unknown> | null> {
+  const perTf = await Promise.all(
+    BLEND_TIMEFRAMES.map(async (tf) => {
+      const r = await client.send(
+        new QueryCommand({
+          TableName: SIGNALS_V2_TABLE,
+          KeyConditionExpression: "#pair = :pair AND begins_with(sk, :tfPrefix)",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${tf}#` },
+          ScanIndexForward: false,
+          Limit: 1,
+        }),
+      );
+      // Defensive: a missing response (test mock not set, network blip)
+      // should yield "no signal for this TF" rather than blow up the whole call.
+      return r?.Items?.[0];
+    }),
+  );
+
+  let best: Record<string, unknown> | undefined;
+  let bestCloseTime = -1;
+  for (const item of perTf) {
+    if (!item) continue;
+    const closeTime = Number(item["asOf"] ?? 0);
+    if (closeTime > bestCloseTime) {
+      best = item;
+      bestCloseTime = closeTime;
+    }
+  }
+  return best ?? null;
 }
 
 /**
@@ -219,21 +256,13 @@ export async function getAllSignalsForUser(
   const user = await getOrCreateUserRecord(userId, email);
   const riskProfiles = user.riskProfiles ?? defaultRiskProfiles(user.tier ?? "free");
 
-  // Fetch the latest signal for each pair in parallel.
+  // Fetch the latest signal across all 4 blended TFs for each pair in parallel.
+  // See fetchLatestSignalRow above for why per-TF queries are required (v6 SK = tf#closeTime).
   const results = await Promise.all(
     PAIRS.map(async (pair) => {
-      const result = await client.send(
-        new QueryCommand({
-          TableName: SIGNALS_V2_TABLE,
-          KeyConditionExpression: "#pair = :pair",
-          ExpressionAttributeNames: { "#pair": "pair" },
-          ExpressionAttributeValues: { ":pair": pair },
-          ScanIndexForward: false,
-          Limit: 1,
-        }),
-      );
-      if (!result.Items?.[0]) return null;
-      const raw = itemToBlendedSignal(result.Items[0]);
+      const item = await fetchLatestSignalRow(pair);
+      if (!item) return null;
+      const raw = itemToBlendedSignal(item);
       return enrichWithRisk(raw, riskProfiles);
     }),
   );

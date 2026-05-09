@@ -151,10 +151,14 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
   );
 
   // Step 2 — Check quorum.
+  // ConsistentRead is required: an eventually-consistent read after an UpdateItem
+  // can return the pre-update image and miss the just-added exchange. If no further
+  // exchanges arrive, the slot would be silently abandoned.
   const quorumResult = await client.send(
     new GetCommand({
       TableName: CLOSE_QUORUM_TABLE,
       Key: { id: quorumId },
+      ConsistentRead: true,
     }),
   );
 
