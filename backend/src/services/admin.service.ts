@@ -692,6 +692,11 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
 
   // Track each pair's per-batch results so we can compute per-pair next-cursor.
   const perPairItems: Record<string, Record<string, unknown>[]> = {};
+  // Capture per-pair LastEvaluatedKey so we can emit a cursor whenever ANY
+  // partition has more rows to read — even if client-side filtering shrunk
+  // the merged page below `limit`. Without this, a selective filter like
+  // `triggerReason=sentiment_shock` could prematurely end pagination.
+  const perPairLastKey: Record<string, Record<string, unknown> | undefined> = {};
 
   for (const pair of pairsToQuery) {
     perPairItems[pair] = [];
@@ -734,6 +739,7 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
         }),
       );
       perPairItems[pair].push(...(result.Items ?? []));
+      perPairLastKey[pair] = result.LastEvaluatedKey;
     } catch (err) {
       console.error(`[admin.service] getRatifications query failed for ${pair}:`, err);
     }
@@ -771,12 +777,26 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
 
   const page = filtered.slice(0, limit);
 
-  // Per-pair next-cursor: the LAST item returned in `page` for each pair becomes
-  // its ExclusiveStartKey on the next call. DDB's ExclusiveStartKey skips
-  // strictly equal keys and returns what comes after, so the LAST returned
-  // record (not the first un-returned one) is the correct anchor.
+  // Per-pair next-cursor. Three sources contribute to "more available":
+  //   1. `filtered.length > limit` — we trimmed rows we already fetched.
+  //   2. ANY pair's Query returned `LastEvaluatedKey` — that partition has
+  //      more rows older than what we read, regardless of how many made it
+  //      through the client-side filter. Without this, a selective filter
+  //      can shrink `filtered` below `limit` and prematurely end paging.
+  //   3. A pair came in with a cursor but contributed no rows this round
+  //      (e.g. all its remaining rows in the window were filtered out
+  //      client-side); we forward its prior cursor so a future request
+  //      with different filters can still resume.
+  //
+  // Cursor anchor selection: for pairs that contributed rows to `page`, use
+  // the LAST returned row's invokedAtRecordId. DDB's ExclusiveStartKey
+  // skips strictly equal keys and returns what comes after — so the last
+  // returned record is the correct anchor for "give me what comes next."
+  // For pairs that hit Limit but didn't contribute (filter rejected all),
+  // forward the Query's `LastEvaluatedKey` directly.
+  const hasMoreFromAnyPair = Object.values(perPairLastKey).some((k) => k !== undefined);
   let nextCursor: Record<string, Record<string, unknown>> | null = null;
-  if (filtered.length > limit) {
+  if (filtered.length > limit || hasMoreFromAnyPair) {
     const cursorMap: Record<string, Record<string, unknown>> = {};
     for (const item of page) {
       const pair = item._pair as string;
@@ -785,15 +805,25 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
         invokedAtRecordId: item.invokedAtRecordId,
       };
     }
-    // Pairs with no returned rows in this page but that previously had a
-    // cursor should keep their previous cursor so they can still resume on
-    // the next request (the user might filter differently next time).
+    // For pairs whose Query had more rows but contributed nothing to this
+    // page (filter ate everything), forward the Query's LastEvaluatedKey
+    // so the next request resumes correctly.
+    for (const pair of pairsToQuery) {
+      if (!cursorMap[pair] && perPairLastKey[pair]) {
+        cursorMap[pair] = perPairLastKey[pair] as Record<string, unknown>;
+      }
+    }
+    // Pairs that contributed nothing AND didn't hit Limit but came in with a
+    // prior cursor should keep that cursor — the user might change filters
+    // next request and want to resume the same partition.
     for (const pair of pairsToQuery) {
       if (!cursorMap[pair] && perPairCursor[pair]) {
         cursorMap[pair] = perPairCursor[pair];
       }
     }
-    nextCursor = cursorMap;
+    if (Object.keys(cursorMap).length > 0) {
+      nextCursor = cursorMap;
+    }
   }
 
   // Strip the synthetic `_pair` before mapping to the API row shape.

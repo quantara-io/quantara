@@ -381,12 +381,15 @@ describe("GET /ratifications", () => {
       `/ratifications?pair=ETH%2FUSDT&timeframe=1h&triggerReason=bar_close&since=2026-05-01T00%3A00%3A00Z&until=2026-05-02T00%3A00%3A00Z&cursor=${cursorEncoded}&limit=10`,
     );
     expect(res.status).toBe(200);
+    // Route normalizes since/until via `new Date(...).toISOString()` so the
+    // millisecond-precision form reaches DDB string comparisons. Inputs like
+    // `2026-05-01T00:00:00Z` get normalized to `2026-05-01T00:00:00.000Z`.
     expect(getRatificationsMock).toHaveBeenCalledWith({
       pair: "ETH/USDT",
       timeframe: "1h",
       triggerReason: "bar_close",
-      since: "2026-05-01T00:00:00Z",
-      until: "2026-05-02T00:00:00Z",
+      since: "2026-05-01T00:00:00.000Z",
+      until: "2026-05-02T00:00:00.000Z",
       cursor: cursorRaw,
       limit: 10,
     });

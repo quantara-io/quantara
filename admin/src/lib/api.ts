@@ -17,9 +17,11 @@ interface RequestOpts {
   retry?: boolean;
   /**
    * Optional AbortSignal to cancel the request. When the signal aborts after
-   * fetch starts, fetch() rejects with `AbortError` which we surface via the
-   * standard NETWORK_ERROR envelope. Useful for stale-request cancellation
-   * (e.g. filter changes that race with a slow load).
+   * fetch starts, fetch() rejects with `AbortError`, which is surfaced as
+   * `code: "ABORTED"` (distinct from real network failures, which return
+   * `code: "NETWORK_ERROR"`). Callers should treat ABORTED as "ignore the
+   * outcome" — a newer request is in flight. Useful for stale-request
+   * cancellation (e.g. filter changes that race with a slow load).
    */
   signal?: AbortSignal;
 }

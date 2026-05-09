@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PAIRS } from "@quantara/shared";
 import { apiFetch } from "../lib/api";
 
 // ---------------------------------------------------------------------------
@@ -39,7 +40,6 @@ interface Page {
 // ---------------------------------------------------------------------------
 
 const TRIGGER_REASONS = ["bar_close", "sentiment_shock", "manual"] as const;
-const KNOWN_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"] as const;
 
 type TimeRange = "1h" | "24h" | "7d" | "custom";
 
@@ -314,7 +314,7 @@ export function Ratifications() {
       <div className="flex flex-wrap gap-2 items-center">
         {/* Pair pills */}
         <span className="text-[11px] text-slate-500">Pair:</span>
-        {(["", ...KNOWN_PAIRS] as string[]).map((p) => (
+        {(["", ...(PAIRS as readonly string[])] as string[]).map((p) => (
           <button
             key={p || "all"}
             onClick={() => setFilterPair(p)}
@@ -405,10 +405,22 @@ export function Ratifications() {
           </thead>
           <tbody className="divide-y divide-slate-800/50">
             {sorted.map((row) => (
+              // <tr> is not keyboard-focusable by default — make it behave
+              // like a button so keyboard users can open the detail modal.
+              // Enter / Space activate, matching native button semantics.
               <tr
                 key={row.recordId}
                 onClick={() => setSelectedRow(row)}
-                className="cursor-pointer hover:bg-slate-800/40 transition-colors"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelectedRow(row);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-label={`Open ratification details for ${row.pair} at ${new Date(row.invokedAt).toLocaleString()}`}
+                className="cursor-pointer hover:bg-slate-800/40 transition-colors focus:outline-none focus:bg-slate-800/60 focus:ring-1 focus:ring-cyan-500/40"
               >
                 <td className="px-3 py-2 text-slate-400 whitespace-nowrap">
                   {new Date(row.invokedAt).toLocaleString()}

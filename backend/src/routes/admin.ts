@@ -91,28 +91,56 @@ admin.get("/ratifications", async (c) => {
     );
   }
 
-  // Validate since / until as ISO 8601 (matches the /signals route's pattern).
-  // Bad input would otherwise reach DDB as a malformed sort-key prefix and
-  // either return empty silently or surface as a generic 500.
-  const sinceRaw = c.req.query("since");
-  if (sinceRaw !== undefined && isNaN(new Date(sinceRaw).getTime())) {
+  // Validate `pair` against the shared PAIRS list when provided. Matches the
+  // `/signals` pattern so unknown pairs return 400 instead of fanning out
+  // to a partition that has no rows (silent empty page + wasted DDB Query).
+  const pairRaw = c.req.query("pair");
+  if (pairRaw !== undefined && !(PAIRS as readonly string[]).includes(pairRaw)) {
     return c.json(
       {
         success: false,
-        error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
       },
       400,
     );
   }
+
+  // Validate since / until as ISO 8601 (matches the /signals route's pattern)
+  // AND normalize to canonical `Date#toISOString()` format before passing to
+  // the service. The DDB sort key (`invokedAtRecordId`) is built from
+  // `new Date().toISOString()` (millisecond precision, always-Z), so inputs
+  // like `2026-05-01T00:00:00Z` (no millis) compare lexicographically before
+  // stored values like `2026-05-01T00:00:00.000Z`, which would silently
+  // exclude boundary rows. Re-serializing through Date pins the precision.
+  const sinceRaw = c.req.query("since");
+  let since: string | undefined;
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    since = parsed.toISOString();
+  }
   const untilRaw = c.req.query("until");
-  if (untilRaw !== undefined && isNaN(new Date(untilRaw).getTime())) {
-    return c.json(
-      {
-        success: false,
-        error: { code: "BAD_REQUEST", message: "until must be a valid ISO 8601 date" },
-      },
-      400,
-    );
+  let until: string | undefined;
+  if (untilRaw !== undefined) {
+    const parsed = new Date(untilRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "until must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    until = parsed.toISOString();
   }
 
   // Validate cursor: must be base64-decodable JSON. The service still
@@ -136,11 +164,11 @@ admin.get("/ratifications", async (c) => {
   }
 
   const { items, cursor } = await getRatifications({
-    pair: c.req.query("pair"),
+    pair: pairRaw,
     timeframe: c.req.query("timeframe"),
     triggerReason: c.req.query("triggerReason"),
-    since: sinceRaw,
-    until: untilRaw,
+    since,
+    until,
     cursor: cursorRaw,
     limit,
   });
