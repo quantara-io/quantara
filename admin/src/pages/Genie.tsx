@@ -66,7 +66,9 @@ export function Genie() {
         setWsStatus("error");
         return;
       }
-      const url = `${WS_BASE}?pairs=${encodeURIComponent(PAIRS.join(","))}&Authorization=${encodeURIComponent(`Bearer ${jwt}`)}`;
+      // ws-connect Lambda reads JWT from `token` query param (no "Bearer" prefix).
+      // WebSocket handshake doesn't support custom headers, so we pass it via query.
+      const url = `${WS_BASE}?pairs=${encodeURIComponent(PAIRS.join(","))}&token=${encodeURIComponent(jwt)}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
       setWsStatus("connecting");
