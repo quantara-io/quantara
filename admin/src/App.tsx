@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { AuthGate } from "./components/AuthGate";
 import { Layout } from "./components/Layout";
+import { Genie } from "./pages/Genie";
 import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Market } from "./pages/Market";
@@ -49,6 +50,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Whitelist />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/genie"
+          element={
+            <AuthGate>
+              <Layout>
+                <Genie />
               </Layout>
             </AuthGate>
           }
