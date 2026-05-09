@@ -63,8 +63,22 @@ const METADATA_TABLE =
 /**
  * Minimum number of exchanges that must have reported a close before the
  * IndicatorLambda proceeds. Configurable via env var for testability.
+ *
+ * Validated on parse: if the env var is malformed (NaN, ≤0), fall back to
+ * the default (2). Without validation, NaN would silently disable the
+ * quorum check (`exchangeCount < NaN` is always false → handler proceeds
+ * without quorum, defeating the whole 2-of-3 dedup design).
  */
-const REQUIRED_EXCHANGE_COUNT = parseInt(process.env.REQUIRED_EXCHANGE_COUNT ?? "2", 10);
+const REQUIRED_EXCHANGE_COUNT = (() => {
+  const parsed = parseInt(process.env.REQUIRED_EXCHANGE_COUNT ?? "2", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      `[IndicatorHandler] REQUIRED_EXCHANGE_COUNT env var malformed (got "${process.env.REQUIRED_EXCHANGE_COUNT}"); falling back to 2`,
+    );
+    return 2;
+  }
+  return parsed;
+})();
 
 // ---------------------------------------------------------------------------
 // Timeframe bar durations

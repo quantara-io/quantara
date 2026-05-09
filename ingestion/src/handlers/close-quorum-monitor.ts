@@ -40,7 +40,21 @@ const CW_NAMESPACE = process.env.CW_NAMESPACE ?? "Quantara/Ingestion";
 // Must match REQUIRED_EXCHANGE_COUNT in indicator-handler.ts. A close-quorum row
 // expiring with fewer exchanges than this means quorum was never reached and the
 // indicator handler correctly returned early — not a missed close.
-const REQUIRED_EXCHANGE_COUNT = Number(process.env["REQUIRED_EXCHANGE_COUNT"] ?? "2");
+//
+// Validated on parse: if the env var is malformed (NaN, ≤0), fall back to the
+// default (2). Without validation, NaN would silently disable the guard
+// (`exchangeCount < NaN` is always false → false-positive CloseMissed alarms
+// on every TTL REMOVE event).
+const REQUIRED_EXCHANGE_COUNT = (() => {
+  const parsed = Number(process.env["REQUIRED_EXCHANGE_COUNT"] ?? "2");
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      `[CloseQuorumMonitor] REQUIRED_EXCHANGE_COUNT env var malformed (got "${process.env["REQUIRED_EXCHANGE_COUNT"]}"); falling back to 2`,
+    );
+    return 2;
+  }
+  return parsed;
+})();
 
 // ---------------------------------------------------------------------------
 // Handler

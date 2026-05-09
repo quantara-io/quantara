@@ -38,9 +38,15 @@ function makeEvent(overrides: Partial<EnrichedNewsEvent> = {}): EnrichedNewsEven
 
 function makeActiveSignal(pair: string, suffix = "a") {
   const nowSec = Math.floor(Date.now() / 1000);
+  // Derive a per-suffix offset from the suffix's first char code so distinct
+  // suffixes ("a", "b", ...) produce distinct SKs. The previous version used
+  // suffix.replace(/\D/g, "0") which collapsed any letter suffix to the same
+  // numeric value, so multi-signal fixtures got duplicate SKs and weakened
+  // the "invalidates multiple signals for the same pair" assertion.
+  const suffixOffset = suffix.charCodeAt(0) || 0;
   return {
     pair,
-    sk: `1h#${1704067200000 + Number.parseInt(suffix.replace(/\D/g, "0") || "0", 10)}`,
+    sk: `1h#${1704067200000 + suffixOffset}`,
     signalId: `sig-${suffix}`,
     emittedAt: "2024-01-01T00:00:00.000Z",
     ttl: nowSec + 86400, // 1 day from now → active
