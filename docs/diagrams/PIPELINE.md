@@ -179,11 +179,11 @@ flowchart TB
 
 ## The three LLM call sites
 
-| # | Where | Model | What it does | Cadence |
-|---|---|---|---|---|
-| 1 | `ingestion/src/enrichment/bedrock.ts` | Bedrock (Claude) | Pair-tag a news article, score sentiment, generate embedding for dedup | Per-article on ingest |
-| 2 | `ingestion/src/llm/ratify.ts` | Anthropic API direct, Sonnet 4.6 | Reviews each `BlendedSignal` + sentiment context. Cost-gated (only fires when worth it per `SIGNALS_AND_RISK.md` §7.5), cached by content hash, persisted as `RatificationRecord` | Per-signal, after blend |
-| 3 | `backend/src/routes/coach.ts` | Bedrock (Claude) | User-facing chat ("why this signal?", coaching) | Per user request |
+| #   | Where                                 | Model                            | What it does                                                                                                                                                                      | Cadence                 |
+| --- | ------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| 1   | `ingestion/src/enrichment/bedrock.ts` | Bedrock (Claude)                 | Pair-tag a news article, score sentiment, generate embedding for dedup                                                                                                            | Per-article on ingest   |
+| 2   | `ingestion/src/llm/ratify.ts`         | Anthropic API direct, Sonnet 4.6 | Reviews each `BlendedSignal` + sentiment context. Cost-gated (only fires when worth it per `SIGNALS_AND_RISK.md` §7.5), cached by content hash, persisted as `RatificationRecord` | Per-signal, after blend |
+| 3   | `backend/src/routes/coach.ts`         | Bedrock (Claude)                 | User-facing chat ("why this signal?", coaching)                                                                                                                                   | Per user request        |
 
 LLM #1 and #2 are inside the deterministic ingestion pipeline — they
 augment the data but the math (indicators, scoring, blending, gates,
@@ -194,15 +194,15 @@ itself.
 
 ## What's persisted
 
-| Table | Owner | Purpose |
-|---|---|---|
-| `prices` | stream loop | Latest tick per pair × exchange (used for staleness + dispersion gate) |
-| `candles` | stream loop + backfill | OHLCV bars per pair × exchange × timeframe |
-| `news_events` | news pollers + enrichment | Raw + enriched articles (sentiment, pair tags, embedding) |
-| `sentiment_aggregates` | aggregator | Per-pair × window rolled-up sentiment |
-| `indicator_state` | indicator handler | Latest IndicatorState per pair × `consensus` × timeframe |
-| `signals_v2` | signal engine | BlendedSignal with risk recommendation (90-day TTL) |
-| `ratifications` | ratify.ts | LLM verdicts on signals (gated subset) |
+| Table                  | Owner                     | Purpose                                                                |
+| ---------------------- | ------------------------- | ---------------------------------------------------------------------- |
+| `prices`               | stream loop               | Latest tick per pair × exchange (used for staleness + dispersion gate) |
+| `candles`              | stream loop + backfill    | OHLCV bars per pair × exchange × timeframe                             |
+| `news_events`          | news pollers + enrichment | Raw + enriched articles (sentiment, pair tags, embedding)              |
+| `sentiment_aggregates` | aggregator                | Per-pair × window rolled-up sentiment                                  |
+| `indicator_state`      | indicator handler         | Latest IndicatorState per pair × `consensus` × timeframe               |
+| `signals_v2`           | signal engine             | BlendedSignal with risk recommendation (90-day TTL)                    |
+| `ratifications`        | ratify.ts                 | LLM verdicts on signals (gated subset)                                 |
 
 ## Pure vs. impure boundaries
 
