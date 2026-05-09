@@ -168,7 +168,6 @@ function makeStreamMock(textContent: string) {
   return stream;
 }
 
-
 /**
  * Set up DDB mocks for the common "gating pass, cache miss, store write" path.
  * Call count:
@@ -370,9 +369,7 @@ describe("ratifySignal — validation failures", () => {
     const ctx = makeContext();
     setupDdbForCacheMiss();
     // LLM returns garbage
-    anthropicStreamMock.mockReturnValueOnce(
-      makeStreamMock("Sorry, I cannot analyze this."),
-    );
+    anthropicStreamMock.mockReturnValueOnce(makeStreamMock("Sorry, I cannot analyze this."));
     const result = await ratifySignal(ctx);
     await result.ratificationComplete;
     expect(getValidationFailureCount()).toBeGreaterThanOrEqual(1);
@@ -385,7 +382,9 @@ describe("ratifySignal — validation failures", () => {
     // Simulate stream throwing on iteration
     const errorStream = {
       [Symbol.asyncIterator]: () => ({
-        next: async () => { throw new Error("rate limited"); },
+        next: async () => {
+          throw new Error("rate limited");
+        },
       }),
       finalMessage: async () => ({ usage: { input_tokens: 0, output_tokens: 0 } }),
     };

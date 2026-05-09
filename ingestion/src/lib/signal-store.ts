@@ -350,8 +350,7 @@ export async function updateSignalRatification(
           // Guard: only update if the row is still in pending state (prevents double-write).
           ":pending": "pending",
         },
-        ConditionExpression:
-          "attribute_exists(#signalType) AND ratificationStatus = :pending",
+        ConditionExpression: "attribute_exists(#signalType) AND ratificationStatus = :pending",
       }),
     );
   } catch (err: unknown) {

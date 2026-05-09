@@ -267,16 +267,8 @@ interface LlmStreamParams {
 }
 
 async function runLlmStream(params: LlmStreamParams): Promise<void> {
-  const {
-    context,
-    cacheKey,
-    userJson,
-    userJsonHash,
-    invokedReason,
-    invokedAt,
-    startMs,
-    onStage2,
-  } = params;
+  const { context, cacheKey, userJson, userJsonHash, invokedReason, invokedAt, startMs, onStage2 } =
+    params;
 
   const algoVerdict = {
     type: context.candidate.type,
@@ -304,10 +296,7 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
     // Collect streamed text chunks
     let accumulated = "";
     for await (const event of stream) {
-      if (
-        event.type === "content_block_delta" &&
-        event.delta.type === "text_delta"
-      ) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
         accumulated += event.delta.text;
       }
     }

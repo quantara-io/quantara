@@ -78,7 +78,11 @@ export interface BlendedSignal {
 
   // Populated by stage-2 write when status is "ratified" or "downgraded".
   // null / absent when ratificationStatus is "pending", "not-required", or pre-B1.
-  ratificationVerdict?: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string } | null;
+  ratificationVerdict?: {
+    type: "buy" | "sell" | "hold";
+    confidence: number;
+    reasoning: string;
+  } | null;
 
   // Populated when status is "downgraded". Preserves the original algo signal so the UI
   // can show what changed (e.g. "Algo: buy 0.75 → LLM: hold 0.55").
