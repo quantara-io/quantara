@@ -11,6 +11,7 @@ import {
   getWhitelist,
   setWhitelist,
   getSignals,
+  getGenieMetrics,
   getRatifications,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
@@ -228,6 +229,62 @@ admin.put("/whitelist", async (c) => {
     );
   }
   return c.json({ success: true, data: await setWhitelist(body.ips) });
+});
+
+// Allowed timeframes match the blender's emit set in
+// ingestion/src/signals/blend.ts. Validating here prevents accidental
+// expensive queries on garbage strings.
+const VALID_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
+
+admin.get("/genie-metrics", async (c) => {
+  const sinceRaw = c.req.query("since");
+  // Canonicalise the parsed Date back to ISO 8601 Z before forwarding.
+  // The service uses this in DDB string range comparisons (BETWEEN), which
+  // assume a consistent Z-suffixed format. A `2026-05-09T12:00:00+00:00`
+  // is parseable but not lex-comparable to `2026-05-09T12:00:00.000Z`,
+  // which would silently produce wrong filtering.
+  let sinceCanon: string | undefined;
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    sinceCanon = parsed.toISOString();
+  }
+
+  const pair = c.req.query("pair");
+  if (pair !== undefined && !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  const timeframe = c.req.query("timeframe");
+  if (timeframe !== undefined && !(VALID_TIMEFRAMES as readonly string[]).includes(timeframe)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  const metrics = await getGenieMetrics(sinceCanon, pair, timeframe);
+  return c.json({ success: true, data: metrics });
 });
 
 export { admin };

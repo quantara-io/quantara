@@ -131,15 +131,19 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
         Resource = "arn:aws:dynamodb:${var.aws_region}:*:table/${local.prefix}-*"
       },
       {
-        # Read-only access for the admin Market, News, and Pipeline State
-        # pages. These Query and GetItem from ingestion-owned tables.
-        # Without this block, calls fail with AccessDeniedException and the
-        # admin endpoints silently return empty results.
+        # Read-only access for the admin Market, News, Pipeline State, and
+        # Genie-metrics pages, which Query and GetItem from ingestion-owned
+        # tables. Without this block, calls fail with AccessDeniedException —
+        # the admin service does NOT swallow DynamoDB permission errors, so
+        # the endpoints surface a 500 to the caller rather than silently
+        # returning empty data.
         #
         # `sentiment_aggregates` belongs HERE (not in `lambda_dynamodb`)
-        # because the API never writes to it — only the ingestion
-        # aggregator writes. Having it in the over-broad statement was
-        # over-permissive (Put/Update/Delete were granted unnecessarily).
+        # because the API never writes to it — only the ingestion aggregator
+        # writes. Having it in the over-broad statement was over-permissive
+        # (Put/Update/Delete were granted unnecessarily). Same reasoning
+        # applies to `ratifications` and `signal_outcomes` — admin reads
+        # only, never writes.
         Effect = "Allow"
         Action = ["dynamodb:Query", "dynamodb:GetItem"]
         Resource = [
@@ -153,6 +157,8 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
           # Required for /api/admin/ratifications (#185 / PR #196).
           aws_dynamodb_table.ratifications.arn,
           "${aws_dynamodb_table.ratifications.arn}/index/*",
+          # Genie-metrics endpoint reads these for win-rate + cost metrics.
+          aws_dynamodb_table.signal_outcomes.arn,
         ]
       },
     ]
@@ -211,6 +217,8 @@ resource "aws_lambda_function" "api" {
       TABLE_CAMPAIGNS        = aws_dynamodb_table.campaigns.name
       TABLE_INDICATOR_STATE  = aws_dynamodb_table.indicator_state.name
       TABLE_SIGNALS_V2       = aws_dynamodb_table.signals_v2.name
+      TABLE_RATIFICATIONS    = aws_dynamodb_table.ratifications.name
+      TABLE_SIGNAL_OUTCOMES  = aws_dynamodb_table.signal_outcomes.name
       CORS_ORIGIN            = var.cors_origin
       CLOUDFRONT_URL       = "https://${aws_cloudfront_distribution.api.domain_name}"
       ENVIRONMENT          = var.environment

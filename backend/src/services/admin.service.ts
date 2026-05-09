@@ -569,11 +569,464 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
 }
 
 // ---------------------------------------------------------------------------
-// Ratifications
+// Ratifications + Genie Performance Metrics
 // ---------------------------------------------------------------------------
 
 const RATIFICATIONS_TABLE =
   process.env.TABLE_RATIFICATIONS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
+
+const SIGNAL_OUTCOMES_TABLE =
+  process.env.TABLE_SIGNAL_OUTCOMES ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signal-outcomes`;
+
+// Reuse the file-level PAIRS constant for the genie-metrics fan-out so the
+// pair list is sourced from one place. (Was a duplicate ALL_PAIRS array
+// before — drift hazard whenever pairs are added or removed.)
+export const SUPPORTED_PAIRS = PAIRS;
+
+// Sonnet 4.6 pricing ($3/1M input, $15/1M output) — NOT the same as Haiku.
+// Ratification records store costUsd directly so this is only a fallback reference.
+
+export interface GenieMetrics {
+  windowStart: string;
+  windowEnd: string;
+  total: {
+    signalCount: number;
+    ratifiedCount: number;
+    downgradedCount: number;
+    gatedCount: number;
+    fallbackCount: number;
+  };
+  // Outcome counts using domain-standard names (tp = take-profit hit,
+  // sl = stop-loss hit) from the issue spec. The persisted resolver enum
+  // is `OutcomeRecord.outcome ∈ "correct" | "incorrect" | "neutral"`; we
+  // map correct → tp, incorrect → sl at the API boundary. "pending" is
+  // synthesized for signals whose corresponding outcome row hasn't been
+  // resolved yet.
+  outcomes: {
+    tp: number;
+    sl: number;
+    neutral: number;
+    pending: number;
+  };
+  winRate: {
+    overall: number | null;
+    algoOnly: number | null;
+    llmRatified: number | null;
+    llmDowngraded: number | null;
+  };
+  cost: {
+    totalUsd: number;
+    avgPerSignalUsd: number;
+    avgPerTpUsd: number | null;
+    cacheHitRate: number | null;
+  };
+  gating: {
+    skipLowConfidence: number;
+    skipRateLimit: number;
+    skipDailyCap: number;
+    skipNotRequired: number;
+    invoked: number;
+  };
+}
+
+// Internal row shape for genie-metrics aggregation. Distinct from the
+// exported `RatificationRow` (declared further down in the file) which is
+// the API response shape for the ratification audit listing — different
+// projection, different consumer.
+interface RatificationMetricRow {
+  pair: string;
+  invokedAtRecordId: string;
+  invokedAt: string;
+  invokedReason: string;
+  // The (15m / 1h / 4h / 1d) the bar that triggered this ratification was
+  // emitted on. Persisted by `ingestion/src/lib/ratification-store.ts` and
+  // used here to scope cost/gating metrics to a requested timeframe.
+  timeframe: string | null;
+  fellBackToAlgo: boolean;
+  cacheHit: boolean;
+  costUsd: number;
+  ratified: { type?: string; confidence?: number } | null;
+  algoCandidate: { type?: string };
+}
+
+interface OutcomeRow {
+  pair: string;
+  signalId: string;
+  // Production resolver writes "correct" | "incorrect" | "neutral" — see
+  // ingestion/src/outcomes/resolver.ts (`OutcomeValue`).
+  outcome: "correct" | "incorrect" | "neutral";
+  gateReason: string | null;
+  emittingTimeframe: string;
+  resolvedAt: string;
+  createdAt: string;
+}
+
+/** Subset of a signals-v2 row needed to partition outcomes by ratification pathway. */
+interface SignalRow {
+  pair: string;
+  signalId: string;
+  // Mirrors `BlendedSignal.ratificationStatus`. Production-emitted rows
+  // carry one of these five states; `null` means the row predates Phase B1.
+  ratificationStatus: "pending" | "ratified" | "downgraded" | "not-required" | null;
+  emittingTimeframe: string;
+  closeTime: number;
+}
+
+/**
+ * Query all ratification records for a set of pairs over a time window.
+ * Ratifications table PK=pair, SK=invokedAtRecordId (starts with invokedAt ISO).
+ */
+async function queryRatificationsForWindow(
+  pairs: readonly string[],
+  sinceIso: string,
+  untilIso: string,
+): Promise<RatificationMetricRow[]> {
+  const rows: RatificationMetricRow[] = [];
+
+  await Promise.all(
+    pairs.map(async (pair) => {
+      let lastKey: Record<string, unknown> | undefined;
+      do {
+        const result = await dynamo.send(
+          new QueryCommand({
+            TableName: RATIFICATIONS_TABLE,
+            KeyConditionExpression: "#pair = :pair AND invokedAtRecordId BETWEEN :lo AND :hi",
+            ExpressionAttributeNames: { "#pair": "pair" },
+            ExpressionAttributeValues: {
+              ":pair": pair,
+              ":lo": sinceIso,
+              ":hi": untilIso + "￿", // lexicographic upper bound
+            },
+            ExclusiveStartKey: lastKey,
+          }),
+        );
+        for (const item of result.Items ?? []) {
+          rows.push(item as RatificationMetricRow);
+        }
+        lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      } while (lastKey !== undefined);
+    }),
+  );
+
+  return rows;
+}
+
+/**
+ * Query signals-v2 for a set of pairs over a time window across blended TFs.
+ * signals-v2 PK=pair, SK=`tf#closeTimeMs`. closeTime is fixed-width epoch ms
+ * within a TF prefix so SK BETWEEN comparisons are correct ordered ranges.
+ *
+ * When `timeframe` is provided, only that TF's partition is queried (saves
+ * 3 of 4 DDB queries per pair). Otherwise all four blended TFs are queried.
+ *
+ * Used as the source-of-truth for `signalCount` and ratification-status
+ * partitioning. The ratifications table is NOT a 1:1 with signals — every
+ * `skip-no-trigger` bar evaluation creates a ratification row even when no
+ * signal was emitted, so counting ratifications inflates `signalCount`.
+ */
+async function querySignalsForWindow(
+  pairs: readonly string[],
+  sinceIso: string,
+  untilIso: string,
+  timeframe?: string,
+): Promise<SignalRow[]> {
+  const sinceMs = new Date(sinceIso).getTime();
+  const untilMs = new Date(untilIso).getTime();
+  const blendTfs = timeframe ? [timeframe] : (["15m", "1h", "4h", "1d"] as const);
+  const rows: SignalRow[] = [];
+
+  await Promise.all(
+    pairs.flatMap((pair) =>
+      blendTfs.map(async (tf) => {
+        let lastKey: Record<string, unknown> | undefined;
+        do {
+          const result = await dynamo.send(
+            new QueryCommand({
+              TableName: SIGNALS_V2_TABLE,
+              KeyConditionExpression: "#pair = :pair AND #sk BETWEEN :lo AND :hi",
+              ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+              ExpressionAttributeValues: {
+                ":pair": pair,
+                ":lo": `${tf}#${sinceMs}`,
+                ":hi": `${tf}#${untilMs}`,
+              },
+              ExclusiveStartKey: lastKey,
+            }),
+          );
+          for (const item of result.Items ?? []) {
+            rows.push({
+              pair: item.pair as string,
+              signalId: (item.signalId as string) ?? "",
+              ratificationStatus:
+                (item.ratificationStatus as SignalRow["ratificationStatus"]) ?? null,
+              emittingTimeframe: tf as string,
+              closeTime: typeof item.closeTime === "number" ? item.closeTime : 0,
+            });
+          }
+          lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+        } while (lastKey !== undefined);
+      }),
+    ),
+  );
+
+  return rows;
+}
+
+/**
+ * Query signal-outcome records for a set of pairs where the originating
+ * signal's emit time (`createdAt`) falls in `[sinceIso, untilIso]`. We
+ * filter on emit time (not `resolvedAt`) so the outcomes window aligns
+ * with `signals_v2.closeTime` — otherwise pre-window signals that resolve
+ * during the window distort the per-signal win-rate.
+ *
+ * signal-outcomes table PK=pair, SK=signalId; the time range is enforced
+ * via FilterExpression on `createdAt` (DynamoDB scans the partition before
+ * filtering). Acceptable today (small partitions per pair); if cost
+ * becomes an issue, add a GSI keyed on createdAt.
+ */
+async function queryOutcomesForWindow(
+  pairs: readonly string[],
+  sinceIso: string,
+  untilIso: string,
+): Promise<OutcomeRow[]> {
+  const rows: OutcomeRow[] = [];
+
+  await Promise.all(
+    pairs.map(async (pair) => {
+      let lastKey: Record<string, unknown> | undefined;
+      do {
+        const result = await dynamo.send(
+          new QueryCommand({
+            TableName: SIGNAL_OUTCOMES_TABLE,
+            KeyConditionExpression: "#pair = :pair",
+            FilterExpression: "#createdAt BETWEEN :since AND :until",
+            ExpressionAttributeNames: { "#pair": "pair", "#createdAt": "createdAt" },
+            ExpressionAttributeValues: {
+              ":pair": pair,
+              ":since": sinceIso,
+              ":until": untilIso,
+            },
+            ExclusiveStartKey: lastKey,
+          }),
+        );
+        for (const item of result.Items ?? []) {
+          rows.push(item as OutcomeRow);
+        }
+        lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      } while (lastKey !== undefined);
+    }),
+  );
+
+  return rows;
+}
+
+/**
+ * Compute the Genie performance metrics for a given time window.
+ *
+ * @param since      ISO-8601 lower bound (default: 7 days ago). Caller is
+ *                   responsible for canonicalising format — admin.ts does
+ *                   `new Date(sinceRaw).toISOString()` before passing here
+ *                   so DDB string range comparisons are consistent.
+ * @param pair       Optional pair filter (default: all monitored pairs)
+ * @param timeframe  Optional timeframe filter applied to ALL three sources:
+ *                   signals_v2 (Query is scoped to that tf's sk prefix),
+ *                   ratifications (filtered post-Query on row.timeframe),
+ *                   signal-outcomes (filtered post-Query on emittingTimeframe).
+ *                   With a filter active, every metric in the response
+ *                   describes the same (pair × tf) slice of the data.
+ */
+export async function getGenieMetrics(
+  since?: string,
+  pair?: string,
+  timeframe?: string,
+): Promise<GenieMetrics> {
+  const windowEnd = new Date().toISOString();
+  const windowStart = since ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const pairs = pair ? [pair] : SUPPORTED_PAIRS;
+
+  // signals_v2 is the source of truth for `signalCount` and ratification-
+  // pathway partitioning. ratifications is the source for cost + gating
+  // breakdown. signal-outcomes is the source for win-rate.
+  // Pass `timeframe` through to querySignalsForWindow so we only Query the
+  // requested tf's sk prefix instead of all four.
+  const [signalRows, ratRows, outcomeRows] = await Promise.all([
+    querySignalsForWindow(pairs, windowStart, windowEnd, timeframe),
+    queryRatificationsForWindow(pairs, windowStart, windowEnd),
+    queryOutcomesForWindow(pairs, windowStart, windowEnd),
+  ]);
+
+  // Apply timeframe filter consistently across all three sources so every
+  // metric in the response describes the same slice of the data.
+  // - signalRows: already scoped via querySignalsForWindow's sk prefix
+  // - ratRows: filtered post-Query on the persisted `timeframe` field
+  // - outcomeRows: filtered post-Query on `emittingTimeframe`
+  // Without filtering ratRows, cost.* and gating.* would reflect ALL TFs
+  // while signalCount/win-rate reflect only the requested TF — inconsistent.
+  const filteredSignals = signalRows;
+  const filteredRats = timeframe ? ratRows.filter((r) => r.timeframe === timeframe) : ratRows;
+  // Restrict outcomes to those whose signalId is in filteredSignals — this
+  // aligns the outcomes window with the signals window (was filtering on
+  // resolvedAt, which let pre-window signals resolved during the window
+  // skew win-rate vs signalCount). Restored timeframe filter as a belt-
+  // and-suspenders check in case of unexpected outcome rows.
+  const signalIdSet = new Set(filteredSignals.map((s) => s.signalId).filter(Boolean));
+  const filteredOutcomes = outcomeRows.filter(
+    (o) => signalIdSet.has(o.signalId) && (timeframe ? o.emittingTimeframe === timeframe : true),
+  );
+
+  // Map signalId → ratificationStatus for joining outcomes to their pathway.
+  const statusBySignalId = new Map<string, SignalRow["ratificationStatus"]>();
+  for (const s of filteredSignals) {
+    if (s.signalId) statusBySignalId.set(s.signalId, s.ratificationStatus);
+  }
+
+  // ------------------------------------------------------------------
+  // Gating breakdown + cost (from ratification rows)
+  // ------------------------------------------------------------------
+  let skipLowConfidence = 0;
+  let skipRateLimit = 0;
+  let skipDailyCap = 0;
+  let skipNotRequired = 0;
+  let invoked = 0;
+  let totalCacheHits = 0;
+  let totalLlmInvocations = 0;
+  let totalCostUsd = 0;
+
+  for (const r of filteredRats) {
+    const reason = r.invokedReason ?? "";
+    if (reason === "skip-low-confidence") skipLowConfidence++;
+    else if (reason === "skip-rate-limited") skipRateLimit++;
+    else if (reason === "skip-daily-cap") skipDailyCap++;
+    else if (reason === "skip-no-trigger") skipNotRequired++;
+    else {
+      // LLM was actually invoked (news, vol, fng-shift, all, sentiment_shock)
+      invoked++;
+      totalLlmInvocations++;
+      if (r.cacheHit) totalCacheHits++;
+    }
+    totalCostUsd += typeof r.costUsd === "number" ? r.costUsd : 0;
+  }
+
+  // ------------------------------------------------------------------
+  // Signal totals and ratification-pathway buckets (from signals_v2)
+  // ------------------------------------------------------------------
+  // signalCount comes from signals_v2 — it's the count of *emitted* signals.
+  // Ratifications has many extra rows for `skip-no-trigger` bar evaluations
+  // that never produced a signal; using ratRows.length as signalCount would
+  // distort avgPerSignalUsd and gatedCount.
+  const signalCount = filteredSignals.length;
+  let ratifiedCount = 0; // ratificationStatus "ratified"
+  let downgradedCount = 0; // ratificationStatus "downgraded"
+  // algoOnly + pending are derivable as (signalCount - ratified - downgraded
+  // - pending-from-status); not exposed on the response shape directly, but
+  // implied by signalCount minus the partitions.
+
+  for (const s of filteredSignals) {
+    const status = s.ratificationStatus;
+    if (status === "ratified") ratifiedCount++;
+    else if (status === "downgraded") downgradedCount++;
+    // null / "not-required" / "pending" aren't ratified; they fall into
+    // the algoOnly + pending buckets surfaced via win-rate partitioning.
+  }
+
+  // gatedCount = the gating side of ratification activity (skip rows). It's
+  // a separate axis from signal count: many skip rows produce no signal.
+  const gatedCount = skipLowConfidence + skipRateLimit + skipDailyCap + skipNotRequired;
+  // fallbackCount is "LLM was invoked but failed validation, fell back to
+  // the algo verdict". Comes from ratifications, scoped to filteredRats so
+  // it stays consistent with the timeframe filter.
+  let fallbackCount = 0;
+  for (const r of filteredRats) {
+    if (r.fellBackToAlgo) fallbackCount++;
+  }
+
+  // ------------------------------------------------------------------
+  // Outcome counts — production resolver writes correct/incorrect/neutral;
+  // we map to the issue-spec names (tp = take-profit hit, sl = stop-loss
+  // hit) at the API boundary so frontend consumers match the spec.
+  // ------------------------------------------------------------------
+  let tp = 0;
+  let sl = 0;
+  let neutral = 0;
+  // "pending" is computed from signals that don't yet have an outcome row.
+  const resolvedSignalIds = new Set<string>();
+  for (const o of filteredOutcomes) resolvedSignalIds.add(o.signalId);
+  let pendingOutcomes = 0;
+  for (const s of filteredSignals) {
+    if (!resolvedSignalIds.has(s.signalId)) pendingOutcomes++;
+  }
+
+  for (const o of filteredOutcomes) {
+    if (o.outcome === "correct") tp++;
+    else if (o.outcome === "incorrect") sl++;
+    else if (o.outcome === "neutral") neutral++;
+  }
+
+  // ------------------------------------------------------------------
+  // Win-rate breakdown — partition outcomes by ratificationStatus on their signal
+  // ------------------------------------------------------------------
+  // algoOnly:      signal had ratificationStatus null or "not-required"
+  // llmRatified:   signal had ratificationStatus "ratified"
+  // llmDowngraded: signal had ratificationStatus "downgraded"
+  // Three buckets are mutually exclusive and (with pending outcomes) sum to
+  // signalCount. "pending" outcomes are excluded from win-rate (no result yet).
+  const countWins = (outcomes: OutcomeRow[]): number | null => {
+    const directional = outcomes.filter(
+      (o) => o.outcome === "correct" || o.outcome === "incorrect",
+    );
+    if (directional.length === 0) return null;
+    const wins = directional.filter((o) => o.outcome === "correct").length;
+    return wins / directional.length;
+  };
+
+  const partitionByStatus = (target: SignalRow["ratificationStatus"][] | "algoOnly") =>
+    filteredOutcomes.filter((o) => {
+      const status = statusBySignalId.get(o.signalId) ?? null;
+      if (target === "algoOnly") return status === null || status === "not-required";
+      return target.includes(status);
+    });
+
+  const overallWinRate = countWins(filteredOutcomes);
+  const algoOnlyWinRate = countWins(partitionByStatus("algoOnly"));
+  const llmRatifiedWinRate = countWins(partitionByStatus(["ratified"]));
+  const llmDowngradedWinRate = countWins(partitionByStatus(["downgraded"]));
+
+  // ------------------------------------------------------------------
+  // Cost metrics
+  // ------------------------------------------------------------------
+  const avgPerSignalUsd = signalCount > 0 ? totalCostUsd / signalCount : 0;
+  const avgPerTpUsd = tp > 0 ? totalCostUsd / tp : null;
+  const cacheHitRate = totalLlmInvocations > 0 ? totalCacheHits / totalLlmInvocations : null;
+
+  return {
+    windowStart,
+    windowEnd,
+    total: {
+      signalCount,
+      // Sum of these four equals signalCount (all signals partitioned by status).
+      ratifiedCount,
+      downgradedCount,
+      // gatedCount tracks ratification skip rows (separate axis from signal count).
+      gatedCount,
+      fallbackCount,
+    },
+    outcomes: { tp, sl, neutral, pending: pendingOutcomes },
+    winRate: {
+      overall: overallWinRate,
+      algoOnly: algoOnlyWinRate,
+      llmRatified: llmRatifiedWinRate,
+      llmDowngraded: llmDowngradedWinRate,
+    },
+    cost: { totalUsd: totalCostUsd, avgPerSignalUsd, avgPerTpUsd, cacheHitRate },
+    gating: { skipLowConfidence, skipRateLimit, skipDailyCap, skipNotRequired, invoked },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Ratification audit listing
+// ---------------------------------------------------------------------------
 
 export interface RatificationRow {
   recordId: string;

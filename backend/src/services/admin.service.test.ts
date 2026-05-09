@@ -377,6 +377,328 @@ describe("computeDispersion via getMarket — dedupe fix (Bug 2)", () => {
   });
 });
 
+describe("getGenieMetrics", () => {
+  // Helper: build a minimal ratification row. `timeframe` is included so
+  // the timeframe-filter path (now applied to ratRows too) works in tests.
+  function makeRatRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      pair: "BTC/USDT",
+      invokedAtRecordId: "2026-05-01T00:00:00.000Z#abc",
+      invokedAt: "2026-05-01T00:00:00.000Z",
+      invokedReason: "news",
+      timeframe: "1h",
+      fellBackToAlgo: false,
+      cacheHit: false,
+      costUsd: 0.01,
+      ratified: { type: "buy", confidence: 0.85 },
+      algoCandidate: { type: "buy" },
+      ...overrides,
+    };
+  }
+
+  // Helper: build a minimal outcome row matching the production resolver's
+  // OutcomeRecord schema (`outcome` ∈ "correct" | "incorrect" | "neutral").
+  function makeOutcomeRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      pair: "BTC/USDT",
+      signalId: "sig-1",
+      outcome: "correct",
+      gateReason: null,
+      emittingTimeframe: "1h",
+      resolvedAt: "2026-05-01T01:00:00.000Z",
+      createdAt: "2026-05-01T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  // Helper: build a minimal signals-v2 row carrying ratificationStatus —
+  // the source-of-truth for win-rate partitioning.
+  function makeSignalRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      pair: "BTC/USDT",
+      signalId: "sig-1",
+      ratificationStatus: null, // null/not-required → algoOnly bucket
+      emittingTimeframe: "1h",
+      closeTime: Date.parse("2026-05-01T00:00:00.000Z"),
+      sk: `1h#${Date.parse("2026-05-01T00:00:00.000Z")}`,
+      ...overrides,
+    };
+  }
+
+  // Route mock invocations to the right table source. signals-v2 queries
+  // are issued once per (pair, timeframe) so the mock filters signals by
+  // the query's TF prefix (`:lo` ExpressionAttributeValue starts with `tf#`)
+  // to avoid 4× duplicates from the per-TF fanout.
+  function routedMock(sources: {
+    signals?: unknown[];
+    ratifications?: unknown[];
+    outcomes?: unknown[];
+  }) {
+    return async (cmd: {
+      __cmd: string;
+      input?: {
+        TableName?: string;
+        ExpressionAttributeValues?: Record<string, unknown>;
+      };
+    }) => {
+      const t = cmd.input?.TableName ?? "";
+      if (t.includes("signals-v2")) {
+        const lo = (cmd.input?.ExpressionAttributeValues?.[":lo"] as string) ?? "";
+        const tfPrefix = lo.split("#")[0];
+        const matching = (sources.signals ?? []).filter(
+          (s) => (s as { emittingTimeframe?: string }).emittingTimeframe === tfPrefix,
+        );
+        return { Items: matching };
+      }
+      if (t.includes("ratifications")) return { Items: sources.ratifications ?? [] };
+      if (t.includes("signal-outcomes")) return { Items: sources.outcomes ?? [] };
+      return { Items: [] };
+    };
+  }
+
+  it("returns zero-counts when all tables are empty", async () => {
+    // DynamoDB returns empty pages for all queries
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics();
+
+    expect(result.total.signalCount).toBe(0);
+    expect(result.outcomes.tp).toBe(0);
+    expect(result.outcomes.sl).toBe(0);
+    expect(result.cost.totalUsd).toBe(0);
+    expect(result.gating.invoked).toBe(0);
+    expect(result.winRate.overall).toBeNull();
+    expect(result.cost.cacheHitRate).toBeNull();
+  });
+
+  it("counts gating reasons correctly", async () => {
+    const rows = [
+      makeRatRow({ invokedReason: "skip-low-confidence" }),
+      makeRatRow({ invokedReason: "skip-rate-limited" }),
+      makeRatRow({ invokedReason: "skip-daily-cap" }),
+      makeRatRow({ invokedReason: "skip-no-trigger" }),
+      makeRatRow({ invokedReason: "news" }), // invoked
+      makeRatRow({ invokedReason: "vol" }), // invoked
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ ratifications: rows }));
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication
+    // across SUPPORTED_PAIRS).
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.gating.skipLowConfidence).toBe(1);
+    expect(result.gating.skipRateLimit).toBe(1);
+    expect(result.gating.skipDailyCap).toBe(1);
+    expect(result.gating.skipNotRequired).toBe(1);
+    expect(result.gating.invoked).toBe(2);
+    expect(result.total.gatedCount).toBe(4);
+    // signalCount is now sourced from signals_v2, NOT from ratifications,
+    // so 6 rat-rows with no signals_v2 rows → signalCount 0.
+    expect(result.total.signalCount).toBe(0);
+  });
+
+  it("computes cache hit rate from invoked rows", async () => {
+    const rows = [
+      makeRatRow({ invokedReason: "news", cacheHit: true, costUsd: 0 }),
+      makeRatRow({ invokedReason: "news", cacheHit: false, costUsd: 0.02 }),
+      makeRatRow({ invokedReason: "vol", cacheHit: false, costUsd: 0.02 }),
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ ratifications: rows }));
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication
+    // across SUPPORTED_PAIRS).
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    // 1 cache hit out of 3 LLM invocations = 1/3
+    expect(result.cost.cacheHitRate).toBeCloseTo(1 / 3, 5);
+    expect(result.cost.totalUsd).toBeCloseTo(0.04, 5);
+  });
+
+  it("computes win rate from outcome rows", async () => {
+    const outcomeRows = [
+      makeOutcomeRow({ signalId: "sig-1", outcome: "correct" }),
+      makeOutcomeRow({ signalId: "sig-2", outcome: "correct" }),
+      makeOutcomeRow({ signalId: "sig-3", outcome: "incorrect" }),
+      makeOutcomeRow({ signalId: "sig-4", outcome: "neutral" }),
+    ];
+    const signalRows = [
+      makeSignalRow({ signalId: "sig-1" }),
+      makeSignalRow({ signalId: "sig-2" }),
+      makeSignalRow({ signalId: "sig-3" }),
+      makeSignalRow({ signalId: "sig-4" }),
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ signals: signalRows, outcomes: outcomeRows }));
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication
+    // across SUPPORTED_PAIRS).
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    // 2 correct, 1 incorrect, 1 neutral → directional = 3, wins = 2 → 2/3
+    expect(result.outcomes.tp).toBe(2);
+    expect(result.outcomes.sl).toBe(1);
+    expect(result.outcomes.neutral).toBe(1);
+    expect(result.winRate.overall).toBeCloseTo(2 / 3, 5);
+    // signalCount is from signals_v2 directly
+    expect(result.total.signalCount).toBe(4);
+  });
+
+  it("partitions algoOnly vs llmRatified vs llmDowngraded by ratificationStatus", async () => {
+    // 6 signals: 2 algoOnly (null + not-required), 2 llmRatified, 2 llmDowngraded.
+    // Each has a paired outcome so win-rate is computable per partition.
+    const signalRows = [
+      makeSignalRow({ signalId: "a1", ratificationStatus: null }),
+      makeSignalRow({ signalId: "a2", ratificationStatus: "not-required" }),
+      makeSignalRow({ signalId: "r1", ratificationStatus: "ratified" }),
+      makeSignalRow({ signalId: "r2", ratificationStatus: "ratified" }),
+      makeSignalRow({ signalId: "d1", ratificationStatus: "downgraded" }),
+      makeSignalRow({ signalId: "d2", ratificationStatus: "downgraded" }),
+    ];
+    const outcomeRows = [
+      // algoOnly: 1 correct, 1 incorrect → 0.5
+      makeOutcomeRow({ signalId: "a1", outcome: "correct" }),
+      makeOutcomeRow({ signalId: "a2", outcome: "incorrect" }),
+      // llmRatified: 2 correct → 1.0
+      makeOutcomeRow({ signalId: "r1", outcome: "correct" }),
+      makeOutcomeRow({ signalId: "r2", outcome: "correct" }),
+      // llmDowngraded: 0 correct, 2 incorrect → 0.0
+      makeOutcomeRow({ signalId: "d1", outcome: "incorrect" }),
+      makeOutcomeRow({ signalId: "d2", outcome: "incorrect" }),
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ signals: signalRows, outcomes: outcomeRows }));
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.winRate.algoOnly).toBeCloseTo(0.5, 5);
+    expect(result.winRate.llmRatified).toBeCloseTo(1.0, 5);
+    expect(result.winRate.llmDowngraded).toBeCloseTo(0.0, 5);
+    expect(result.total.ratifiedCount).toBe(2);
+    expect(result.total.downgradedCount).toBe(2);
+    expect(result.total.signalCount).toBe(6);
+  });
+
+  it("computes avgPerTpUsd as null when there are no take-profit outcomes", async () => {
+    dynamoSend.mockImplementation(
+      routedMock({
+        signals: [makeSignalRow({ signalId: "sig-only-incorrect" })],
+        ratifications: [makeRatRow({ costUsd: 0.05 })],
+        outcomes: [makeOutcomeRow({ signalId: "sig-only-incorrect", outcome: "incorrect" })],
+      }),
+    );
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.outcomes.tp).toBe(0);
+    expect(result.cost.avgPerTpUsd).toBeNull();
+    expect(result.cost.totalUsd).toBeCloseTo(0.05, 5);
+  });
+
+  it("filters outcomes AND signals by timeframe when specified", async () => {
+    const signalRows = [
+      makeSignalRow({ signalId: "h1", emittingTimeframe: "1h" }),
+      makeSignalRow({ signalId: "h2", emittingTimeframe: "1h" }),
+      makeSignalRow({ signalId: "f1", emittingTimeframe: "4h" }),
+    ];
+    const outcomeRows = [
+      makeOutcomeRow({ signalId: "h1", outcome: "correct", emittingTimeframe: "1h" }),
+      makeOutcomeRow({ signalId: "h2", outcome: "correct", emittingTimeframe: "1h" }),
+      makeOutcomeRow({ signalId: "f1", outcome: "incorrect", emittingTimeframe: "4h" }),
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ signals: signalRows, outcomes: outcomeRows }));
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics(undefined, "BTC/USDT", "1h");
+
+    // Only the two "1h" rows survive the filter on both signals and outcomes
+    expect(result.outcomes.tp).toBe(2);
+    expect(result.outcomes.sl).toBe(0);
+    expect(result.total.signalCount).toBe(2);
+  });
+
+  it("filters ratification metrics by timeframe — gating, cost, cacheHitRate", async () => {
+    // 1h ratifications: 1 invoked + 1 skip-low-confidence + 1 cache-hit invoked
+    // 4h ratifications: 1 invoked + 1 skip-rate-limited
+    // With timeframe=1h, only the three 1h rat-rows should contribute.
+    const ratRows = [
+      makeRatRow({ timeframe: "1h", invokedReason: "news", costUsd: 0.02, cacheHit: false }),
+      makeRatRow({ timeframe: "1h", invokedReason: "skip-low-confidence", costUsd: 0 }),
+      makeRatRow({ timeframe: "1h", invokedReason: "vol", costUsd: 0.01, cacheHit: true }),
+      makeRatRow({ timeframe: "4h", invokedReason: "news", costUsd: 0.05 }),
+      makeRatRow({ timeframe: "4h", invokedReason: "skip-rate-limited", costUsd: 0 }),
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ ratifications: ratRows }));
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics(undefined, "BTC/USDT", "1h");
+
+    // Only 3 1h rat rows: 1 skip-low-confidence + 2 invoked (one cache-hit)
+    expect(result.gating.skipLowConfidence).toBe(1);
+    expect(result.gating.skipRateLimit).toBe(0); // the 4h one is filtered out
+    expect(result.gating.invoked).toBe(2);
+    expect(result.total.gatedCount).toBe(1);
+    // Cost: 0.02 + 0 + 0.01 = 0.03 (4h's 0.05 excluded)
+    expect(result.cost.totalUsd).toBeCloseTo(0.03, 5);
+    // 1 cache hit out of 2 invocations = 0.5
+    expect(result.cost.cacheHitRate).toBeCloseTo(0.5, 5);
+  });
+
+  it("uses provided since as windowStart", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieMetrics } = await importService();
+    const since = "2026-04-01T00:00:00.000Z";
+    const result = await getGenieMetrics(since);
+
+    expect(result.windowStart).toBe(since);
+    expect(result.windowEnd).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("defaults windowStart to 7 days ago when since is omitted", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieMetrics } = await importService();
+    const before = Date.now();
+    const result = await getGenieMetrics();
+    const after = Date.now();
+
+    const windowStartMs = new Date(result.windowStart).getTime();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    // windowStart should be ~7 days before now
+    expect(windowStartMs).toBeGreaterThanOrEqual(before - sevenDaysMs - 5000);
+    expect(windowStartMs).toBeLessThanOrEqual(after - sevenDaysMs + 5000);
+  });
+
+  it("counts ratified vs downgraded signals from signals_v2.ratificationStatus", async () => {
+    // Source of truth is the signals_v2 ratificationStatus, not a derived
+    // comparison of ratified.type vs algoCandidate.type — Phase B1 already
+    // resolved the comparison at write time.
+    const signalRows = [
+      makeSignalRow({ signalId: "r1", ratificationStatus: "ratified" }),
+      makeSignalRow({ signalId: "d1", ratificationStatus: "downgraded" }),
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ signals: signalRows }));
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.total.downgradedCount).toBe(1);
+    expect(result.total.ratifiedCount).toBe(1);
+    expect(result.total.signalCount).toBe(2);
+  });
+});
+
 describe("getStatus", () => {
   it("returns aggregated AWS status with timestamp", async () => {
     dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
