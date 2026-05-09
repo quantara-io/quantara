@@ -243,6 +243,15 @@ resource "aws_iam_role_policy" "ingestion_ecs_task_alpaca_ssm" {
         Effect   = "Allow"
         Action   = ["kms:Decrypt"]
         Resource = data.aws_kms_alias.ssm.target_key_arn
+        # Constrain the key's usable scope: the role can only decrypt with
+        # this KMS key when the call comes through SSM in this region. Stops
+        # the task role from being used to decrypt arbitrary ciphertext that
+        # happens to be encrypted under the SSM key.
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com"
+          }
+        }
       },
     ]
   })
