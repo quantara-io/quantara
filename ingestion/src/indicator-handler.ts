@@ -505,23 +505,58 @@ async function computeBlendedSignal(
 
 /**
  * Retrieve the most recently written signal for a pair from signals-v2.
- * Scans descending on SK (tf#closeTime); the first hit is the latest across all TFs.
+ *
+ * v6 SK = `tf#closeTime`: a single reverse Query with Limit=1 returns
+ * the alphabetically-last TF (e.g. "4h" beats "15m" / "1h" lexically),
+ * not the chronologically newest signal. Query each blended TF
+ * separately and pick the one with the highest closeTime.
+ *
+ * Tie-break (multiple TFs share the same closeTime at 4h/1d boundaries):
+ * prefer the higher TF (1d > 4h > 1h > 15m) to match §5.2 weighting.
  */
 async function getLatestSignalForPair(
   pair: string,
 ): Promise<import("@quantara/shared").BlendedSignal | null> {
   const { QueryCommand } = await import("@aws-sdk/lib-dynamodb");
-  const result = await client.send(
-    new QueryCommand({
-      TableName: SIGNALS_V2_TABLE,
-      KeyConditionExpression: "#pair = :pair",
-      ExpressionAttributeNames: { "#pair": "pair" },
-      ExpressionAttributeValues: { ":pair": pair },
-      ScanIndexForward: false,
-      Limit: 1,
+  const blendTfs = ["15m", "1h", "4h", "1d"] as const;
+  const tfAuthority: Record<(typeof blendTfs)[number], number> = {
+    "15m": 0,
+    "1h": 1,
+    "4h": 2,
+    "1d": 3,
+  };
+
+  const perTf = await Promise.all(
+    blendTfs.map(async (tf) => {
+      const result = await client.send(
+        new QueryCommand({
+          TableName: SIGNALS_V2_TABLE,
+          KeyConditionExpression: "#pair = :pair AND begins_with(sk, :tfPrefix)",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${tf}#` },
+          ScanIndexForward: false,
+          Limit: 1,
+        }),
+      );
+      const item = result?.Items?.[0];
+      return item ? { tf, item } : undefined;
     }),
   );
-  const item = result.Items?.[0];
-  if (!item) return null;
-  return item as import("@quantara/shared").BlendedSignal;
+
+  let best: { tf: (typeof blendTfs)[number]; item: Record<string, unknown> } | undefined;
+  for (const candidate of perTf) {
+    if (!candidate) continue;
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    const candidateAsOf = Number(candidate.item["asOf"] ?? 0);
+    const bestAsOf = Number(best.item["asOf"] ?? 0);
+    if (candidateAsOf > bestAsOf) {
+      best = candidate;
+    } else if (candidateAsOf === bestAsOf && tfAuthority[candidate.tf] > tfAuthority[best.tf]) {
+      best = candidate;
+    }
+  }
+  return best ? (best.item as unknown as import("@quantara/shared").BlendedSignal) : null;
 }

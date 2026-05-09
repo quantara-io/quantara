@@ -121,7 +121,7 @@ resource "aws_lambda_function" "indicator_handler" {
       TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
       TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
       TABLE_METADATA        = aws_dynamodb_table.ingestion_metadata.name
-      REQUIRED_EXCHANGE_COUNT = "2"
+      REQUIRED_EXCHANGE_COUNT = local.required_exchange_count
       ENVIRONMENT           = var.environment
     }
   }

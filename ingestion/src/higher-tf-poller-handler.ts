@@ -63,13 +63,34 @@ function isCloseBoundary(now: number, tf: Timeframe): boolean {
   return now - lastBoundary < 60_000;
 }
 
+// One ccxt client per (exchange, invocation). Sharing the instance across
+// (pair, tf) tasks lets ccxt's enableRateLimit actually coordinate — otherwise
+// each task creates its own client and they all hit the exchange in parallel
+// with independent rate limiters, defeating the purpose.
+type CcxtExchange = InstanceType<(typeof ccxt)[ExchangeId]>;
+function buildExchangeClients(): Partial<Record<ExchangeId, CcxtExchange>> {
+  const clients: Partial<Record<ExchangeId, CcxtExchange>> = {};
+  for (const exchangeId of EXCHANGES) {
+    const ExchangeClass = ccxt[exchangeId];
+    if (!ExchangeClass) {
+      console.error(`[higher-tf-poller] Exchange class not found: ${exchangeId}`);
+      continue;
+    }
+    clients[exchangeId] = new ExchangeClass({ enableRateLimit: true, timeout: 15_000 });
+  }
+  return clients;
+}
+
 /**
  * Fetch the most recent fully-closed candle for (exchange, pair, tf) and
  * write it as live. Idempotent: writing the same (exchange, pair, tf, openTime)
  * candle twice is a harmless overwrite (storeCandles uses a deterministic key).
+ *
+ * Takes the shared ccxt client for the exchange so rate-limit coordination works.
  */
 async function fetchAndStoreLatestCandle(
   exchangeId: ExchangeId,
+  exchange: CcxtExchange,
   pair: TradingPair,
   tf: Timeframe,
   now: number,
@@ -79,13 +100,6 @@ async function fetchAndStoreLatestCandle(
   const lastBoundary = Math.floor(now / tfMs) * tfMs;
   const targetOpenTime = lastBoundary - tfMs;
 
-  const ExchangeClass = ccxt[exchangeId];
-  if (!ExchangeClass) {
-    console.error(`[higher-tf-poller] Exchange class not found: ${exchangeId}`);
-    return false;
-  }
-
-  const exchange = new ExchangeClass({ enableRateLimit: true, timeout: 15_000 });
   const symbol = getSymbol(exchangeId, pair);
 
   try {
@@ -139,14 +153,21 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
     `[higher-tf-poller] Tick at ${new Date(now).toISOString()} — TFs due: ${dueTfs.join(",")}`,
   );
 
+  // Build one ccxt client per exchange so enableRateLimit can coordinate
+  // across (pair, tf) tasks. Otherwise each task spins up its own client
+  // and the rate limiter only governs that single in-flight request.
+  const clients = buildExchangeClients();
+
   // For each TF that just closed, fetch one candle per (exchange, pair).
-  // Run all fetches in parallel — each is independent and storeCandles
-  // is idempotent.
+  // Tasks share the per-exchange client (rate-limited) — ccxt serializes
+  // requests within a client when enableRateLimit is on.
   const tasks: Promise<boolean>[] = [];
   for (const tf of dueTfs) {
     for (const exchangeId of EXCHANGES) {
+      const exchange = clients[exchangeId];
+      if (!exchange) continue; // exchange class missing — already logged
       for (const pair of PAIRS) {
-        tasks.push(fetchAndStoreLatestCandle(exchangeId, pair, tf, now));
+        tasks.push(fetchAndStoreLatestCandle(exchangeId, exchange, pair, tf, now));
       }
     }
   }

@@ -51,7 +51,7 @@ function makeRemoveEvent(overrides: Record<string, unknown> = {}): DynamoDBStrea
         dynamodb: {
           OldImage: {
             id: TEST_ID,
-            exchanges: new Set([TEST_PAIR, "coinbase"]),
+            exchanges: new Set(["binanceus", "coinbase"]),
             ttl: Math.floor(TEST_CLOSE_TIME / 1000) + 86_400,
             ...overrides,
           },

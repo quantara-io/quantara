@@ -82,6 +82,10 @@ resource "aws_lambda_function" "close_quorum_monitor" {
       TABLE_SIGNALS_V2 = aws_dynamodb_table.signals_v2.name
       CW_NAMESPACE     = "Quantara/Ingestion"
       ENVIRONMENT      = var.environment
+      # Must match indicator-handler's value (sourced from the same local).
+      # If the values drift, the monitor emits false-positive CloseMissed
+      # metrics on slots indicator-handler correctly skipped at lower quorum.
+      REQUIRED_EXCHANGE_COUNT = local.required_exchange_count
     }
   }
 
