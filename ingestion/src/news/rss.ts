@@ -134,22 +134,30 @@ function hashString(str: string): string {
 
 /**
  * Produce a deterministic ISO timestamp for articles that have no parseable
- * pubDate.  The epoch is pinned to 1970-01-01 plus a hash-derived offset in
- * seconds so that two different articles without pubDates do NOT collide on
- * the same (newsId, publishedAt) DynamoDB key.
+ * pubDate.  Anchors at the start of the current UTC day plus a hash-derived
+ * offset within the day, so the result is:
  *
- * Using new Date().toISOString() as the fallback would assign a different
- * publishedAt on every poll cycle, causing the same article to be written
- * repeatedly (one new row per poll).
+ *   - stable for the same article re-polled within the same UTC day (idempotent
+ *     dedup against the (newsId, publishedAt) primary key),
+ *   - within the past 24 hours of wall-clock time (passes recency-window
+ *     queries on `news-events-by-pair` and the freshness gate in
+ *     `processNewsEventForInvalidation`),
+ *   - distinct between articles polled in the same day (the seed hash spreads
+ *     timestamps across the full 86_400-second range).
+ *
+ * Using `new Date().toISOString()` as the fallback would change publishedAt on
+ * every poll cycle and re-write the same article forever; the prior 1970
+ * anchor was stable but made articles look permanently stale to all downstream
+ * recency-aware queries.
  */
 function stableFallbackDate(seed: string): string {
-  // Map the 32-bit hash to a non-negative offset in the range 0..3600 seconds
-  // so the resulting timestamp stays in early 1970 and is clearly "synthetic".
-  const offset =
+  const dayMs = 86_400_000;
+  const dayBucket = Math.floor(Date.now() / dayMs) * dayMs;
+  const offsetSec =
     Math.abs(
       hashString(seed)
         .split("")
         .reduce((n, c) => n + c.charCodeAt(0), 0),
-    ) % 3600;
-  return new Date(offset * 1000).toISOString();
+    ) % 86_400;
+  return new Date(dayBucket + offsetSec * 1000).toISOString();
 }

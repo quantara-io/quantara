@@ -152,4 +152,76 @@ describe("storeNewsRecords", () => {
       expect(writes[0][0].input.RequestItems["test-news-events"]).toHaveLength(2);
     });
   });
+
+  describe("UnprocessedItems retry", () => {
+    it("retries unprocessed items and ultimately returns all records", async () => {
+      let batchCallCount = 0;
+      send.mockImplementation(async (cmd: { __cmd: string; input?: unknown }) => {
+        if (cmd.__cmd === "Get") return {}; // both items new
+        if (cmd.__cmd === "BatchWrite") {
+          batchCallCount += 1;
+          if (batchCallCount === 1) {
+            // First attempt: one of the two items is unprocessed.
+            return {
+              UnprocessedItems: {
+                "test-news-events": [
+                  {
+                    PutRequest: {
+                      Item: { newsId: "art-b", publishedAt: "2026-04-25T00:00:00Z" },
+                    },
+                  },
+                ],
+              },
+            };
+          }
+          // Second attempt: succeeds.
+          return {};
+        }
+        return {};
+      });
+
+      const { storeNewsRecords } = await import("./news-store.js");
+      const stored = await storeNewsRecords([record("art-a"), record("art-b")]);
+
+      expect(stored).toHaveLength(2);
+      expect(stored.map((r) => r.newsId).sort()).toEqual(["art-a", "art-b"]);
+
+      const writes = send.mock.calls.filter((c) => c[0].__cmd === "BatchWrite");
+      expect(writes).toHaveLength(2);
+      // Retry only carries the still-pending item.
+      const retryItems = writes[1][0].input.RequestItems["test-news-events"];
+      expect(retryItems).toHaveLength(1);
+      expect(retryItems[0].PutRequest.Item.newsId).toBe("art-b");
+    });
+
+    it("excludes records that remain unprocessed after max retries", async () => {
+      send.mockImplementation(async (cmd: { __cmd: string }) => {
+        if (cmd.__cmd === "Get") return {};
+        if (cmd.__cmd === "BatchWrite") {
+          // Always returns the same item as unprocessed.
+          return {
+            UnprocessedItems: {
+              "test-news-events": [
+                {
+                  PutRequest: {
+                    Item: { newsId: "art-stuck", publishedAt: "2026-04-25T00:00:00Z" },
+                  },
+                },
+              ],
+            },
+          };
+        }
+        return {};
+      });
+
+      const { storeNewsRecords } = await import("./news-store.js");
+      const stored = await storeNewsRecords([record("art-stuck")]);
+
+      // After exhausted retries, the persistent unprocessed record is dropped.
+      expect(stored).toHaveLength(0);
+      // Exhausted: 1 initial + 3 retry attempts = 4 BatchWrite calls.
+      const writes = send.mock.calls.filter((c) => c[0].__cmd === "BatchWrite");
+      expect(writes).toHaveLength(4);
+    });
+  });
 });

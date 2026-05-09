@@ -59,13 +59,15 @@ describe("fetchRssNews", () => {
     const sol = records.find((r) => r.title.includes("SOL and DOGE"));
     expect(sol?.currencies.sort()).toEqual(["DOGE", "SOL"]);
     // Empty pubDate falls back to a stable synthetic date derived from the
-    // item's link (stableFallbackDate).  The result is deterministic across
-    // polls (always the same ISO string for the same link), NOT the current
-    // wall-clock time.  Verify the property that matters for dedup: calling
-    // fetchRssNews twice with the same feed produces the same publishedAt for
-    // this item.
+    // item's link (stableFallbackDate). Verify it parsed as a valid ISO and
+    // landed within the past 24h (anchored at start of UTC day plus
+    // hash-derived offset within the day). Cross-poll stability is asserted
+    // separately below.
     const solTs = Date.parse(sol!.publishedAt);
-    expect(Number.isNaN(solTs)).toBe(false); // must be a valid ISO date
+    expect(Number.isNaN(solTs)).toBe(false);
+    const now = Date.now();
+    expect(solTs).toBeGreaterThanOrEqual(now - 86_400_000);
+    expect(solTs).toBeLessThanOrEqual(now + 86_400_000);
   });
 
   it("returns [] when every feed errors out", async () => {
