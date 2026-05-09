@@ -39,8 +39,22 @@ const SENTIMENT_AGGREGATES_TABLE =
 const PIPELINE_TIMEFRAMES = ["15m", "1h", "4h", "1d", "consensus"] as const;
 type PipelineTimeframe = (typeof PIPELINE_TIMEFRAMES)[number];
 
-const DEFAULT_EXCHANGE = "binanceus";
+// indicator-handler writes indicator_state rows with `exchange: "consensus"`
+// only — never per-exchange (no `binanceus`/`kraken`/`coinbase` rows). Using
+// any other exchange here returns empty cells.
+const DEFAULT_EXCHANGE = "consensus";
 const CONSENSUS_EXCHANGE = "consensus";
+
+/**
+ * sentiment_aggregates is keyed by base symbol ("BTC", "ETH", …) — the
+ * `mentionedPairs` field from the news enrichment LLM, which uses bare
+ * symbols. Trading pairs in the rest of the system are "BTC/USDT" form;
+ * convert before reading.
+ */
+function pairToBaseSymbol(pair: string): string {
+  const [base] = pair.split("/");
+  return base ?? pair;
+}
 
 /** Timeframe durations in milliseconds — used for ageSeconds colour thresholds. */
 export const TF_DURATION_MS: Record<PipelineTimeframe, number> = {
@@ -245,10 +259,13 @@ function emptySignal(): SignalCell {
 
 async function fetchSentiment(pair: string, window: "4h" | "24h"): Promise<SentimentWindowCell> {
   try {
+    // sentiment_aggregates pk is the base symbol (`BTC`), not the trading
+    // pair (`BTC/USDT`). The aggregator is fed by `mentionedPairs` from the
+    // news enrichment LLM, which produces bare symbols.
     const result = await client.send(
       new GetCommand({
         TableName: SENTIMENT_AGGREGATES_TABLE,
-        Key: { pair, window },
+        Key: { pair: pairToBaseSymbol(pair), window },
       }),
     );
     const item = result.Item as Record<string, unknown> | undefined;

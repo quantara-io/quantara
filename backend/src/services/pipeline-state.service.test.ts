@@ -26,6 +26,8 @@ beforeEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// indicator-handler writes only consensus-exchange rows in production —
+// fixtures match that.
 function makeIndicatorItem(pair: string, exchange: string, timeframe: string) {
   return {
     pk: `${pair}#${exchange}#${timeframe}`,
@@ -88,13 +90,14 @@ describe("getPipelineState", () => {
             // signals-v2 query
             return Promise.resolve({ Items: [makeSignalItem("BTC/USDT", "15m")] });
           }
-          // indicator-state query
-          return Promise.resolve({ Items: [makeIndicatorItem("BTC/USDT", "binanceus", "15m")] });
+          // indicator-state query — production rows are consensus-exchange.
+          return Promise.resolve({ Items: [makeIndicatorItem("BTC/USDT", "consensus", "15m")] });
         }
         if (cmd._type === "GetCommand") {
           const key = cmd.Key as { pair: string; window: string } | undefined;
+          // sentiment_aggregates is keyed by base symbol ("BTC"), not "BTC/USDT".
           return Promise.resolve({
-            Item: makeSentimentItem(key?.pair ?? "BTC/USDT", key?.window ?? "4h"),
+            Item: makeSentimentItem(key?.pair ?? "BTC", key?.window ?? "4h"),
           });
         }
         return Promise.resolve({});
@@ -156,6 +159,60 @@ describe("getPipelineState", () => {
     const { getPipelineState } = await import("./pipeline-state.service.js");
     const result = await getPipelineState();
     expect(result.cells.length).toBe(25); // 5 pairs × (15m / 1h / 4h / 1d / consensus)
+  });
+
+  it("looks up sentiment by base symbol, not trading pair", async () => {
+    // Aggregator stores rows under `pair: "BTC"`, not `pair: "BTC/USDT"`.
+    // The service must derive the base symbol before calling GetCommand or
+    // every cell silently shows null sentiment.
+    const sentimentKeysSeen: { pair: string; window: string }[] = [];
+    sendMock.mockImplementation(
+      (cmd: { _type: string; Key?: { pair?: string; window?: string } }) => {
+        if (cmd._type === "GetCommand") {
+          const key = cmd.Key as { pair: string; window: string };
+          sentimentKeysSeen.push({ pair: key.pair, window: key.window });
+          return Promise.resolve({ Item: undefined });
+        }
+        if (cmd._type === "QueryCommand") return Promise.resolve({ Items: [] });
+        return Promise.resolve({});
+      },
+    );
+
+    const { getPipelineState } = await import("./pipeline-state.service.js");
+    await getPipelineState("BTC/USDT");
+    expect(sentimentKeysSeen.every((k) => k.pair === "BTC")).toBe(true);
+    expect(sentimentKeysSeen.length).toBe(2);
+    expect(sentimentKeysSeen.map((k) => k.window).sort()).toEqual(["24h", "4h"]);
+  });
+
+  it("queries indicator_state with `consensus` exchange, not a per-exchange value", async () => {
+    // indicator-handler only writes consensus-exchange rows; querying
+    // `binanceus` returns nothing.
+    const indicatorPksSeen: string[] = [];
+    sendMock.mockImplementation(
+      (cmd: {
+        _type: string;
+        ExpressionAttributeValues?: Record<string, string>;
+        KeyConditionExpression?: string;
+      }) => {
+        if (cmd._type === "QueryCommand") {
+          const expr = cmd.KeyConditionExpression ?? "";
+          const pk = cmd.ExpressionAttributeValues?.[":pk"];
+          // indicator_state queries use `#pk = :pk`; signals_v2 uses `#pair = :pair`
+          if (expr.includes("#pk") && pk) indicatorPksSeen.push(pk);
+          return Promise.resolve({ Items: [] });
+        }
+        if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
+        return Promise.resolve({});
+      },
+    );
+
+    const { getPipelineState } = await import("./pipeline-state.service.js");
+    await getPipelineState("BTC/USDT");
+    // Every indicator_state query for the BTC/USDT cells must hit the
+    // consensus-exchange path.
+    expect(indicatorPksSeen.length).toBeGreaterThan(0);
+    expect(indicatorPksSeen.every((pk) => pk.startsWith("BTC/USDT#consensus#"))).toBe(true);
   });
 
   it("fetches sentiment per-pair (not per-pair-per-tf)", async () => {
