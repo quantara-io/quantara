@@ -20,6 +20,14 @@ const MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 /** Stable model tag stamped on usage records — decoupled from the inference profile ID. */
 const MODEL_TAG = "anthropic.claude-haiku-4-5";
 
+// Haiku 4.5 wraps JSON output in a ```json ... ``` fence even when the prompt
+// asks for raw JSON; strip the fence before parsing. Exported for unit tests.
+export function stripJsonFence(text: string): string {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/);
+  return fenceMatch ? fenceMatch[1].trim() : trimmed;
+}
+
 export async function enrichNewsItem(title: string, currencies: string[]): Promise<NewsEnrichment> {
   const prompt = buildEnrichmentMessage(title, currencies);
 
@@ -59,7 +67,7 @@ export async function enrichNewsItem(title: string, currencies: string[]): Promi
   const text = body.content?.[0]?.text ?? "{}";
 
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(stripJsonFence(text));
     return {
       sentiment: parsed.sentiment ?? "neutral",
       confidence: parsed.confidence ?? 0.5,
