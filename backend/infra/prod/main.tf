@@ -8,24 +8,23 @@ terraform {
     }
   }
 
+  # Per-account state — bucket + lock table colocated with the prod workload
+  # they describe. See infra issue #1.
   backend "s3" {
-    bucket         = "quantara-tf-state"
+    bucket         = "quantara-tf-state-prod"
     key            = "backend/prod/terraform.tfstate"
     region         = "us-west-2"
-    profile        = "quantara-management"
-    dynamodb_table = "quantara-tf-locks"
+    profile        = "quantara-prod"
+    dynamodb_table = "quantara-tf-locks-prod"
     encrypt        = true
   }
 }
 
+# Provider uses the prod profile directly per infra issue #1 (per-account
+# state). No cross-account assume-role needed.
 provider "aws" {
   region  = "us-west-2"
-  profile = "quantara-management"
-
-  assume_role {
-    role_arn     = "arn:aws:iam::${var.prod_account_id}:role/OrganizationAccountAccessRole"
-    session_name = "terraform-quantara-backend-prod"
-  }
+  profile = var.aws_profile
 
   default_tags {
     tags = {
@@ -58,6 +57,12 @@ output "lambda_function_name" {
 
 output "table_names" {
   value = module.backend.table_names
+}
+
+variable "aws_profile" {
+  description = "AWS CLI profile that resolves directly to a role in the prod account (per-account state per infra issue #1)."
+  type        = string
+  default     = "quantara-prod"
 }
 
 variable "prod_account_id" {
