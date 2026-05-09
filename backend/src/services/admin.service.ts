@@ -582,6 +582,7 @@ export interface RatificationRow {
   pair: string;
   timeframe: string;
   invokedReason: string;
+  triggerReason: string | null;
   invokedAt: string;
   latencyMs: number;
   costUsd: number;
@@ -628,6 +629,13 @@ function toRatificationRow(item: Record<string, unknown>): RatificationRow {
     pair: item.pair as string,
     timeframe: item.timeframe as string,
     invokedReason: item.invokedReason as string,
+    // triggerReason is the surface that distinguishes bar_close / sentiment_shock /
+    // manual paths. Older records (pre-#181) may not have it; treat absent as
+    // bar_close per ratification-store.ts convention.
+    triggerReason:
+      typeof item.triggerReason === "string" && item.triggerReason.length > 0
+        ? (item.triggerReason as string)
+        : "bar_close",
     invokedAt: item.invokedAt as string,
     latencyMs: (item.latencyMs as number) ?? 0,
     costUsd: (item.costUsd as number) ?? 0,
@@ -655,19 +663,39 @@ function toRatificationRow(item: Record<string, unknown>): RatificationRow {
  * When no pair is given, we fan-out over all known pairs.
  * After applying client-side filters (timeframe, triggerReason, since, until),
  * we re-sort descending by invokedAt and slice to `limit`.
+ *
+ * Cursor encoding: the cursor is a base64 JSON map `{ [pair]: ExclusiveStartKey }`.
+ * Each entry is the last DDB key returned by *that* pair's previous query, so
+ * resume preserves per-partition position. A single cursor across 5 partitions
+ * would let DDB reject 4 of 5 keys and silently return empty pages.
  */
 export async function getRatifications(params: GetRatificationsParams): Promise<RatificationsPage> {
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
   const knownPairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
   const pairsToQuery = params.pair ? [params.pair] : knownPairs;
 
+  // Decode per-pair cursor map; absent or malformed → no resume keys.
+  let perPairCursor: Record<string, Record<string, unknown>> = {};
+  if (params.cursor) {
+    try {
+      const raw = JSON.parse(Buffer.from(params.cursor, "base64").toString());
+      if (raw && typeof raw === "object") {
+        perPairCursor = raw as Record<string, Record<string, unknown>>;
+      }
+    } catch (err) {
+      console.warn("[admin.service] getRatifications: malformed cursor, ignoring", err);
+    }
+  }
+
   // Build SK range bounds from since/until so DDB does the heavy lifting.
   const skLo = params.since ? `${params.since}#` : undefined;
   const skHi = params.until ? `${params.until}#￿` : undefined;
 
-  const allItems: Record<string, unknown>[] = [];
+  // Track each pair's per-batch results so we can compute per-pair next-cursor.
+  const perPairItems: Record<string, Record<string, unknown>[]> = {};
 
   for (const pair of pairsToQuery) {
+    perPairItems[pair] = [];
     try {
       let keyCondition = "#pair = :pair";
       const exprNames: Record<string, string> = { "#pair": "pair" };
@@ -688,6 +716,8 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
         exprValues[":hi"] = skHi;
       }
 
+      const startKey = perPairCursor[pair];
+
       // Fetch up to limit*2 from each pair partition for cursor/filter headroom.
       // ScanIndexForward=false gives newest-first from DDB.
       const result = await dynamo.send(
@@ -698,20 +728,32 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
           ExpressionAttributeValues: exprValues,
           ScanIndexForward: false,
           Limit: limit * 2,
-          ...(params.cursor ? { ExclusiveStartKey: JSON.parse(Buffer.from(params.cursor, "base64").toString()) } : {}),
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         }),
       );
-      allItems.push(...(result.Items ?? []));
+      perPairItems[pair].push(...(result.Items ?? []));
     } catch (err) {
       console.error(`[admin.service] getRatifications query failed for ${pair}:`, err);
     }
   }
 
+  // Flatten with pair-of-origin tracked so we can build per-pair cursors later.
+  const allItems = pairsToQuery.flatMap((p) =>
+    perPairItems[p].map((item) => ({ ...item, _pair: p })),
+  );
+
   // Client-side filters (timeframe, triggerReason) since DDB has no secondary
-  // index on those attributes.
+  // index on those attributes. Records pre-#181 lack triggerReason; treat
+  // absent as `bar_close` per the ratification-store.ts convention.
   const filtered = allItems.filter((item) => {
     if (params.timeframe && item.timeframe !== params.timeframe) return false;
-    if (params.triggerReason && item.invokedReason !== params.triggerReason) return false;
+    if (params.triggerReason) {
+      const itemTrigger =
+        typeof item.triggerReason === "string" && item.triggerReason.length > 0
+          ? (item.triggerReason as string)
+          : "bar_close";
+      if (itemTrigger !== params.triggerReason) return false;
+    }
     return true;
   });
 
@@ -723,14 +765,39 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
   });
 
   const page = filtered.slice(0, limit);
-  const nextItem = filtered[limit];
-  const cursor = nextItem
-    ? Buffer.from(
-        JSON.stringify({ pair: nextItem.pair, invokedAtRecordId: nextItem.invokedAtRecordId }),
-      ).toString("base64")
-    : null;
 
-  return { items: page.map(toRatificationRow), cursor };
+  // Per-pair next-cursor: the LAST item returned in `page` for each pair becomes
+  // its ExclusiveStartKey on the next call. DDB's ExclusiveStartKey skips
+  // strictly equal keys and returns what comes after, so the LAST returned
+  // record (not the first un-returned one) is the correct anchor.
+  let nextCursor: Record<string, Record<string, unknown>> | null = null;
+  if (filtered.length > limit) {
+    const cursorMap: Record<string, Record<string, unknown>> = {};
+    for (const item of page) {
+      const pair = item._pair as string;
+      cursorMap[pair] = {
+        pair,
+        invokedAtRecordId: item.invokedAtRecordId,
+      };
+    }
+    // Pairs with no returned rows in this page but that previously had a
+    // cursor should keep their previous cursor so they can still resume on
+    // the next request (the user might filter differently next time).
+    for (const pair of pairsToQuery) {
+      if (!cursorMap[pair] && perPairCursor[pair]) {
+        cursorMap[pair] = perPairCursor[pair];
+      }
+    }
+    nextCursor = cursorMap;
+  }
+
+  // Strip the synthetic `_pair` before mapping to the API row shape.
+  const cleanedPage = page.map(({ _pair: _ignored, ...rest }) => rest as Record<string, unknown>);
+
+  return {
+    items: cleanedPage.map(toRatificationRow),
+    cursor: nextCursor ? Buffer.from(JSON.stringify(nextCursor)).toString("base64") : null,
+  };
 }
 
 const WHITELIST_PARAM = `/quantara/${ENVIRONMENT}/docs-allowed-ips`;

@@ -10,6 +10,7 @@ interface RatificationRow {
   pair: string;
   timeframe: string;
   invokedReason: string;
+  triggerReason: string;
   invokedAt: string;
   latencyMs: number;
   costUsd: number;
@@ -57,10 +58,23 @@ function sinceForRange(range: TimeRange, customSince: string): string | undefine
 
 function exportCsv(rows: RatificationRow[]) {
   const headers = [
-    "recordId", "pair", "timeframe", "invokedReason", "invokedAt",
-    "latencyMs", "costUsd", "cacheHit", "validationOk", "fellBackToAlgo",
-    "algoCandidateType", "algoCandidateConfidence",
-    "ratifiedType", "ratifiedConfidence", "ratifiedReasoning", "llmModel",
+    "recordId",
+    "pair",
+    "timeframe",
+    "triggerReason",
+    "invokedReason",
+    "invokedAt",
+    "latencyMs",
+    "costUsd",
+    "cacheHit",
+    "validationOk",
+    "fellBackToAlgo",
+    "algoCandidateType",
+    "algoCandidateConfidence",
+    "ratifiedType",
+    "ratifiedConfidence",
+    "ratifiedReasoning",
+    "llmModel",
   ];
   const escape = (v: unknown) => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -70,9 +84,7 @@ function exportCsv(rows: RatificationRow[]) {
   };
   const lines = [
     headers.join(","),
-    ...rows.map((r) =>
-      headers.map((h) => escape(r[h as keyof RatificationRow])).join(","),
-    ),
+    ...rows.map((r) => headers.map((h) => escape(r[h as keyof RatificationRow])).join(",")),
   ];
   const blob = new Blob([lines.join("\n")], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -91,19 +103,28 @@ function Modal({ row, onClose }: { row: RatificationRow; onClose: () => void }) 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
           <h2 className="text-sm font-semibold text-cyan-300">
-            Ratification detail — {row.pair} {row.timeframe} @ {new Date(row.invokedAt).toLocaleString()}
+            Ratification detail — {row.pair} {row.timeframe} @{" "}
+            {new Date(row.invokedAt).toLocaleString()}
           </h2>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-200 text-lg leading-none">&times;</button>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-200 text-lg leading-none"
+          >
+            &times;
+          </button>
         </div>
 
         <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4 text-xs">
           <Section title="Summary">
             <KV k="recordId" v={row.recordId} />
+            <KV k="triggerReason" v={row.triggerReason} />
             <KV k="invokedReason" v={row.invokedReason} />
             <KV k="latencyMs" v={row.latencyMs} />
             <KV k="costUsd" v={row.costUsd?.toFixed(6)} />
@@ -200,13 +221,20 @@ export function Ratifications() {
     [filterPair, filterTrigger, timeRange, customSince],
   );
 
+  // `load` takes the cursor as an argument instead of capturing it from
+  // closure. The previous version memoized only on `[buildQuery]` and
+  // captured the initial `cursor=null`, so "Load more" always re-requested
+  // page 1 and appended duplicates.
   const load = useCallback(
-    async (reset: boolean) => {
+    async (reset: boolean, useCursor: string | null) => {
       abortRef.current?.abort();
       abortRef.current = new AbortController();
       setLoading(true);
-      if (reset) { setRows([]); setCursor(null); }
-      const url = buildQuery(reset ? null : cursor);
+      if (reset) {
+        setRows([]);
+        setCursor(null);
+      }
+      const url = buildQuery(reset ? null : useCursor);
       const res = await apiFetch<Page>(url);
       setLoading(false);
       if (res.success && res.data) {
@@ -217,13 +245,13 @@ export function Ratifications() {
         setError(res.error?.message ?? "Failed to load ratifications");
       }
     },
-    // cursor intentionally excluded from deps — only used for "load more"
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [buildQuery],
   );
 
-  // Reload on filter change
-  useEffect(() => { void load(true); }, [load]);
+  // Reload on filter change (always resets, no cursor needed)
+  useEffect(() => {
+    void load(true, null);
+  }, [load]);
 
   // Sort rows client-side
   const sorted = [...rows].sort((a, b) => {
@@ -235,7 +263,10 @@ export function Ratifications() {
 
   function toggleSort(col: keyof RatificationRow) {
     if (sortCol === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortCol(col); setSortDir("desc"); }
+    else {
+      setSortCol(col);
+      setSortDir("desc");
+    }
   }
 
   function SortHeader({ col, label }: { col: keyof RatificationRow; label: string }) {
@@ -338,7 +369,7 @@ export function Ratifications() {
               <SortHeader col="invokedAt" label="Time" />
               <SortHeader col="pair" label="Pair" />
               <SortHeader col="timeframe" label="TF" />
-              <SortHeader col="invokedReason" label="Trigger" />
+              <SortHeader col="triggerReason" label="Trigger" />
               <SortHeader col="llmModel" label="Model" />
               <SortHeader col="cacheHit" label="Cache?" />
               <SortHeader col="latencyMs" label="Latency" />
@@ -361,30 +392,45 @@ export function Ratifications() {
                 <td className="px-3 py-2 text-slate-200 whitespace-nowrap">{row.pair}</td>
                 <td className="px-3 py-2 text-slate-400">{row.timeframe}</td>
                 <td className="px-3 py-2">
-                  <TriggerBadge reason={row.invokedReason} />
+                  <TriggerBadge reason={row.triggerReason} />
                 </td>
-                <td className="px-3 py-2 text-slate-500 truncate max-w-[120px]" title={row.llmModel ?? ""}>
+                <td
+                  className="px-3 py-2 text-slate-500 truncate max-w-[120px]"
+                  title={row.llmModel ?? ""}
+                >
                   {row.llmModel ? row.llmModel.split(".").pop() : "—"}
                 </td>
                 <td className="px-3 py-2">
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${row.cacheHit ? "bg-indigo-950 text-indigo-300" : "bg-slate-800 text-slate-500"}`}>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[10px] ${row.cacheHit ? "bg-indigo-950 text-indigo-300" : "bg-slate-800 text-slate-500"}`}
+                  >
                     {row.cacheHit ? "HIT" : "MISS"}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-slate-400 text-right tabular-nums">{row.latencyMs}ms</td>
-                <td className="px-3 py-2 text-slate-400 text-right tabular-nums">${row.costUsd.toFixed(5)}</td>
-                <td className="px-3 py-2">
-                  {row.algoCandidateType
-                    ? <VerdictBadge type={row.algoCandidateType} conf={row.algoCandidateConfidence} />
-                    : <span className="text-slate-600">—</span>}
+                <td className="px-3 py-2 text-slate-400 text-right tabular-nums">
+                  {row.latencyMs}ms
+                </td>
+                <td className="px-3 py-2 text-slate-400 text-right tabular-nums">
+                  ${row.costUsd.toFixed(5)}
                 </td>
                 <td className="px-3 py-2">
-                  {row.ratifiedType
-                    ? <VerdictBadge type={row.ratifiedType} conf={row.ratifiedConfidence} />
-                    : <span className="text-slate-600">—</span>}
+                  {row.algoCandidateType ? (
+                    <VerdictBadge type={row.algoCandidateType} conf={row.algoCandidateConfidence} />
+                  ) : (
+                    <span className="text-slate-600">—</span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${row.validationOk ? "bg-emerald-950 text-emerald-300" : "bg-red-950 text-red-300"}`}>
+                  {row.ratifiedType ? (
+                    <VerdictBadge type={row.ratifiedType} conf={row.ratifiedConfidence} />
+                  ) : (
+                    <span className="text-slate-600">—</span>
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[10px] ${row.validationOk ? "bg-emerald-950 text-emerald-300" : "bg-red-950 text-red-300"}`}
+                  >
                     {row.validationOk ? "OK" : "FAIL"}
                   </span>
                 </td>
@@ -406,7 +452,7 @@ export function Ratifications() {
         {loading && <span className="text-sm text-slate-500">Loading...</span>}
         {!loading && cursor && (
           <button
-            onClick={() => void load(false)}
+            onClick={() => void load(false, cursor)}
             className="px-4 py-2 text-sm rounded border border-slate-700 bg-slate-800 text-slate-300 hover:text-white"
           >
             Load more
@@ -426,19 +472,25 @@ export function Ratifications() {
 
 function TriggerBadge({ reason }: { reason: string }) {
   const colour =
-    reason === "bar_close" ? "bg-blue-950 text-blue-300"
-    : reason === "sentiment_shock" ? "bg-orange-950 text-orange-300"
-    : reason === "manual" ? "bg-violet-950 text-violet-300"
-    : reason.startsWith("skip-") ? "bg-slate-800 text-slate-500"
-    : "bg-slate-800 text-slate-400";
+    reason === "bar_close"
+      ? "bg-blue-950 text-blue-300"
+      : reason === "sentiment_shock"
+        ? "bg-orange-950 text-orange-300"
+        : reason === "manual"
+          ? "bg-violet-950 text-violet-300"
+          : reason.startsWith("skip-")
+            ? "bg-slate-800 text-slate-500"
+            : "bg-slate-800 text-slate-400";
   return <span className={`px-1.5 py-0.5 rounded text-[10px] ${colour}`}>{reason}</span>;
 }
 
 function VerdictBadge({ type, conf }: { type: string; conf: number | null }) {
   const colour =
-    type === "buy" || type === "strong_buy" ? "bg-emerald-950 text-emerald-300"
-    : type === "sell" || type === "strong_sell" ? "bg-red-950 text-red-300"
-    : "bg-slate-800 text-slate-400";
+    type === "buy" || type === "strong_buy"
+      ? "bg-emerald-950 text-emerald-300"
+      : type === "sell" || type === "strong_sell"
+        ? "bg-red-950 text-red-300"
+        : "bg-slate-800 text-slate-400";
   return (
     <span className={`px-1.5 py-0.5 rounded text-[10px] ${colour}`}>
       {type}

@@ -336,7 +336,11 @@ describe("GET /ratifications", () => {
     ratifiedReasoning: "Strong momentum across all timeframes.",
     llmModel: "anthropic.claude-haiku-4-5",
     algoCandidate: { type: "buy", confidence: 0.72 },
-    ratified: { type: "buy", confidence: 0.75, reasoning: "Strong momentum across all timeframes." },
+    ratified: {
+      type: "buy",
+      confidence: 0.75,
+      reasoning: "Strong momentum across all timeframes.",
+    },
     llmRequest: { model: "anthropic.claude-haiku-4-5", systemHash: "abc", userJsonHash: "def" },
     llmRawResponse: { verdict: "buy" },
   };
@@ -346,7 +350,10 @@ describe("GET /ratifications", () => {
     const app = await loadApp();
     const res = await app.request("/ratifications");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { success: boolean; data: { items: unknown[]; cursor: unknown } };
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { items: unknown[]; cursor: unknown };
+    };
     expect(body.success).toBe(true);
     expect(body.data.items).toHaveLength(1);
     expect(body.data.cursor).toBeNull();

@@ -144,6 +144,9 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
           aws_dynamodb_table.ingestion_metadata.arn,
           aws_dynamodb_table.signals_v2.arn,
           aws_dynamodb_table.indicator_state.arn,
+          # Required for /api/admin/ratifications (#185 / PR #196).
+          aws_dynamodb_table.ratifications.arn,
+          "${aws_dynamodb_table.ratifications.arn}/index/*",
         ]
       },
     ]
