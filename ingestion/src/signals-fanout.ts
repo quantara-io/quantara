@@ -20,13 +20,6 @@
  *   5. On other errors: log + continue.
  */
 
-// NOTE: @aws-sdk/client-apigatewaymanagementapi must be added to ingestion's
-// package.json (devDependencies for typecheck; externalized at runtime via esbuild).
-// This is flagged as a dependency tripwire — human reviewer must add:
-//   "@aws-sdk/client-apigatewaymanagementapi": "^3.750.0"
-// to ingestion/package.json devDependencies before merging.
-//
-// @ts-expect-error missing dep — see note above
 import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
