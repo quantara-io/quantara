@@ -93,17 +93,28 @@ describe("fetchRssNews", () => {
     // This is the dedup-correctness property: an article with no pubDate must
     // get the same (newsId, publishedAt) key on every poll, so storeNewsRecords
     // can deduplicate it correctly without re-writing a duplicate row.
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => SAMPLE_FEED });
-    vi.stubGlobal("fetch", fetchMock);
+    //
+    // `stableFallbackDate` buckets time at 15-minute boundaries, so two
+    // wall-clock-driven polls that straddle a bucket boundary would
+    // legitimately produce different timestamps. Freeze time so the test
+    // exercises the stability promise within a single bucket.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T12:07:30Z"));
+    try {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => SAMPLE_FEED });
+      vi.stubGlobal("fetch", fetchMock);
 
-    const first = await fetchRssNews();
-    const second = await fetchRssNews();
+      const first = await fetchRssNews();
+      const second = await fetchRssNews();
 
-    // The SOL item has an empty pubDate in SAMPLE_FEED.
-    const firstSol = first.find((r) => r.title.includes("SOL and DOGE"))!;
-    const secondSol = second.find((r) => r.title.includes("SOL and DOGE"))!;
+      // The SOL item has an empty pubDate in SAMPLE_FEED.
+      const firstSol = first.find((r) => r.title.includes("SOL and DOGE"))!;
+      const secondSol = second.find((r) => r.title.includes("SOL and DOGE"))!;
 
-    expect(firstSol.publishedAt).toBe(secondSol.publishedAt);
-    expect(firstSol.newsId).toBe(secondSol.newsId);
+      expect(firstSol.publishedAt).toBe(secondSol.publishedAt);
+      expect(firstSol.newsId).toBe(secondSol.newsId);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

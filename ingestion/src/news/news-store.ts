@@ -9,6 +9,9 @@ const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const logger = pino({
   level: process.env.LOG_LEVEL ?? "info",
   base: { service: "news-store", env: process.env.ENVIRONMENT ?? "dev" },
+  // ISO timestamps so CloudWatch renders human-readable times — matches
+  // ws-connect-handler / ws-disconnect-handler / signals-fanout.
+  timestamp: pino.stdTimeFunctions.isoTime,
 });
 
 const NEWS_TABLE =

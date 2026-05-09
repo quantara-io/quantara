@@ -151,13 +151,21 @@ function hashString(str: string): string {
  * recency-aware queries.
  */
 function stableFallbackDate(seed: string): string {
-  const dayMs = 86_400_000;
-  const dayBucket = Math.floor(Date.now() / dayMs) * dayMs;
+  // 15-minute bucket: stable across rapid polls (so the (newsId, publishedAt)
+  // composite key dedups correctly within a quarter-hour), and tight enough
+  // to stay inside the 30-minute freshness window enforced by
+  // `news/invalidation.ts` (FRESHNESS_WINDOW_MS = 30 * 60 * 1000) so undated
+  // articles still trigger sentiment-shock invalidation and contribute to
+  // recency-bounded queries (`queryNewsByPair(pair, sinceISO)`).
+  // Worst-case article age = 15 min, well inside the 30-min window.
+  const bucketMs = 15 * 60 * 1000;
+  const bucketStart = Math.floor(Date.now() / bucketMs) * bucketMs;
   const offsetSec =
     Math.abs(
       hashString(seed)
         .split("")
         .reduce((n, c) => n + c.charCodeAt(0), 0),
-    ) % 86_400;
-  return new Date(dayBucket + offsetSec * 1000).toISOString();
+    ) %
+    (bucketMs / 1000);
+  return new Date(bucketStart + offsetSec * 1000).toISOString();
 }
