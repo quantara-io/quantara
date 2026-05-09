@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-
 import { PAIRS } from "@quantara/shared";
 import type { BlendedSignal, RiskRecommendation, TimeframeVote } from "@quantara/shared";
 

@@ -10,7 +10,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-
 import { defaultRiskProfiles } from "@quantara/shared";
 
 const sendMock = vi.fn();

@@ -137,8 +137,8 @@ export class AlderoError extends Error {
 
   constructor(statusCode: number, body: unknown) {
     const raw =
-      (body as Record<string, any>)?.error?.message ??
-      (body as Record<string, string>)?.message ??
+      (body as { error?: { message?: string } } | null)?.error?.message ??
+      (body as { message?: string } | null)?.message ??
       "";
     // Strip internal service name from error messages
     const msg =
