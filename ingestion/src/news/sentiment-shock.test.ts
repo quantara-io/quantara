@@ -334,8 +334,16 @@ describe("checkSentimentShockCostGate", () => {
     process.env.SENTIMENT_SHOCK_MAX_PER_PAIR_PER_HOUR = "2";
     const nowMs = Date.now();
     const shocks = [
-      { pair: "BTC/USDT", invokedAt: new Date(nowMs - 30 * 60 * 1000).toISOString(), triggerReason: "sentiment_shock" },
-      { pair: "BTC/USDT", invokedAt: new Date(nowMs - 20 * 60 * 1000).toISOString(), triggerReason: "sentiment_shock" },
+      {
+        pair: "BTC/USDT",
+        invokedAt: new Date(nowMs - 30 * 60 * 1000).toISOString(),
+        triggerReason: "sentiment_shock",
+      },
+      {
+        pair: "BTC/USDT",
+        invokedAt: new Date(nowMs - 20 * 60 * 1000).toISOString(),
+        triggerReason: "sentiment_shock",
+      },
     ];
     getRecentShockRatificationsMock.mockResolvedValue(shocks);
     const { checkSentimentShockCostGate } = await import("./sentiment-shock.js");
@@ -396,9 +404,7 @@ describe("maybeFireSentimentShockRatification — skip paths (flag enabled)", ()
   });
 
   it("skips and logs when latest signal is hold with empty rulesFired (warm-up neutral)", async () => {
-    getLatestSignalMock.mockResolvedValue(
-      makeBlendedSignal({ type: "hold", rulesFired: [] }),
-    );
+    getLatestSignalMock.mockResolvedValue(makeBlendedSignal({ type: "hold", rulesFired: [] }));
     const { maybeFireSentimentShockRatification } = await import("./sentiment-shock.js");
     const prev = makeAggregate({ meanScore: 0.0, meanMagnitude: 0.6 });
     const next = makeAggregate({ meanScore: 0.4, meanMagnitude: 0.7 });
@@ -494,25 +500,26 @@ describe("maybeFireSentimentShockRatification — ratification fire (flag enable
     expect(kickoffMock).toHaveBeenCalledOnce();
   });
 
-  it("persists a RatificationRecord with triggerReason=sentiment_shock", async () => {
+  it("calls ratifySignal with triggerReason=sentiment_shock so the single record carries shock metadata", async () => {
     const { maybeFireSentimentShockRatification } = await import("./sentiment-shock.js");
     const prev = makeAggregate({ meanScore: 0.0, meanMagnitude: 0.6 });
     const next = makeAggregate({ meanScore: 0.4, meanMagnitude: 0.7 });
 
     await maybeFireSentimentShockRatification(prev, next);
 
-    expect(putRatificationRecordMock).toHaveBeenCalledOnce();
-    const recordArg = putRatificationRecordMock.mock.calls[0][0] as {
-      triggerReason: string;
-      invokedReason: string;
-      pair: string;
-    };
-    expect(recordArg.triggerReason).toBe("sentiment_shock");
-    expect(recordArg.invokedReason).toBe("sentiment_shock");
-    expect(recordArg.pair).toBe("BTC/USDT");
+    // The shock module no longer writes its own RatificationRecord —
+    // duplicate-write was the bug. The triggerReason flows through
+    // RatifyContext so the single record persisted by ratifySignal is
+    // tagged correctly.
+    expect(putRatificationRecordMock).not.toHaveBeenCalled();
+
+    expect(ratifySignalMock).toHaveBeenCalledOnce();
+    const [ctx] = ratifySignalMock.mock.calls[0] as [{ triggerReason?: string; pair: string }];
+    expect(ctx.triggerReason).toBe("sentiment_shock");
+    expect(ctx.pair).toBe("BTC/USDT");
   });
 
-  it("links previousRatificationId to most recent bar_close ratification", async () => {
+  it("links previousRatificationId to most recent bar_close ratification (via RatifyContext)", async () => {
     const prevRatification = {
       pair: "BTC/USDT",
       invokedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
@@ -527,13 +534,11 @@ describe("maybeFireSentimentShockRatification — ratification fire (flag enable
 
     await maybeFireSentimentShockRatification(prev, next);
 
-    const recordArg = putRatificationRecordMock.mock.calls[0][0] as {
-      previousRatificationId: string | undefined;
-    };
-    expect(recordArg.previousRatificationId).toBe("prev-record-uuid-123");
+    const [ctx] = ratifySignalMock.mock.calls[0] as [{ previousRatificationId?: string }];
+    expect(ctx.previousRatificationId).toBe("prev-record-uuid-123");
   });
 
-  it("persists previousRatificationId=undefined when no bar_close ratification exists", async () => {
+  it("passes previousRatificationId=undefined to ratifySignal when no bar_close ratification exists", async () => {
     getRecentRatificationsMock.mockResolvedValue([]);
 
     const { maybeFireSentimentShockRatification } = await import("./sentiment-shock.js");
@@ -542,10 +547,8 @@ describe("maybeFireSentimentShockRatification — ratification fire (flag enable
 
     await maybeFireSentimentShockRatification(prev, next);
 
-    const recordArg = putRatificationRecordMock.mock.calls[0][0] as {
-      previousRatificationId: string | undefined;
-    };
-    expect(recordArg.previousRatificationId).toBeUndefined();
+    const [ctx] = ratifySignalMock.mock.calls[0] as [{ previousRatificationId?: string }];
+    expect(ctx.previousRatificationId).toBeUndefined();
   });
 
   it("is non-fatal when ratifySignal throws — does not propagate", async () => {
@@ -568,5 +571,119 @@ describe("maybeFireSentimentShockRatification — ratification fire (flag enable
 
     await expect(maybeFireSentimentShockRatification(prev, next)).resolves.toBeUndefined();
     expect(ratifySignalMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Symbol → trading-pair normalisation (codex P1: aggregator passes "BTC",
+// signals-v2 keys by "BTC/USDT" — without normalisation every shock missed)
+// ---------------------------------------------------------------------------
+
+describe("symbolToTradingPair", () => {
+  it("maps a bare symbol to its trading-pair form", async () => {
+    const { symbolToTradingPair } = await import("./sentiment-shock.js");
+    expect(symbolToTradingPair("BTC")).toBe("BTC/USDT");
+    expect(symbolToTradingPair("ETH")).toBe("ETH/USDT");
+    expect(symbolToTradingPair("DOGE")).toBe("DOGE/USDT");
+  });
+
+  it("is idempotent on already-normalized trading pairs", async () => {
+    const { symbolToTradingPair } = await import("./sentiment-shock.js");
+    expect(symbolToTradingPair("BTC/USDT")).toBe("BTC/USDT");
+    expect(symbolToTradingPair("ETH/USDT")).toBe("ETH/USDT");
+  });
+
+  it("returns null for symbols Quantara does not trade", async () => {
+    const { symbolToTradingPair } = await import("./sentiment-shock.js");
+    expect(symbolToTradingPair("LINK")).toBeNull();
+    expect(symbolToTradingPair("APE")).toBeNull();
+    expect(symbolToTradingPair("BTC/USD")).toBeNull(); // Wrong quote
+    expect(symbolToTradingPair("")).toBeNull();
+  });
+});
+
+describe("maybeFireSentimentShockRatification — symbol normalisation (codex P1)", () => {
+  beforeEach(() => {
+    process.env.ENABLE_SENTIMENT_SHOCK_RATIFICATION = "true";
+  });
+
+  it("normalises a bare symbol from the aggregator into the trading pair before getLatestSignal", async () => {
+    const { maybeFireSentimentShockRatification } = await import("./sentiment-shock.js");
+
+    // Aggregator fan-out emits bare symbols (`BTC`), not trading pairs.
+    const prev = makeAggregate({ pair: "BTC", meanScore: 0.0, meanMagnitude: 0.6 });
+    const next = makeAggregate({ pair: "BTC", meanScore: 0.4, meanMagnitude: 0.7 });
+
+    await maybeFireSentimentShockRatification(prev, next);
+
+    // getLatestSignal must receive the trading-pair form, not the bare symbol.
+    expect(getLatestSignalMock).toHaveBeenCalledOnce();
+    expect(getLatestSignalMock.mock.calls[0][0]).toBe("BTC/USDT");
+
+    // ratifySignal must also see the trading-pair form on its context.
+    expect(ratifySignalMock).toHaveBeenCalledOnce();
+    const [ctx] = ratifySignalMock.mock.calls[0] as [{ pair: string }];
+    expect(ctx.pair).toBe("BTC/USDT");
+  });
+
+  it("skips silently when the symbol does not map to a trading pair we support", async () => {
+    const { maybeFireSentimentShockRatification } = await import("./sentiment-shock.js");
+    const prev = makeAggregate({ pair: "LINK", meanScore: 0.0, meanMagnitude: 0.6 });
+    const next = makeAggregate({ pair: "LINK", meanScore: 0.4, meanMagnitude: 0.7 });
+
+    await maybeFireSentimentShockRatification(prev, next);
+
+    expect(getLatestSignalMock).not.toHaveBeenCalled();
+    expect(ratifySignalMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// precomputedBundle: caller passes its already-built SentimentBundle so the
+// shock module skips the redundant buildSentimentBundle DDB hit.
+// ---------------------------------------------------------------------------
+
+describe("maybeFireSentimentShockRatification — precomputedBundle", () => {
+  beforeEach(() => {
+    process.env.ENABLE_SENTIMENT_SHOCK_RATIFICATION = "true";
+  });
+
+  it("uses the supplied bundle and skips buildSentimentBundle", async () => {
+    const { maybeFireSentimentShockRatification } = await import("./sentiment-shock.js");
+    const prev = makeAggregate({ meanScore: 0.0, meanMagnitude: 0.6 });
+    const next = makeAggregate({ meanScore: 0.4, meanMagnitude: 0.7 });
+
+    const fakeBundle = {
+      pair: "BTC/USDT",
+      assembledAt: new Date().toISOString(),
+      windows: { "4h": next, "24h": next },
+      fearGreed: {
+        value: 60,
+        classification: "Greed",
+        lastTimestamp: new Date().toISOString(),
+        history: [],
+        trend24h: 5,
+      },
+    };
+
+    await maybeFireSentimentShockRatification(prev, next, fakeBundle as never);
+
+    expect(buildSentimentBundleMock).not.toHaveBeenCalled();
+    expect(ratifySignalMock).toHaveBeenCalledOnce();
+    const [ctx] = ratifySignalMock.mock.calls[0] as [
+      { sentiment: { fearGreed: { value: number | null } } },
+    ];
+    expect(ctx.sentiment.fearGreed.value).toBe(60);
+  });
+
+  it("falls back to buildSentimentBundle when no precomputedBundle is given", async () => {
+    const { maybeFireSentimentShockRatification } = await import("./sentiment-shock.js");
+    const prev = makeAggregate({ meanScore: 0.0, meanMagnitude: 0.6 });
+    const next = makeAggregate({ meanScore: 0.4, meanMagnitude: 0.7 });
+
+    await maybeFireSentimentShockRatification(prev, next);
+
+    expect(buildSentimentBundleMock).toHaveBeenCalledOnce();
+    expect(ratifySignalMock).toHaveBeenCalledOnce();
   });
 });

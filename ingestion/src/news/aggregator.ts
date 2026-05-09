@@ -64,8 +64,45 @@ export interface RecomputeResult {
  *
  * Returns both the new aggregate and the prior aggregate so callers can detect
  * sentiment shocks without an extra DDB read.
+ *
+ * Concurrency safety: read-then-write is gated by a conditional Put on the
+ * previously-observed `computedAt` (or absence-of-row). If a concurrent
+ * invocation slips a write between our Get and Put, our Put fails with
+ * `ConditionalCheckFailedException` and we retry up to MAX_CONCURRENCY_RETRIES
+ * times. This guarantees the returned `previousAggregate` actually corresponds
+ * to the row that was overwritten — without it, two concurrent recomputes
+ * could hand the sentiment-shock detector inconsistent prev→next deltas.
  */
+const MAX_CONCURRENCY_RETRIES = 3;
+
 export async function recomputeSentimentAggregate(
+  pair: string,
+  window: AggregationWindow,
+): Promise<RecomputeResult> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < MAX_CONCURRENCY_RETRIES; attempt++) {
+    try {
+      return await recomputeSentimentAggregateOnce(pair, window);
+    } catch (err) {
+      // Only retry the optimistic-lock conflict; everything else propagates.
+      const name = (err as { name?: string } | null)?.name;
+      if (name !== "ConditionalCheckFailedException") {
+        throw err;
+      }
+      lastError = err;
+      console.warn(
+        `[Aggregator] Concurrent write detected for ${pair}/${window}, retrying (attempt ${attempt + 1}/${MAX_CONCURRENCY_RETRIES})`,
+      );
+    }
+  }
+
+  throw new Error(
+    `[Aggregator] Failed to recompute ${pair}/${window} after ${MAX_CONCURRENCY_RETRIES} concurrent-write retries: ${(lastError as Error)?.message ?? "unknown"}`,
+  );
+}
+
+async function recomputeSentimentAggregateOnce(
   pair: string,
   window: AggregationWindow,
 ): Promise<RecomputeResult> {
@@ -110,10 +147,22 @@ export async function recomputeSentimentAggregate(
     fearGreedLatest,
   };
 
+  // Optimistic concurrency: only overwrite if the row is still the one we
+  // just read (or no row existed). On conflict the outer loop re-reads.
+  const condition = previousAggregate
+    ? {
+        ConditionExpression: "computedAt = :prevComputedAt",
+        ExpressionAttributeValues: { ":prevComputedAt": previousAggregate.computedAt },
+      }
+    : {
+        ConditionExpression: "attribute_not_exists(computedAt)",
+      };
+
   await client.send(
     new PutCommand({
       TableName: SENTIMENT_AGGREGATES_TABLE,
       Item: aggregate,
+      ...condition,
     }),
   );
 

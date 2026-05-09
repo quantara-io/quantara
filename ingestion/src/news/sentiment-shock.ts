@@ -14,15 +14,14 @@
  * Design: issue #167.
  */
 
-import type { SentimentAggregate, AggregationWindow } from "./aggregator.js";
+import { PAIRS, type TradingPair } from "@quantara/shared";
+
+import { getRecentShockRatifications, getRecentRatifications } from "../lib/ratification-store.js";
 import { getLatestSignal } from "../lib/signal-store.js";
 import { ratifySignal } from "../llm/ratify.js";
-import {
-  putRatificationRecord,
-  getRecentShockRatifications,
-  getRecentRatifications,
-} from "../lib/ratification-store.js";
-import { buildSentimentBundle } from "./bundle.js";
+
+import type { SentimentAggregate, AggregationWindow } from "./aggregator.js";
+import { buildSentimentBundle, type SentimentBundle } from "./bundle.js";
 
 // ---------------------------------------------------------------------------
 // Configuration — all overridable via env vars
@@ -106,7 +105,10 @@ export function detectSentimentShock(
   }
 
   if (prev === null) {
-    return { shouldFire: false, reason: "no prior aggregate — first computation for this pair/window" };
+    return {
+      shouldFire: false,
+      reason: "no prior aggregate — first computation for this pair/window",
+    };
   }
 
   // Require non-null sentiment scores on both sides
@@ -160,8 +162,16 @@ export interface CostGateResult {
  *   2. Per-pair hourly cap: max SENTIMENT_SHOCK_MAX_PER_PAIR_PER_HOUR per hour.
  *
  * Queries the ratifications DDB table for prior sentiment_shock records.
+ *
+ * Pagination: `getRecentShockRatifications` is asked for `cap + 1` rows so the
+ * cap comparison is accurate for any configured cap value (not just <= 20).
+ * The helper internally paginates through DDB pages because filtered results
+ * (`triggerReason = sentiment_shock`) can be sparser than the per-page Limit.
  */
-export async function checkSentimentShockCostGate(pair: string, nowIso: string): Promise<CostGateResult> {
+export async function checkSentimentShockCostGate(
+  pair: string,
+  nowIso: string,
+): Promise<CostGateResult> {
   const cooldownMinutes = getSentimentShockCooldownMinutes();
   const hourlyCapMax = getSentimentShockMaxPerPairPerHour();
 
@@ -169,7 +179,10 @@ export async function checkSentimentShockCostGate(pair: string, nowIso: string):
 
   // The hourly window is the broader window — query back 1 hour.
   const hourAgoIso = new Date(nowMs - 60 * 60 * 1000).toISOString();
-  const recentShocks = await getRecentShockRatifications(pair, hourAgoIso);
+  // Ask for cap + 1 so the >= cap comparison is decisive regardless of how
+  // the cap is configured. Without this, raising the cap above the helper's
+  // default page-size made the gate fail open.
+  const recentShocks = await getRecentShockRatifications(pair, hourAgoIso, hourlyCapMax + 1);
 
   // Hourly cap check
   if (recentShocks.length >= hourlyCapMax) {
@@ -200,6 +213,34 @@ export async function checkSentimentShockCostGate(pair: string, nowIso: string):
 }
 
 // ---------------------------------------------------------------------------
+// Symbol → trading-pair normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a bare news symbol like `"BTC"` (produced by `tagPairs` and the
+ * aggregator's per-pair fan-out) to the trading-pair form `"BTC/USDT"` used
+ * as the partition key in `signals-v2` and the broader signal/order pipeline.
+ *
+ * Returns `null` for symbols Quantara doesn't trade (the news enrichment can
+ * tag pairs we have no signal stream for; those should be dropped, not passed
+ * to `getLatestSignal` where they'd silently miss every lookup).
+ *
+ * Also accepts an already-normalized trading pair as input (idempotent), so
+ * callers don't have to discriminate between input shapes.
+ */
+export function symbolToTradingPair(symbol: string): TradingPair | null {
+  // Already in trading-pair form?
+  if ((PAIRS as readonly string[]).includes(symbol)) {
+    return symbol as TradingPair;
+  }
+  const candidate = `${symbol}/USDT`;
+  if ((PAIRS as readonly string[]).includes(candidate)) {
+    return candidate as TradingPair;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point — called by aggregator-handler after recomputeSentimentAggregate
 // ---------------------------------------------------------------------------
 
@@ -210,23 +251,34 @@ export async function checkSentimentShockCostGate(pair: string, nowIso: string):
  * Flow:
  *   1. Feature flag check — bail early if disabled (no DDB calls).
  *   2. Shock detection (pure function — no I/O).
- *   3. Cost gate (two DDB reads).
- *   4. Fetch latest signal for pair — skip if null or neutral warm-up signal.
- *   5. Build sentiment bundle + fire ratifySignal with triggerReason="sentiment_shock".
+ *   3. Symbol normalization (`BTC` → `BTC/USDT`); skip if not a trading pair.
+ *   4. Cost gate (paginated DDB query).
+ *   5. Fetch latest signal for the trading pair — skip if null or neutral warm-up.
+ *   6. Look up previous bar_close ratification's `recordId` for the trace link.
+ *   7. Build (or reuse) a sentiment bundle.
+ *   8. Fire `ratifySignal` with `triggerReason: "sentiment_shock"` so the single
+ *      RatificationRecord it persists carries shock metadata. NO duplicate
+ *      put — `ratifySignal` writes the only record for this shock event.
  *
- * @param prev       Prior aggregate for this (pair, window) — null on first run.
- * @param next       Newly-written aggregate.
+ * @param prev             Prior aggregate for this (pair, window) — null on first run.
+ * @param next             Newly-written aggregate.
+ * @param precomputedBundle Optional pre-built SentimentBundle. When the caller
+ *                         already has aggregates for this pair (e.g. the
+ *                         aggregator-handler computes 4h + 24h on every event),
+ *                         passing it skips the redundant `recomputeSentimentAggregate`
+ *                         calls inside `buildSentimentBundle`.
  */
 export async function maybeFireSentimentShockRatification(
   prev: SentimentAggregate | null,
   next: SentimentAggregate,
+  precomputedBundle?: SentimentBundle,
 ): Promise<void> {
   // Step 1: Feature flag — default false (ship dark)
   if (process.env.ENABLE_SENTIMENT_SHOCK_RATIFICATION !== "true") {
     return;
   }
 
-  const { pair, window } = next;
+  const { pair: rawSymbol, window } = next;
 
   // Step 2: Shock detection (pure — no I/O)
   const shockResult = detectSentimentShock(prev, next);
@@ -234,22 +286,38 @@ export async function maybeFireSentimentShockRatification(
     return; // Not a shock — common path; no log spam
   }
 
-  const nowIso = new Date().toISOString();
-  console.log(`[SentimentShock] Shock detected for ${pair}/${window}: ${shockResult.reason}`);
-
-  // Step 3: Cost gate
-  const gateResult = await checkSentimentShockCostGate(pair, nowIso);
-  if (!gateResult.allowed) {
-    console.log(`[SentimentShock] Cost gate suppressed shock for ${pair}: ${gateResult.reason}`);
+  // Step 3: Symbol normalization. The aggregator fan-out keys by bare symbols
+  // (e.g. "BTC") via `tagPairs`/`ALL_PAIRS`, but `signals-v2` is keyed by
+  // trading pairs ("BTC/USDT"). Without this normalisation `getLatestSignal`
+  // misses every shock and the feature is silently broken in production.
+  const tradingPair = symbolToTradingPair(rawSymbol);
+  if (tradingPair === null) {
+    console.info(
+      `[SentimentShock] Symbol ${rawSymbol} has no matching trading pair — skipping shock`,
+    );
     return;
   }
 
-  // Step 4: Fetch latest signal
-  const latestSignal = await getLatestSignal(pair);
+  const nowIso = new Date().toISOString();
+  console.log(
+    `[SentimentShock] Shock detected for ${rawSymbol} → ${tradingPair}/${window}: ${shockResult.reason}`,
+  );
+
+  // Step 4: Cost gate
+  const gateResult = await checkSentimentShockCostGate(tradingPair, nowIso);
+  if (!gateResult.allowed) {
+    console.log(
+      `[SentimentShock] Cost gate suppressed shock for ${tradingPair}: ${gateResult.reason}`,
+    );
+    return;
+  }
+
+  // Step 5: Fetch latest signal
+  const latestSignal = await getLatestSignal(tradingPair);
 
   if (latestSignal === null) {
     console.info(
-      `[SentimentShock] No signal yet for ${pair} (cold start) — skipping shock ratification`,
+      `[SentimentShock] No signal yet for ${tradingPair} (cold start) — skipping shock ratification`,
     );
     return;
   }
@@ -257,53 +325,56 @@ export async function maybeFireSentimentShockRatification(
   // Skip neutral warm-up signals (hold with no rules fired)
   if (latestSignal.type === "hold" && latestSignal.rulesFired.length === 0) {
     console.info(
-      `[SentimentShock] Latest signal for ${pair} is neutral warm-up hold — skipping shock ratification`,
+      `[SentimentShock] Latest signal for ${tradingPair} is neutral warm-up hold — skipping shock ratification`,
     );
     return;
   }
 
-  // Step 5: Fire ratification
-  // Find the most-recent bar_close ratification to link as previousRatificationId
+  // Step 6: Find the most-recent bar_close ratification's recordId for the
+  // trace link. `RatificationRecord.recordId` is now part of the type; no cast.
   let previousRatificationId: string | undefined;
   try {
-    const recentRatifications = await getRecentRatifications(pair, 10);
+    const recentRatifications = await getRecentRatifications(tradingPair, 10);
     const lastBarClose = recentRatifications.find(
       (r) => (r.triggerReason ?? "bar_close") === "bar_close",
     );
-    previousRatificationId = lastBarClose ? undefined : undefined;
-    // We need the recordId from the DDB item — it's stored on the persisted item.
-    // getRecentRatifications returns RatificationRecord which doesn't expose recordId
-    // directly. We look for it on the raw item cast.
-    if (lastBarClose) {
-      const raw = lastBarClose as RatificationRecord & { recordId?: string };
-      previousRatificationId = raw.recordId;
-    }
+    previousRatificationId = lastBarClose?.recordId;
   } catch (err) {
     // Non-fatal: if we can't look up the prior ratification, proceed without linking
     console.warn(
-      `[SentimentShock] Could not fetch prior ratification for ${pair}: ${(err as Error).message}`,
+      `[SentimentShock] Could not fetch prior ratification for ${tradingPair}: ${(err as Error).message}`,
     );
   }
 
-  // Build a fresh sentiment bundle (using the current state, including the new aggregate)
-  let sentimentBundle;
-  try {
-    sentimentBundle = await buildSentimentBundle(pair);
-  } catch (err) {
-    console.error(
-      `[SentimentShock] Failed to build sentiment bundle for ${pair}: ${(err as Error).message}`,
-    );
-    return;
+  // Step 7: Build a sentiment bundle. Reuse the caller's pre-built bundle when
+  // available — it already contains the freshly-computed aggregates we'd
+  // otherwise re-read from DDB.
+  let sentimentBundle: SentimentBundle;
+  if (precomputedBundle) {
+    sentimentBundle = precomputedBundle;
+  } else {
+    try {
+      sentimentBundle = await buildSentimentBundle(rawSymbol);
+    } catch (err) {
+      console.error(
+        `[SentimentShock] Failed to build sentiment bundle for ${rawSymbol}: ${(err as Error).message}`,
+      );
+      return;
+    }
   }
 
   console.log(
-    `[SentimentShock] Firing out-of-cycle ratification for ${pair} (previousRatificationId=${previousRatificationId ?? "none"})`,
+    `[SentimentShock] Firing out-of-cycle ratification for ${tradingPair} (previousRatificationId=${previousRatificationId ?? "none"})`,
   );
 
+  // Step 8: Fire ratification. `triggerReason: "sentiment_shock"` flows through
+  // `RatifyContext` so the single `RatificationRecord` written by `ratifySignal`
+  // is correctly tagged. No second write — duplicate audit rows have been a
+  // recurring footgun on this path.
   try {
     const ratifyResult = await ratifySignal(
       {
-        pair,
+        pair: tradingPair,
         candidate: latestSignal,
         perTimeframe: latestSignal.perTimeframe,
         sentiment: sentimentBundle,
@@ -313,57 +384,30 @@ export async function maybeFireSentimentShockRatification(
           value: sentimentBundle.fearGreed.value ?? 50,
           trend24h: sentimentBundle.fearGreed.trend24h ?? 0,
         },
+        triggerReason: "sentiment_shock",
+        previousRatificationId,
       },
-      // No onStage2 callback — the shock ratification creates its own record;
-      // it does not update the original signals_v2 row (that would require
-      // knowing the exact SK of the latest signal).
+      // No onStage2 callback — the shock ratification creates its own audit
+      // record via ratifySignal; it does not update the original signals_v2
+      // row (that would require knowing the exact SK of the latest signal).
       undefined,
     );
 
     if (ratifyResult.kickoffRatification) {
-      // Write the stage-1 shock record before kicking off the LLM stream.
-      // We persist a minimal record to satisfy the race-free ordering contract
-      // (the onStage2 UPDATE — if any — targets the ratifications table row, not
-      // the signals_v2 row, so no race is possible here). For simplicity we
-      // fire-and-await the kickoff directly.
+      // Drive the LLM stream to completion. ratifySignal handles the
+      // RatificationRecord persistence inside the stream's success/failure
+      // branches; this awaits the verdict so the audit row reflects the
+      // actual LLM response, not the stage-1 placeholder.
       await ratifyResult.kickoffRatification();
     }
 
-    // Persist a RatificationRecord flagged as sentiment_shock with the new fields
-    await putRatificationRecord({
-      pair,
-      timeframe: latestSignal.emittingTimeframe,
-      algoCandidate: latestSignal,
-      llmRequest: {
-        model: "claude-sonnet-4-6",
-        systemHash: "",
-        userJsonHash: "",
-      },
-      llmRawResponse: null,
-      cacheHit: ratifyResult.cacheHit,
-      validation: { ok: true },
-      ratified: ratifyResult.signal,
-      fellBackToAlgo: ratifyResult.fellBackToAlgo,
-      latencyMs: 0,
-      costUsd: 0,
-      invokedReason: "sentiment_shock",
-      invokedAt: nowIso,
-      triggerReason: "sentiment_shock",
-      previousRatificationId,
-    });
-
     console.log(
-      `[SentimentShock] Shock ratification complete for ${pair}: type=${ratifyResult.signal.type} cacheHit=${ratifyResult.cacheHit}`,
+      `[SentimentShock] Shock ratification complete for ${tradingPair}: type=${ratifyResult.signal.type} cacheHit=${ratifyResult.cacheHit}`,
     );
   } catch (err) {
     console.error(
-      `[SentimentShock] Shock ratification failed for ${pair}: ${(err as Error).message}`,
+      `[SentimentShock] Shock ratification failed for ${tradingPair}: ${(err as Error).message}`,
     );
     // Non-fatal — the regular bar-close path is unaffected
   }
 }
-
-// ---------------------------------------------------------------------------
-// Re-export type so callers can import without going through ratification-store
-// ---------------------------------------------------------------------------
-import type { RatificationRecord } from "../lib/ratification-store.js";

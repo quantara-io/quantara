@@ -12,7 +12,12 @@
  */
 
 import type { SQSEvent, ScheduledEvent, Context } from "aws-lambda";
-import { recomputeSentimentAggregate, type AggregationWindow } from "./news/aggregator.js";
+import {
+  recomputeSentimentAggregate,
+  type AggregationWindow,
+  type SentimentAggregate,
+} from "./news/aggregator.js";
+import { getFearGreed, type SentimentBundle } from "./news/bundle.js";
 import { maybeFireSentimentShockRatification } from "./news/sentiment-shock.js";
 
 const WINDOWS: AggregationWindow[] = ["4h", "24h"];
@@ -66,23 +71,80 @@ export async function handler(event: SQSEvent | ScheduledEvent, _context: Contex
 }
 
 async function recomputeAll(pairs: string[]): Promise<void> {
-  const tasks: Promise<unknown>[] = [];
-  for (const pair of pairs) {
-    for (const window of WINDOWS) {
-      tasks.push(
-        recomputeSentimentAggregate(pair, window)
-          .then(async ({ aggregate, previousAggregate }) => {
-            // After the aggregate write, check for a sentiment shock and
-            // potentially fire an out-of-cycle ratification.
-            await maybeFireSentimentShockRatification(previousAggregate, aggregate);
-          })
-          .catch((err: Error) => {
-            console.error(
-              `[AggregatorHandler] recompute failed for ${pair}/${window}: ${err.message}`,
-            );
-          }),
-      );
-    }
+  // Per pair, recompute both windows in parallel, build the sentiment bundle
+  // once from those results, then run shock detection on each window with the
+  // shared bundle. This avoids `buildSentimentBundle` re-running
+  // `recomputeSentimentAggregate` (which the shock module used to do — a
+  // double DDB hit on the hot path).
+  await Promise.all(pairs.map((pair) => recomputePair(pair)));
+}
+
+async function recomputePair(pair: string): Promise<void> {
+  // Step 1: recompute every window. Each result independently catches errors
+  // so a single window failure doesn't poison the bundle for siblings.
+  const windowResults = await Promise.all(
+    WINDOWS.map(async (window) => {
+      try {
+        const result = await recomputeSentimentAggregate(pair, window);
+        return { window, result, error: null as Error | null };
+      } catch (err) {
+        console.error(
+          `[AggregatorHandler] recompute failed for ${pair}/${window}: ${(err as Error).message}`,
+        );
+        return { window, result: null, error: err as Error };
+      }
+    }),
+  );
+
+  // If any window failed, bail before shock detection — the bundle would be
+  // incomplete and shock comparisons unreliable.
+  const successful = windowResults.filter((r) => r.result !== null);
+  if (successful.length !== windowResults.length) return;
+
+  // Step 2: assemble a SentimentBundle from the freshly-written aggregates.
+  // Read F&G state once (the recompute loop's `getFearGreedContext` only
+  // captures the trend slice; the bundle needs the full record).
+  let fearGreed;
+  try {
+    fearGreed = await getFearGreed();
+  } catch (err) {
+    console.error(
+      `[AggregatorHandler] fearGreed lookup failed for ${pair}: ${(err as Error).message}`,
+    );
+    return;
   }
-  await Promise.all(tasks);
+
+  const windowsByName: Record<AggregationWindow, SentimentAggregate> = {} as Record<
+    AggregationWindow,
+    SentimentAggregate
+  >;
+  for (const r of successful) {
+    windowsByName[r.window] = r.result!.aggregate;
+  }
+
+  const bundle: SentimentBundle = {
+    pair,
+    assembledAt: new Date().toISOString(),
+    windows: windowsByName,
+    fearGreed,
+  };
+
+  // Step 3: per-window shock detection. The .catch is scoped to *this* call
+  // so its error log is correctly attributed (was previously misreported as
+  // "recompute failed" because the wider try/catch wrapped both phases).
+  await Promise.all(
+    successful.map(async ({ window, result }) => {
+      try {
+        await maybeFireSentimentShockRatification(
+          result!.previousAggregate,
+          result!.aggregate,
+          bundle,
+        );
+      } catch (err) {
+        console.error(
+          `[AggregatorHandler] sentiment-shock check failed for ${pair}/${window}: ${(err as Error).message}`,
+        );
+      }
+    }),
+  );
 }

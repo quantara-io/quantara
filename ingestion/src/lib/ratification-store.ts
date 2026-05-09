@@ -96,6 +96,15 @@ export interface RatificationRecord {
    * ratification exists for the pair.
    */
   previousRatificationId?: string;
+  /**
+   * Server-generated UUID assigned by `putRatificationRecord` and persisted on
+   * the DDB item. Surfaced on read paths so callers can build cross-record
+   * links (e.g. shock → previousRatificationId) without `as any` casts.
+   *
+   * Optional in the type because it's never populated by callers — only by
+   * the store on write — and old rows on disk pre-date this field.
+   */
+  recordId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,33 +169,61 @@ export async function getRecentRatifications(
  * Retrieve recent sentiment-shock ratification records for a pair within a
  * time window (for cost-gate checks).
  *
- * Returns records where triggerReason="sentiment_shock" and invokedAt >= sinceIso,
- * newest first. Uses a table scan limited by the SK range — this is acceptable
- * because records are keyed by invokedAt (the first component of the composite SK).
+ * Implementation: a `QueryCommand` on `pair` with sort-key lower bound
+ * `invokedAtRecordId >= :since` (since the SK starts with the ISO timestamp,
+ * a lexicographic >= matches a chronological >= comparison). Records are
+ * filtered post-Query with `FilterExpression: triggerReason = :shock`.
  *
- * @param pair      DDB partition key
- * @param sinceIso  ISO-8601 lower bound — only records with invokedAt >= sinceIso
- * @param limit     DDB Limit (max rows scanned; not a page cap)
+ * Because DynamoDB applies `Limit` BEFORE `FilterExpression`, a single page
+ * with `Limit: N` can return fewer than N shock rows even when more shocks
+ * exist in the time window. This helper paginates with `LastEvaluatedKey`
+ * until either the time range is exhausted or `targetCount` shock rows have
+ * been collected — whichever comes first.
+ *
+ * Read units scale with the number of non-shock rows in the time range, not
+ * the number of shock rows.
+ *
+ * @param pair         DDB partition key
+ * @param sinceIso     ISO-8601 lower bound — only records with invokedAt >= sinceIso
+ * @param targetCount  Stop paginating once this many shock rows are collected
+ *                     (the cost gate compares against the configured cap, so
+ *                     `cap + 1` is enough to decide gate pass/fail). Default 20.
  */
 export async function getRecentShockRatifications(
   pair: string,
   sinceIso: string,
-  limit = 20,
+  targetCount = 20,
 ): Promise<RatificationRecord[]> {
-  const result = await ddb.send(
-    new QueryCommand({
-      TableName: RATIFICATIONS_TABLE,
-      KeyConditionExpression: "#pair = :pair AND invokedAtRecordId >= :since",
-      FilterExpression: "triggerReason = :shock",
-      ExpressionAttributeNames: { "#pair": "pair" },
-      ExpressionAttributeValues: {
-        ":pair": pair,
-        ":since": sinceIso,
-        ":shock": "sentiment_shock" satisfies RatificationTrigger,
-      },
-      ScanIndexForward: false,
-      Limit: limit,
-    }),
-  );
-  return (result.Items ?? []) as RatificationRecord[];
+  const collected: RatificationRecord[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  while (collected.length < targetCount) {
+    const result: { Items?: unknown[]; LastEvaluatedKey?: Record<string, unknown> } =
+      await ddb.send(
+        new QueryCommand({
+          TableName: RATIFICATIONS_TABLE,
+          KeyConditionExpression: "#pair = :pair AND invokedAtRecordId >= :since",
+          FilterExpression: "triggerReason = :shock",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: {
+            ":pair": pair,
+            ":since": sinceIso,
+            ":shock": "sentiment_shock" satisfies RatificationTrigger,
+          },
+          ScanIndexForward: false,
+          Limit: 50,
+          ExclusiveStartKey: exclusiveStartKey,
+        }),
+      );
+
+    for (const item of (result.Items ?? []) as RatificationRecord[]) {
+      collected.push(item);
+      if (collected.length >= targetCount) break;
+    }
+
+    if (!result.LastEvaluatedKey) break;
+    exclusiveStartKey = result.LastEvaluatedKey;
+  }
+
+  return collected;
 }
