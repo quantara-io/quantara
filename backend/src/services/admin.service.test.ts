@@ -461,3 +461,138 @@ describe("getStatus", () => {
     expect(status.recentLogs).toEqual(["No log streams found"]);
   });
 });
+
+describe("getRatifications", () => {
+  function makeRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      recordId: `rec-${Math.random().toString(36).slice(2, 8)}`,
+      pair: "BTC/USDT",
+      timeframe: "15m",
+      invokedAt: "2026-05-09T10:00:00.000Z",
+      invokedAtRecordId: "2026-05-09T10:00:00.000Z#rec-1",
+      invokedReason: "news",
+      triggerReason: "bar_close",
+      latencyMs: 100,
+      costUsd: 0.001,
+      cacheHit: false,
+      validation: { ok: true },
+      fellBackToAlgo: false,
+      algoCandidate: { type: "buy", confidence: 0.7 },
+      ratified: { type: "buy", confidence: 0.75, reasoning: "agreed" },
+      llmRequest: { model: "claude-sonnet-4-6" },
+      llmRawResponse: null,
+      ...overrides,
+    };
+  }
+
+  it("returns empty page when DDB has no rows for any pair", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    const { getRatifications } = await importService();
+    const page = await getRatifications({ limit: 50 });
+    expect(page.items).toEqual([]);
+    expect(page.cursor).toBeNull();
+  });
+
+  it("filters by triggerReason (the user-facing field), not invokedReason", async () => {
+    dynamoSend.mockResolvedValue({
+      Items: [
+        makeRow({ recordId: "a", triggerReason: "bar_close" }),
+        makeRow({
+          recordId: "b",
+          triggerReason: "sentiment_shock",
+          invokedAtRecordId: "2026-05-09T10:01:00.000Z#b",
+          invokedAt: "2026-05-09T10:01:00.000Z",
+        }),
+      ],
+    });
+    const { getRatifications } = await importService();
+    const page = await getRatifications({ pair: "BTC/USDT", triggerReason: "sentiment_shock" });
+    expect(page.items.map((r) => r.recordId)).toEqual(["b"]);
+  });
+
+  it("treats absent triggerReason as bar_close (pre-#181 records)", async () => {
+    dynamoSend.mockResolvedValue({
+      Items: [makeRow({ recordId: "old", triggerReason: undefined })],
+    });
+    const { getRatifications } = await importService();
+    const page = await getRatifications({ pair: "BTC/USDT", triggerReason: "bar_close" });
+    expect(page.items.map((r) => r.recordId)).toEqual(["old"]);
+  });
+
+  it("sorts merged fan-out results newest-first across pairs", async () => {
+    dynamoSend.mockImplementationOnce(async () => ({
+      Items: [
+        makeRow({
+          recordId: "old-btc",
+          invokedAt: "2026-05-09T10:00:00.000Z",
+          invokedAtRecordId: "2026-05-09T10:00:00.000Z#old-btc",
+        }),
+      ],
+    }));
+    for (let i = 0; i < 3; i++) dynamoSend.mockImplementationOnce(async () => ({ Items: [] }));
+    dynamoSend.mockImplementationOnce(async () => ({
+      Items: [
+        makeRow({
+          recordId: "new-doge",
+          pair: "DOGE/USDT",
+          invokedAt: "2026-05-09T10:30:00.000Z",
+          invokedAtRecordId: "2026-05-09T10:30:00.000Z#new-doge",
+        }),
+      ],
+    }));
+
+    const { getRatifications } = await importService();
+    const page = await getRatifications({ limit: 50 });
+    expect(page.items.map((r) => r.recordId)).toEqual(["new-doge", "old-btc"]);
+  });
+
+  it("encodes per-pair cursor map (base64 JSON) when more rows remain", async () => {
+    // Two rows, limit 1 → one returned, one held back, cursor populated.
+    dynamoSend.mockResolvedValueOnce({
+      Items: [
+        makeRow({
+          recordId: "a",
+          invokedAt: "2026-05-09T10:01:00.000Z",
+          invokedAtRecordId: "2026-05-09T10:01:00.000Z#a",
+        }),
+        makeRow({
+          recordId: "b",
+          invokedAt: "2026-05-09T10:00:00.000Z",
+          invokedAtRecordId: "2026-05-09T10:00:00.000Z#b",
+        }),
+      ],
+    });
+    const { getRatifications } = await importService();
+    const page = await getRatifications({ pair: "BTC/USDT", limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.cursor).not.toBeNull();
+    const decoded = JSON.parse(Buffer.from(page.cursor!, "base64").toString());
+    // The LAST returned item (not the first un-returned) is the cursor anchor —
+    // ExclusiveStartKey skips strictly equal keys.
+    expect(decoded["BTC/USDT"]).toEqual({
+      pair: "BTC/USDT",
+      invokedAtRecordId: "2026-05-09T10:01:00.000Z#a",
+    });
+  });
+
+  it("ignores malformed cursor (logs + continues with no resume)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    dynamoSend.mockResolvedValue({ Items: [] });
+    const { getRatifications } = await importService();
+    await getRatifications({ pair: "BTC/USDT", cursor: "not-base64-or-json" });
+    expect(warn).toHaveBeenCalled();
+    // Still queries DDB without ExclusiveStartKey on the call:
+    const callArgs = dynamoSend.mock.calls[0][0];
+    expect(callArgs.input.ExclusiveStartKey).toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it("does not return the heavy nested payloads for un-mapped pairs", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    const { getRatifications } = await importService();
+    const page = await getRatifications({ pair: "BTC/USDT", limit: 1 });
+    expect(page.items).toEqual([]);
+    // No throw, valid empty cursor.
+    expect(page.cursor).toBeNull();
+  });
+});

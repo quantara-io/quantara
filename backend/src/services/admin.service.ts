@@ -7,7 +7,7 @@ import {
   BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal, IndicatorState } from "@quantara/shared";
-import { HAIKU_INPUT_PRICE_PER_M, HAIKU_OUTPUT_PRICE_PER_M } from "@quantara/shared";
+import { HAIKU_INPUT_PRICE_PER_M, HAIKU_OUTPUT_PRICE_PER_M, PAIRS } from "@quantara/shared";
 import { ECSClient, DescribeServicesCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
 import {
@@ -219,8 +219,6 @@ export async function getStatus() {
     timestamp: new Date().toISOString(),
   };
 }
-
-const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
 
 async function getLatestPrices() {
   const now = Date.now();
@@ -568,6 +566,273 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
       byModel: {},
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Ratifications
+// ---------------------------------------------------------------------------
+
+const RATIFICATIONS_TABLE =
+  process.env.TABLE_RATIFICATIONS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
+
+export interface RatificationRow {
+  recordId: string;
+  pair: string;
+  timeframe: string;
+  invokedReason: string;
+  triggerReason: string | null;
+  invokedAt: string;
+  latencyMs: number;
+  costUsd: number;
+  cacheHit: boolean;
+  validationOk: boolean;
+  fellBackToAlgo: boolean;
+  algoCandidateType: string | null;
+  algoCandidateConfidence: number | null;
+  ratifiedType: string | null;
+  ratifiedConfidence: number | null;
+  ratifiedReasoning: string | null;
+  llmModel: string | null;
+  // full payload for detail modal
+  algoCandidate: Record<string, unknown> | null;
+  ratified: Record<string, unknown> | null;
+  llmRequest: Record<string, unknown> | null;
+  llmRawResponse: Record<string, unknown> | null;
+}
+
+export interface GetRatificationsParams {
+  pair?: string;
+  timeframe?: string;
+  triggerReason?: string;
+  since?: string;
+  until?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface RatificationsPage {
+  items: RatificationRow[];
+  cursor: string | null;
+}
+
+/** Map a raw DDB item to the API shape. */
+function toRatificationRow(item: Record<string, unknown>): RatificationRow {
+  const algo = (item.algoCandidate as Record<string, unknown> | null) ?? null;
+  const ratified = (item.ratified as Record<string, unknown> | null) ?? null;
+  const validation = (item.validation as { ok?: boolean } | null) ?? null;
+  const llmReq = (item.llmRequest as Record<string, unknown> | null) ?? null;
+  const rawReasoning = (ratified?.reasoning as string | undefined) ?? null;
+  return {
+    recordId: item.recordId as string,
+    pair: item.pair as string,
+    timeframe: item.timeframe as string,
+    invokedReason: item.invokedReason as string,
+    // triggerReason is the surface that distinguishes bar_close / sentiment_shock /
+    // manual paths. Older records (pre-#181) may not have it; treat absent as
+    // bar_close per ratification-store.ts convention.
+    triggerReason:
+      typeof item.triggerReason === "string" && item.triggerReason.length > 0
+        ? (item.triggerReason as string)
+        : "bar_close",
+    invokedAt: item.invokedAt as string,
+    latencyMs: (item.latencyMs as number) ?? 0,
+    costUsd: (item.costUsd as number) ?? 0,
+    cacheHit: Boolean(item.cacheHit),
+    validationOk: Boolean(validation?.ok),
+    fellBackToAlgo: Boolean(item.fellBackToAlgo),
+    algoCandidateType: (algo?.type as string | null) ?? null,
+    algoCandidateConfidence: (algo?.confidence as number | null) ?? null,
+    ratifiedType: (ratified?.type as string | null) ?? null,
+    ratifiedConfidence: (ratified?.confidence as number | null) ?? null,
+    ratifiedReasoning: rawReasoning ? rawReasoning.slice(0, 240) : null,
+    llmModel: (llmReq?.model as string | null) ?? null,
+    algoCandidate: algo,
+    ratified,
+    llmRequest: llmReq,
+    llmRawResponse: (item.llmRawResponse as Record<string, unknown> | null) ?? null,
+  };
+}
+
+/**
+ * Paginated query of ratification records.
+ *
+ * Strategy: the table has PK=pair, SK=invokedAtRecordId.
+ * When a pair filter is supplied, we Query that partition directly.
+ * When no pair is given, we fan-out over all known pairs.
+ * After applying client-side filters (timeframe, triggerReason, since, until),
+ * we re-sort descending by invokedAt and slice to `limit`.
+ *
+ * Cursor encoding: the cursor is a base64 JSON map `{ [pair]: ExclusiveStartKey }`.
+ * Each entry is the last DDB key returned by *that* pair's previous query, so
+ * resume preserves per-partition position. A single cursor across 5 partitions
+ * would let DDB reject 4 of 5 keys and silently return empty pages.
+ */
+export async function getRatifications(params: GetRatificationsParams): Promise<RatificationsPage> {
+  const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
+  // Use the shared PAIRS constant — was previously a hardcoded literal that
+  // would drift when pairs are added/removed. PAIRS is the canonical list.
+  const pairsToQuery = params.pair ? [params.pair] : (PAIRS as readonly string[]);
+
+  // Decode per-pair cursor map; absent or malformed → no resume keys.
+  let perPairCursor: Record<string, Record<string, unknown>> = {};
+  if (params.cursor) {
+    try {
+      const raw = JSON.parse(Buffer.from(params.cursor, "base64").toString());
+      if (raw && typeof raw === "object") {
+        perPairCursor = raw as Record<string, Record<string, unknown>>;
+      }
+    } catch (err) {
+      console.warn("[admin.service] getRatifications: malformed cursor, ignoring", err);
+    }
+  }
+
+  // Build SK range bounds from since/until so DDB does the heavy lifting.
+  const skLo = params.since ? `${params.since}#` : undefined;
+  const skHi = params.until ? `${params.until}#￿` : undefined;
+
+  // Track each pair's per-batch results so we can compute per-pair next-cursor.
+  const perPairItems: Record<string, Record<string, unknown>[]> = {};
+  // Capture per-pair LastEvaluatedKey so we can emit a cursor whenever ANY
+  // partition has more rows to read — even if client-side filtering shrunk
+  // the merged page below `limit`. Without this, a selective filter like
+  // `triggerReason=sentiment_shock` could prematurely end pagination.
+  const perPairLastKey: Record<string, Record<string, unknown> | undefined> = {};
+
+  for (const pair of pairsToQuery) {
+    perPairItems[pair] = [];
+    try {
+      let keyCondition = "#pair = :pair";
+      const exprNames: Record<string, string> = { "#pair": "pair" };
+      const exprValues: Record<string, unknown> = { ":pair": pair };
+
+      if (skLo && skHi) {
+        keyCondition += " AND #sk BETWEEN :lo AND :hi";
+        exprNames["#sk"] = "invokedAtRecordId";
+        exprValues[":lo"] = skLo;
+        exprValues[":hi"] = skHi;
+      } else if (skLo) {
+        keyCondition += " AND #sk >= :lo";
+        exprNames["#sk"] = "invokedAtRecordId";
+        exprValues[":lo"] = skLo;
+      } else if (skHi) {
+        keyCondition += " AND #sk <= :hi";
+        exprNames["#sk"] = "invokedAtRecordId";
+        exprValues[":hi"] = skHi;
+      }
+
+      const startKey = perPairCursor[pair];
+
+      // Per-pair fetch budget. Need enough headroom to absorb client-side
+      // filters (timeframe, triggerReason) without short-paging, but not so
+      // much that we read multi-KB rows we'll never return. `limit + 20`
+      // keeps the read cost bounded while leaving room for typical filter
+      // throwaway rates. ScanIndexForward=false gives newest-first.
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: RATIFICATIONS_TABLE,
+          KeyConditionExpression: keyCondition,
+          ExpressionAttributeNames: exprNames,
+          ExpressionAttributeValues: exprValues,
+          ScanIndexForward: false,
+          Limit: limit + 20,
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+        }),
+      );
+      perPairItems[pair].push(...(result.Items ?? []));
+      perPairLastKey[pair] = result.LastEvaluatedKey;
+    } catch (err) {
+      console.error(`[admin.service] getRatifications query failed for ${pair}:`, err);
+    }
+  }
+
+  // Flatten with pair-of-origin tracked so we can build per-pair cursors later.
+  // The cast keeps the index signature alive — `{ ...item, _pair: p }` infers
+  // to `{ _pair: string }` alone otherwise, losing all DDB attribute access.
+  type ItemWithPair = Record<string, unknown> & { _pair: string };
+  const allItems: ItemWithPair[] = pairsToQuery.flatMap((p) =>
+    perPairItems[p].map((item) => ({ ...item, _pair: p }) as ItemWithPair),
+  );
+
+  // Client-side filters (timeframe, triggerReason) since DDB has no secondary
+  // index on those attributes. Records pre-#181 lack triggerReason; treat
+  // absent as `bar_close` per the ratification-store.ts convention.
+  const filtered = allItems.filter((item) => {
+    if (params.timeframe && item.timeframe !== params.timeframe) return false;
+    if (params.triggerReason) {
+      const itemTrigger =
+        typeof item.triggerReason === "string" && item.triggerReason.length > 0
+          ? (item.triggerReason as string)
+          : "bar_close";
+      if (itemTrigger !== params.triggerReason) return false;
+    }
+    return true;
+  });
+
+  // Re-sort by invokedAt descending (fan-out from multiple partitions breaks DDB order).
+  filtered.sort((a, b) => {
+    const aKey = (a.invokedAtRecordId as string) ?? "";
+    const bKey = (b.invokedAtRecordId as string) ?? "";
+    return bKey.localeCompare(aKey);
+  });
+
+  const page = filtered.slice(0, limit);
+
+  // Per-pair next-cursor. Three sources contribute to "more available":
+  //   1. `filtered.length > limit` — we trimmed rows we already fetched.
+  //   2. ANY pair's Query returned `LastEvaluatedKey` — that partition has
+  //      more rows older than what we read, regardless of how many made it
+  //      through the client-side filter. Without this, a selective filter
+  //      can shrink `filtered` below `limit` and prematurely end paging.
+  //   3. A pair came in with a cursor but contributed no rows this round
+  //      (e.g. all its remaining rows in the window were filtered out
+  //      client-side); we forward its prior cursor so a future request
+  //      with different filters can still resume.
+  //
+  // Cursor anchor selection: for pairs that contributed rows to `page`, use
+  // the LAST returned row's invokedAtRecordId. DDB's ExclusiveStartKey
+  // skips strictly equal keys and returns what comes after — so the last
+  // returned record is the correct anchor for "give me what comes next."
+  // For pairs that hit Limit but didn't contribute (filter rejected all),
+  // forward the Query's `LastEvaluatedKey` directly.
+  const hasMoreFromAnyPair = Object.values(perPairLastKey).some((k) => k !== undefined);
+  let nextCursor: Record<string, Record<string, unknown>> | null = null;
+  if (filtered.length > limit || hasMoreFromAnyPair) {
+    const cursorMap: Record<string, Record<string, unknown>> = {};
+    for (const item of page) {
+      const pair = item._pair as string;
+      cursorMap[pair] = {
+        pair,
+        invokedAtRecordId: item.invokedAtRecordId,
+      };
+    }
+    // For pairs whose Query had more rows but contributed nothing to this
+    // page (filter ate everything), forward the Query's LastEvaluatedKey
+    // so the next request resumes correctly.
+    for (const pair of pairsToQuery) {
+      if (!cursorMap[pair] && perPairLastKey[pair]) {
+        cursorMap[pair] = perPairLastKey[pair] as Record<string, unknown>;
+      }
+    }
+    // Pairs that contributed nothing AND didn't hit Limit but came in with a
+    // prior cursor should keep that cursor — the user might change filters
+    // next request and want to resume the same partition.
+    for (const pair of pairsToQuery) {
+      if (!cursorMap[pair] && perPairCursor[pair]) {
+        cursorMap[pair] = perPairCursor[pair];
+      }
+    }
+    if (Object.keys(cursorMap).length > 0) {
+      nextCursor = cursorMap;
+    }
+  }
+
+  // Strip the synthetic `_pair` before mapping to the API row shape.
+  const cleanedPage = page.map(({ _pair: _ignored, ...rest }) => rest as Record<string, unknown>);
+
+  return {
+    items: cleanedPage.map(toRatificationRow),
+    cursor: nextCursor ? Buffer.from(JSON.stringify(nextCursor)).toString("base64") : null,
+  };
 }
 
 const WHITELIST_PARAM = `/quantara/${ENVIRONMENT}/docs-allowed-ips`;
