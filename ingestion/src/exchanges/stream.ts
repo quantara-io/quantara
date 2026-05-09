@@ -64,7 +64,11 @@ export class MarketStreamManager {
 
       const supportsOHLCV = !!exchange.has?.watchOHLCV;
       if (!supportsOHLCV) {
-        console.warn(`[Stream] ${exchangeId} does not support watchOHLCV; skipping OHLCV stream`);
+        if (exchangeId === "coinbase") {
+          console.log(`[Stream] ${exchangeId} has no watchOHLCV; using REST backfill instead`);
+        } else {
+          console.warn(`[Stream] ${exchangeId} does not support watchOHLCV; skipping OHLCV stream`);
+        }
       }
 
       for (const pair of PAIRS) {
@@ -207,8 +211,16 @@ export class MarketStreamManager {
    * Coinbase's CCXT Pro adapter does not support watchOHLCV, so this loop fills
    * the gap needed for close-quorum (≥2/3 exchanges).
    *
-   * Strategy: fetch the latest 2 bars, take bar[0] (the closed one), skip if
-   * its closeTime matches what we already wrote (idempotent).
+   * Bar selection: ccxt returns OHLCV chronologically (oldest → newest), and
+   * Coinbase's fetchOHLCV may include the still-open current bar at the end
+   * of the array. We walk from the newest bar backwards to find the most
+   * recent fully-closed bar (one whose `openTime + 60_000 <= now`).
+   *
+   * Idempotency: a per-pair in-memory `closeTime` map prevents duplicate
+   * writes within a single Fargate task lifetime. After a task restart the
+   * map is empty, so the first poll will re-write the latest closed bar
+   * once per pair — DDB Put is a PK+SK overwrite so this is harmless beyond
+   * one log line + one write capacity unit per pair.
    */
   private startCoinbaseBackfillLoop(exchange: any, pair: TradingPair): void {
     const exchangeId: ExchangeId = "coinbase";
@@ -218,8 +230,6 @@ export class MarketStreamManager {
     const run = async () => {
       while (!this.abortController.signal.aborted) {
         try {
-          // Fetch 2 bars: [closed_bar, open_bar]. Bar at index 0 is the most
-          // recently closed one; bar at index 1 is the still-open current bar.
           const ohlcv: (number | null)[][] = await exchange.fetchOHLCV(
             symbol,
             timeframe,
@@ -227,20 +237,16 @@ export class MarketStreamManager {
             2,
           );
 
-          if (ohlcv.length < 2) {
-            // Not enough data yet (exchange may be catching up); try again next tick.
+          // Walk newest → oldest and pick the first fully-closed bar.
+          // A bar is closed if its open-timestamp + 60_000 <= now.
+          const closedBar = pickClosedBar(ohlcv, Date.now());
+          if (!closedBar) {
             await sleep(COINBASE_BACKFILL_INTERVAL_MS);
             continue;
           }
 
-          const [ts, open, high, low, close, volume] = ohlcv[0];
-
-          if (ts == null) {
-            await sleep(COINBASE_BACKFILL_INTERVAL_MS);
-            continue;
-          }
-
-          const closeTime = ts + 60_000;
+          const [ts, open, high, low, close, volume] = closedBar;
+          const closeTime = (ts as number) + 60_000;
 
           // Idempotent skip: if we already wrote this bar, do nothing.
           const lastCloseTime = this.coinbaseLastCloseTime.get(pair);
@@ -254,7 +260,7 @@ export class MarketStreamManager {
             symbol,
             pair,
             timeframe,
-            openTime: ts,
+            openTime: ts as number,
             closeTime,
             open: Number(open ?? 0),
             high: Number(high ?? 0),
@@ -268,9 +274,7 @@ export class MarketStreamManager {
           await storeCandles([candle]);
           this.coinbaseLastCloseTime.set(pair, closeTime);
 
-          console.log(
-            `[CoinbaseBackfill] wrote ${pair}@${new Date(closeTime).toISOString()}`,
-          );
+          console.log(`[CoinbaseBackfill] wrote ${pair}@${new Date(closeTime).toISOString()}`);
 
           // Update stream freshness so the watchdog sees coinbase as alive.
           const key = `${exchangeId}:${pair}`;
@@ -278,9 +282,7 @@ export class MarketStreamManager {
           if (state) state.lastDataAt = Date.now();
         } catch (err) {
           if (this.abortController.signal.aborted) break;
-          console.error(
-            `[CoinbaseBackfill] error for ${pair}: ${(err as Error).message}`,
-          );
+          console.error(`[CoinbaseBackfill] error for ${pair}: ${(err as Error).message}`);
           // Do not rethrow — one pair's failure must not kill other pairs.
         }
 
@@ -290,9 +292,7 @@ export class MarketStreamManager {
 
     run().catch((err) => {
       if (!this.abortController.signal.aborted) {
-        console.error(
-          `[CoinbaseBackfill] loop fatal for ${pair}: ${(err as Error).message}`,
-        );
+        console.error(`[CoinbaseBackfill] loop fatal for ${pair}: ${(err as Error).message}`);
       }
     });
   }
@@ -342,4 +342,22 @@ export class MarketStreamManager {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Pick the most-recently-closed 1m bar from a chronological (oldest→newest)
+ * OHLCV array. Walks from the newest bar backwards and returns the first one
+ * whose `openTime + 60_000 <= now`. Returns null if no closed bar is present
+ * (empty array, all timestamps null, or every bar is still open).
+ *
+ * Defensive against ccxt variations: some adapters include the still-open
+ * current bar at the end of the array; others return only closed bars.
+ */
+export function pickClosedBar(ohlcv: (number | null)[][], now: number): (number | null)[] | null {
+  for (let i = ohlcv.length - 1; i >= 0; i--) {
+    const ts = ohlcv[i]?.[0];
+    if (ts == null) continue;
+    if ((ts as number) + 60_000 <= now) return ohlcv[i];
+  }
+  return null;
 }
