@@ -24,7 +24,22 @@ export const EMBEDDING_MODEL = "text-embedding-3-small";
 const DEDUP_THRESHOLD = 0.85; // cosine similarity above this → duplicate
 const DEDUP_WINDOW_HOURS = 24;
 
-const HAIKU_MODEL_ID = "anthropic.claude-haiku-4-5";
+// Bedrock invocation ID — cross-region inference profile (us.* prefix).
+// Required because all currently-active Anthropic models on Bedrock are
+// profile-only; bare aliases return "Invocation … with on-demand throughput
+// isn't supported." The org SCP permits `bedrock:InvokeModel*` cross-region.
+const HAIKU_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+
+// Stable model tag stamped on the `model` field of `SentimentResult`.
+// Decoupled from the invocation ID so AWS-side rotations (different inference
+// profile, regional change, etc.) don't change what callers see. The
+// pre-existing test "model tag is always claude-haiku-4-5" enforces this
+// stability contract. Bump only when the underlying *model* changes in a way
+// that makes prior sentiment outputs incompatible (e.g. Haiku 4.5 → 5.x).
+//
+// Note: this is unrelated to the embedding cache, which keys on
+// `EMBEDDING_MODEL` (OpenAI's text-embedding-3-small) and never reads this tag.
+const HAIKU_MODEL_TAG = "anthropic.claude-haiku-4-5";
 
 // ---------------------------------------------------------------------------
 // AWS clients (module-scope singletons)
@@ -186,7 +201,7 @@ export async function classifySentiment(title: string, body: string): Promise<Se
   return {
     score: Math.max(-1, Math.min(1, result.score ?? 0)),
     magnitude: Math.max(0, Math.min(1, result.magnitude ?? 0)),
-    model: HAIKU_MODEL_ID,
+    model: HAIKU_MODEL_TAG,
   };
 }
 

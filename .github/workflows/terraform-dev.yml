@@ -182,11 +182,21 @@ jobs:
   # Main-merge apply: gated by `dev-terraform` GitHub environment so
   # destructive changes require human approval. Plan + apply are sequenced in
   # the same job so what gets applied is exactly what was just planned.
+  #
+  # Concurrency: never run two applies at once. The DynamoDB lock table
+  # (`quantara-tf-locks-dev`) already prevents state corruption, but a queued
+  # second runner still spins up paid compute and can time out waiting for
+  # the lock. `cancel-in-progress: false` is critical — cancelling a running
+  # apply mid-flight could leave terraform state pointing at half-applied
+  # resources. Always queue, never cancel.
   # ---------------------------------------------------------------------------
   apply:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: dev-terraform
+    concurrency:
+      group: terraform-dev-apply
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
