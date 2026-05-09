@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { PAIRS } from "@quantara/shared";
 import type { BlendedSignal, RiskRecommendation, TimeframeVote } from "@quantara/shared";
 
 import { apiFetch } from "../lib/api";
+import { getAccessToken } from "../lib/auth";
 
 interface SignalsData {
   signals: BlendedSignal[];
@@ -12,27 +14,109 @@ interface SignalsData {
 const BLENDER_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
 type BlenderTF = (typeof BLENDER_TIMEFRAMES)[number];
 
-export function Genie() {
-  const [data, setData] = useState<SignalsData | null>(null);
-  const [error, setError] = useState("");
+// WebSocket endpoint for the realtime signal push channel (PR #131).
+// Configured at build time via VITE_WS_BASE; falls back to a sensible dev URL.
+const WS_BASE = (import.meta.env.VITE_WS_BASE as string | undefined) ?? "wss://ws.dev.quantara.io";
 
+// Reconnect backoff ceiling — exponential growth from 1s.
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
+export function Genie() {
+  // Map<pair, signal> — keyed by pair so push updates replace in place.
+  const [signalsByPair, setSignalsByPair] = useState<Map<string, BlendedSignal>>(new Map());
+  const [disclaimer, setDisclaimer] = useState("");
+  const [error, setError] = useState("");
+  const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error">(
+    "connecting",
+  );
+  const [loading, setLoading] = useState(true);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const intentionalCloseRef = useRef(false);
+
+  // Initial fetch — populates the page with current signals before WS is open.
   useEffect(() => {
     let cancelled = false;
-    async function load() {
+    (async () => {
       const res = await apiFetch<SignalsData>("/api/genie/signals");
       if (cancelled) return;
       if (res.success && res.data) {
-        setData(res.data);
+        const map = new Map<string, BlendedSignal>();
+        for (const sig of res.data.signals) map.set(sig.pair, sig);
+        setSignalsByPair(map);
+        setDisclaimer(res.data.disclaimer ?? "");
         setError("");
       } else {
         setError(res.error?.message ?? "Failed to load signals");
       }
-    }
-    void load();
-    const id = setInterval(load, 30_000);
+      setLoading(false);
+    })();
     return () => {
       cancelled = true;
-      clearInterval(id);
+    };
+  }, []);
+
+  // WebSocket subscription — receives push updates as signals emit.
+  useEffect(() => {
+    intentionalCloseRef.current = false;
+
+    function connect() {
+      const jwt = getAccessToken();
+      if (!jwt) {
+        setWsStatus("error");
+        return;
+      }
+      const url = `${WS_BASE}?pairs=${encodeURIComponent(PAIRS.join(","))}&Authorization=${encodeURIComponent(`Bearer ${jwt}`)}`;
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+      setWsStatus("connecting");
+
+      ws.addEventListener("open", () => {
+        reconnectAttemptRef.current = 0;
+        setWsStatus("open");
+      });
+
+      ws.addEventListener("message", (event) => {
+        try {
+          const signal = JSON.parse(event.data as string) as BlendedSignal;
+          // Defensive: only update on a recognizable signal shape with a pair key.
+          if (!signal || typeof signal.pair !== "string") return;
+          setSignalsByPair((prev) => {
+            const next = new Map(prev);
+            next.set(signal.pair, signal);
+            return next;
+          });
+        } catch {
+          // Ignore non-JSON or malformed messages.
+        }
+      });
+
+      ws.addEventListener("close", () => {
+        if (intentionalCloseRef.current) return;
+        setWsStatus("closed");
+        // Exponential backoff: 1s, 2s, 4s, ... capped at MAX_RECONNECT_DELAY_MS.
+        const attempt = reconnectAttemptRef.current++;
+        const delay = Math.min(1000 * 2 ** attempt, MAX_RECONNECT_DELAY_MS);
+        reconnectTimerRef.current = window.setTimeout(connect, delay);
+      });
+
+      ws.addEventListener("error", () => {
+        setWsStatus("error");
+      });
+    }
+
+    connect();
+
+    return () => {
+      intentionalCloseRef.current = true;
+      if (reconnectTimerRef.current != null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      wsRef.current?.close();
+      wsRef.current = null;
     };
   }, []);
 
@@ -42,29 +126,44 @@ export function Genie() {
         {error}
       </div>
     );
-  if (!data) return <div className="text-sm text-slate-500">Loading…</div>;
+  if (loading) return <div className="text-sm text-slate-500">Loading…</div>;
+
+  // Render in canonical PAIRS order so the layout is stable as updates arrive.
+  const orderedSignals = PAIRS.map((pair) => signalsByPair.get(pair)).filter(
+    (s): s is BlendedSignal => s != null,
+  );
 
   return (
     <div className="space-y-4">
-      {data.signals.length === 0 ? (
+      <WsStatusBanner status={wsStatus} />
+      {orderedSignals.length === 0 ? (
         <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 text-center text-sm text-slate-400">
           No signals available yet — pipeline may be warming up.
         </div>
       ) : (
-        data.signals.map((signal) => <SignalCard key={signal.pair} signal={signal} />)
+        orderedSignals.map((signal) => <SignalCard key={signal.pair} signal={signal} />)
       )}
-      {data.disclaimer && (
-        <p className="text-[11px] text-slate-600 text-center">{data.disclaimer}</p>
-      )}
+      {disclaimer && <p className="text-[11px] text-slate-600 text-center">{disclaimer}</p>}
     </div>
   );
 }
 
-function SignalCard({ signal }: { signal: BlendedSignal }) {
-  const hasReasoning =
-    signal.invalidationReason != null ||
-    (signal.rulesFired && signal.rulesFired.length > 0);
+function WsStatusBanner({ status }: { status: "connecting" | "open" | "closed" | "error" }) {
+  if (status === "open") return null;
+  const text =
+    status === "connecting"
+      ? "Connecting to realtime feed…"
+      : status === "closed"
+        ? "Reconnecting to realtime feed…"
+        : "Realtime feed unavailable — initial snapshot only.";
+  const cls =
+    status === "error"
+      ? "bg-red-950/40 text-red-300 border-red-900"
+      : "bg-slate-900 text-slate-400 border-slate-800";
+  return <div className={`rounded border px-3 py-1.5 text-[11px] ${cls}`}>{text}</div>;
+}
 
+function SignalCard({ signal }: { signal: BlendedSignal }) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900 p-4 space-y-3">
       {/* Invalidation banner */}
@@ -119,9 +218,7 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
       <PerTimeframeTable perTimeframe={signal.perTimeframe} weightsUsed={signal.weightsUsed} />
 
       {/* Risk recommendation */}
-      {signal.risk != null && signal.type !== "hold" && (
-        <RiskBlock risk={signal.risk} />
-      )}
+      {signal.risk != null && signal.type !== "hold" && <RiskBlock risk={signal.risk} />}
     </div>
   );
 }
@@ -134,7 +231,9 @@ function TypeBadge({ type }: { type: "buy" | "sell" | "hold" }) {
         ? "bg-red-950 text-red-300 border border-red-800"
         : "bg-slate-800 text-slate-400 border border-slate-700";
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wide ${classes}`}>
+    <span
+      className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wide ${classes}`}
+    >
       {type}
     </span>
   );
@@ -165,7 +264,9 @@ function PerTimeframeTable({
 }) {
   return (
     <div>
-      <p className="text-[11px] text-slate-600 uppercase tracking-widest mb-1">Timeframe breakdown</p>
+      <p className="text-[11px] text-slate-600 uppercase tracking-widest mb-1">
+        Timeframe breakdown
+      </p>
       <table className="w-full text-xs">
         <thead>
           <tr className="text-slate-500">
@@ -178,8 +279,7 @@ function PerTimeframeTable({
         </thead>
         <tbody>
           {BLENDER_TIMEFRAMES.map((tf) => {
-            const vote: TimeframeVote | null | undefined =
-              perTimeframe[tf as BlenderTF];
+            const vote: TimeframeVote | null | undefined = perTimeframe[tf as BlenderTF];
             const weight: number | undefined = weightsUsed[tf as BlenderTF];
             return (
               <tr key={tf} className="border-t border-slate-800/60">
