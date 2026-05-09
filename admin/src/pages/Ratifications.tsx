@@ -100,20 +100,38 @@ function exportCsv(rows: RatificationRow[]) {
 // ---------------------------------------------------------------------------
 
 function Modal({ row, onClose }: { row: RatificationRow; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+
+  // Esc closes; close button receives focus on open. Standard modal a11y.
+  useEffect(() => {
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="ratification-modal-title"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
-          <h2 className="text-sm font-semibold text-cyan-300">
+          <h2 id="ratification-modal-title" className="text-sm font-semibold text-cyan-300">
             Ratification detail — {row.pair} {row.timeframe} @{" "}
             {new Date(row.invokedAt).toLocaleString()}
           </h2>
           <button
+            ref={closeRef}
+            type="button"
+            aria-label="Close"
             onClick={onClose}
             className="text-slate-500 hover:text-slate-200 text-lg leading-none"
           >
@@ -228,20 +246,26 @@ export function Ratifications() {
   const load = useCallback(
     async (reset: boolean, useCursor: string | null) => {
       abortRef.current?.abort();
-      abortRef.current = new AbortController();
+      const controller = new AbortController();
+      abortRef.current = controller;
       setLoading(true);
       if (reset) {
         setRows([]);
         setCursor(null);
       }
       const url = buildQuery(reset ? null : useCursor);
-      const res = await apiFetch<Page>(url);
+      // Pass the abort signal through so a stale request (e.g. filter
+      // change before the previous load resolved) actually cancels the
+      // network call instead of just dropping the result client-side.
+      const res = await apiFetch<Page>(url, { signal: controller.signal });
+      // Don't write state from a superseded request.
+      if (controller.signal.aborted) return;
       setLoading(false);
       if (res.success && res.data) {
         setRows((prev) => (reset ? res.data!.items : [...prev, ...res.data!.items]));
         setCursor(res.data.cursor);
         setError("");
-      } else {
+      } else if (res.error?.code !== "ABORTED") {
         setError(res.error?.message ?? "Failed to load ratifications");
       }
     },

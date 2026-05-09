@@ -91,13 +91,57 @@ admin.get("/ratifications", async (c) => {
     );
   }
 
+  // Validate since / until as ISO 8601 (matches the /signals route's pattern).
+  // Bad input would otherwise reach DDB as a malformed sort-key prefix and
+  // either return empty silently or surface as a generic 500.
+  const sinceRaw = c.req.query("since");
+  if (sinceRaw !== undefined && isNaN(new Date(sinceRaw).getTime())) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+  const untilRaw = c.req.query("until");
+  if (untilRaw !== undefined && isNaN(new Date(untilRaw).getTime())) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "until must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+
+  // Validate cursor: must be base64-decodable JSON. The service still
+  // tolerates malformed cursors (logs + ignores), but rejecting at the
+  // route turns a silent empty-page bug into an explicit 400.
+  const cursorRaw = c.req.query("cursor");
+  if (cursorRaw !== undefined) {
+    try {
+      const decoded = Buffer.from(cursorRaw, "base64").toString();
+      const parsed = JSON.parse(decoded);
+      if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+    } catch {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "cursor must be a base64-encoded JSON object" },
+        },
+        400,
+      );
+    }
+  }
+
   const { items, cursor } = await getRatifications({
     pair: c.req.query("pair"),
     timeframe: c.req.query("timeframe"),
     triggerReason: c.req.query("triggerReason"),
-    since: c.req.query("since"),
-    until: c.req.query("until"),
-    cursor: c.req.query("cursor"),
+    since: sinceRaw,
+    until: untilRaw,
+    cursor: cursorRaw,
     limit,
   });
 

@@ -15,6 +15,13 @@ interface RequestOpts {
   body?: unknown;
   noAuth?: boolean;
   retry?: boolean;
+  /**
+   * Optional AbortSignal to cancel the request. When the signal aborts after
+   * fetch starts, fetch() rejects with `AbortError` which we surface via the
+   * standard NETWORK_ERROR envelope. Useful for stale-request cancellation
+   * (e.g. filter changes that race with a slow load).
+   */
+  signal?: AbortSignal;
 }
 
 let refreshing: Promise<boolean> | null = null;
@@ -46,7 +53,7 @@ async function tryRefresh(): Promise<boolean> {
 }
 
 export async function apiFetch<T>(path: string, opts: RequestOpts = {}): Promise<Envelope<T>> {
-  const { method = "GET", body, noAuth, retry = true } = opts;
+  const { method = "GET", body, noAuth, retry = true, signal } = opts;
   const headers: Record<string, string> = { "x-api-key": API_KEY };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (!noAuth) {
@@ -65,12 +72,13 @@ export async function apiFetch<T>(path: string, opts: RequestOpts = {}): Promise
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
     });
   } catch (err) {
     return {
       success: false,
       error: {
-        code: "NETWORK_ERROR",
+        code: (err as Error).name === "AbortError" ? "ABORTED" : "NETWORK_ERROR",
         message: `${path} failed to reach the server: ${(err as Error).message}`,
       },
     };

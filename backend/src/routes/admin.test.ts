@@ -371,8 +371,14 @@ describe("GET /ratifications", () => {
   it("forwards all filter query params to the service", async () => {
     getRatificationsMock.mockResolvedValue({ items: [], cursor: null });
     const app = await loadApp();
+    // Cursor is route-validated as base64-encoded JSON. Build a valid one
+    // (the route-level check matches what the service emits on real pages).
+    const cursorRaw = Buffer.from(JSON.stringify({ "ETH/USDT": { pair: "ETH/USDT" } })).toString(
+      "base64",
+    );
+    const cursorEncoded = encodeURIComponent(cursorRaw);
     const res = await app.request(
-      "/ratifications?pair=ETH%2FUSDT&timeframe=1h&triggerReason=bar_close&since=2026-05-01T00%3A00%3A00Z&until=2026-05-02T00%3A00%3A00Z&cursor=abc&limit=10",
+      `/ratifications?pair=ETH%2FUSDT&timeframe=1h&triggerReason=bar_close&since=2026-05-01T00%3A00%3A00Z&until=2026-05-02T00%3A00%3A00Z&cursor=${cursorEncoded}&limit=10`,
     );
     expect(res.status).toBe(200);
     expect(getRatificationsMock).toHaveBeenCalledWith({
@@ -381,9 +387,27 @@ describe("GET /ratifications", () => {
       triggerReason: "bar_close",
       since: "2026-05-01T00:00:00Z",
       until: "2026-05-02T00:00:00Z",
-      cursor: "abc",
+      cursor: cursorRaw,
       limit: 10,
     });
+  });
+
+  it("rejects invalid since (not ISO) with 400", async () => {
+    const app = await loadApp();
+    const res = await app.request("/ratifications?since=not-a-date");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getRatificationsMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed cursor (not base64-JSON) with 400", async () => {
+    const app = await loadApp();
+    const res = await app.request("/ratifications?cursor=not-base64");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getRatificationsMock).not.toHaveBeenCalled();
   });
 
   it("returns 400 when limit exceeds 200", async () => {

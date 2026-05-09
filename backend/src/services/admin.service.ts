@@ -7,7 +7,7 @@ import {
   BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal, IndicatorState } from "@quantara/shared";
-import { HAIKU_INPUT_PRICE_PER_M, HAIKU_OUTPUT_PRICE_PER_M } from "@quantara/shared";
+import { HAIKU_INPUT_PRICE_PER_M, HAIKU_OUTPUT_PRICE_PER_M, PAIRS } from "@quantara/shared";
 import { ECSClient, DescribeServicesCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
 import {
@@ -219,8 +219,6 @@ export async function getStatus() {
     timestamp: new Date().toISOString(),
   };
 }
-
-const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
 
 async function getLatestPrices() {
   const now = Date.now();
@@ -671,8 +669,9 @@ function toRatificationRow(item: Record<string, unknown>): RatificationRow {
  */
 export async function getRatifications(params: GetRatificationsParams): Promise<RatificationsPage> {
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
-  const knownPairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
-  const pairsToQuery = params.pair ? [params.pair] : knownPairs;
+  // Use the shared PAIRS constant — was previously a hardcoded literal that
+  // would drift when pairs are added/removed. PAIRS is the canonical list.
+  const pairsToQuery = params.pair ? [params.pair] : (PAIRS as readonly string[]);
 
   // Decode per-pair cursor map; absent or malformed → no resume keys.
   let perPairCursor: Record<string, Record<string, unknown>> = {};
@@ -718,8 +717,11 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
 
       const startKey = perPairCursor[pair];
 
-      // Fetch up to limit*2 from each pair partition for cursor/filter headroom.
-      // ScanIndexForward=false gives newest-first from DDB.
+      // Per-pair fetch budget. Need enough headroom to absorb client-side
+      // filters (timeframe, triggerReason) without short-paging, but not so
+      // much that we read multi-KB rows we'll never return. `limit + 20`
+      // keeps the read cost bounded while leaving room for typical filter
+      // throwaway rates. ScanIndexForward=false gives newest-first.
       const result = await dynamo.send(
         new QueryCommand({
           TableName: RATIFICATIONS_TABLE,
@@ -727,7 +729,7 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
           ExpressionAttributeNames: exprNames,
           ExpressionAttributeValues: exprValues,
           ScanIndexForward: false,
-          Limit: limit * 2,
+          Limit: limit + 20,
           ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         }),
       );
@@ -738,8 +740,11 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
   }
 
   // Flatten with pair-of-origin tracked so we can build per-pair cursors later.
-  const allItems = pairsToQuery.flatMap((p) =>
-    perPairItems[p].map((item) => ({ ...item, _pair: p })),
+  // The cast keeps the index signature alive — `{ ...item, _pair: p }` infers
+  // to `{ _pair: string }` alone otherwise, losing all DDB attribute access.
+  type ItemWithPair = Record<string, unknown> & { _pair: string };
+  const allItems: ItemWithPair[] = pairsToQuery.flatMap((p) =>
+    perPairItems[p].map((item) => ({ ...item, _pair: p }) as ItemWithPair),
   );
 
   // Client-side filters (timeframe, triggerReason) since DDB has no secondary
