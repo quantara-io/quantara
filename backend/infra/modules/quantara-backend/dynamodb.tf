@@ -287,9 +287,26 @@ resource "aws_dynamodb_table" "news_events" {
     type = "S"
   }
 
+  attribute {
+    name = "publishedDay"
+    type = "S"
+  }
+
   global_secondary_index {
     name            = "currency-index"
     hash_key        = "currency"
+    range_key       = "publishedAt"
+    projection_type = "ALL"
+  }
+
+  # Day-partitioned recency index — backs the paginated admin News feed
+  # (see PR #201). Querying by `publishedDay` with `ScanIndexForward: false`
+  # returns rows newest-first within a calendar day; the admin endpoint
+  # walks back day-by-day. ALL projection because the admin UI shows full
+  # row content (title, body excerpt, enrichment) without an extra Get.
+  global_secondary_index {
+    name            = "published-day-index"
+    hash_key        = "publishedDay"
     range_key       = "publishedAt"
     projection_type = "ALL"
   }

@@ -154,8 +154,10 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
           aws_dynamodb_table.signals_v2.arn,
           aws_dynamodb_table.indicator_state.arn,
           aws_dynamodb_table.sentiment_aggregates.arn,
-          # Genie-metrics endpoint reads these for win-rate + cost metrics.
+          # Required for /api/admin/ratifications (#185 / PR #196).
           aws_dynamodb_table.ratifications.arn,
+          "${aws_dynamodb_table.ratifications.arn}/index/*",
+          # Genie-metrics endpoint reads these for win-rate + cost metrics.
           aws_dynamodb_table.signal_outcomes.arn,
         ]
       },

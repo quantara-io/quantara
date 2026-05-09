@@ -12,6 +12,7 @@ import {
   setWhitelist,
   getSignals,
   getGenieMetrics,
+  getRatifications,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
 
@@ -92,6 +93,104 @@ admin.get("/pipeline-state", async (c) => {
   }
   const data = await getPipelineState(pair);
   return c.json({ success: true, data });
+});
+
+admin.get("/ratifications", async (c) => {
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 50;
+  if (isNaN(limit) || limit < 1 || limit > 200) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "limit must be between 1 and 200" },
+      },
+      400,
+    );
+  }
+
+  // Validate `pair` against the shared PAIRS list when provided. Matches the
+  // `/signals` pattern so unknown pairs return 400 instead of fanning out
+  // to a partition that has no rows (silent empty page + wasted DDB Query).
+  const pairRaw = c.req.query("pair");
+  if (pairRaw !== undefined && !(PAIRS as readonly string[]).includes(pairRaw)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  // Validate since / until as ISO 8601 (matches the /signals route's pattern)
+  // AND normalize to canonical `Date#toISOString()` format before passing to
+  // the service. The DDB sort key (`invokedAtRecordId`) is built from
+  // `new Date().toISOString()` (millisecond precision, always-Z), so inputs
+  // like `2026-05-01T00:00:00Z` (no millis) compare lexicographically before
+  // stored values like `2026-05-01T00:00:00.000Z`, which would silently
+  // exclude boundary rows. Re-serializing through Date pins the precision.
+  const sinceRaw = c.req.query("since");
+  let since: string | undefined;
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    since = parsed.toISOString();
+  }
+  const untilRaw = c.req.query("until");
+  let until: string | undefined;
+  if (untilRaw !== undefined) {
+    const parsed = new Date(untilRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "until must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    until = parsed.toISOString();
+  }
+
+  // Validate cursor: must be base64-decodable JSON. The service still
+  // tolerates malformed cursors (logs + ignores), but rejecting at the
+  // route turns a silent empty-page bug into an explicit 400.
+  const cursorRaw = c.req.query("cursor");
+  if (cursorRaw !== undefined) {
+    try {
+      const decoded = Buffer.from(cursorRaw, "base64").toString();
+      const parsed = JSON.parse(decoded);
+      if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+    } catch {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "cursor must be a base64-encoded JSON object" },
+        },
+        400,
+      );
+    }
+  }
+
+  const { items, cursor } = await getRatifications({
+    pair: pairRaw,
+    timeframe: c.req.query("timeframe"),
+    triggerReason: c.req.query("triggerReason"),
+    since,
+    until,
+    cursor: cursorRaw,
+    limit,
+  });
+
+  return c.json({ success: true, data: { items, cursor } });
 });
 
 admin.get("/news", async (c) => {
