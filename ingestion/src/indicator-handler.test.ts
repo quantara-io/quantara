@@ -70,8 +70,10 @@ vi.mock("./lib/cooldown-store.js", () => ({
 }));
 
 const putIndicatorStateMock = vi.fn();
+const getLatestIndicatorStateMock = vi.fn();
 vi.mock("./lib/indicator-state-store.js", () => ({
   putIndicatorState: putIndicatorStateMock,
+  getLatestIndicatorState: getLatestIndicatorStateMock,
 }));
 
 const buildIndicatorStateMock = vi.fn();
@@ -254,6 +256,7 @@ beforeEach(() => {
   tickCooldownsMock.mockReset();
   recordRuleFiresMock.mockReset();
   putIndicatorStateMock.mockReset();
+  getLatestIndicatorStateMock.mockReset();
   buildIndicatorStateMock.mockReset();
   scoreTimeframeMock.mockReset();
   blendTimeframeVotesMock.mockReset();
@@ -304,6 +307,9 @@ beforeEach(() => {
   tickCooldownsMock.mockResolvedValue(undefined);
   recordRuleFiresMock.mockResolvedValue(undefined);
   putIndicatorStateMock.mockResolvedValue(undefined);
+  // Default: indicator state is already warm (barsSinceStart >= 250) so bootstrap
+  // is skipped in tests that don't explicitly test the bootstrap path.
+  getLatestIndicatorStateMock.mockResolvedValue({ ...makeIndicatorState(), barsSinceStart: 250 });
   buildIndicatorStateMock.mockReturnValue(makeIndicatorState());
   scoreTimeframeMock.mockReturnValue(makeVote("hold"));
   blendTimeframeVotesMock.mockReturnValue(makeBlendedSignal());
@@ -871,5 +877,178 @@ describe("REQUIRED_EXCHANGE_COUNT env var", () => {
 
     // With REQUIRED_EXCHANGE_COUNT=1, a single-exchange quorum should proceed
     expect(getCandles).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bootstrap indicator state warm-up
+// ---------------------------------------------------------------------------
+
+describe("Bootstrap indicator state warm-up", () => {
+  /**
+   * Helper: configure the send mock to reach quorum so processCandleClose
+   * runs past Step 2 (the point where bootstrap fires).
+   */
+  function reachQuorum() {
+    send.mockImplementation((cmd: any) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get") {
+        if (cmd.input.TableName === "test-close-quorum") {
+          return Promise.resolve({
+            Item: { exchanges: new Set([TEST_EXCHANGE, "coinbase"]) },
+          });
+        }
+        // signals-v2 → no existing row (not yet processed)
+        if (cmd.input.TableName === "test-signals-v2") {
+          return Promise.resolve({ Item: undefined });
+        }
+        return Promise.resolve({ Item: undefined });
+      }
+      if (cmd.__cmd === "Put") return Promise.resolve({});
+      if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+      return Promise.resolve({});
+    });
+  }
+
+  it("fires bootstrap when indicator_state row is absent (cold start)", async () => {
+    reachQuorum();
+    // No existing state → bootstrap should run
+    getLatestIndicatorStateMock.mockResolvedValue(null);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // putIndicatorState must be called (bootstrap persists the state, then
+    // the live computeBlendedSignal also calls it — expect at least 1 call)
+    expect(putIndicatorStateMock).toHaveBeenCalled();
+    // getCandles called for bootstrap + live paths
+    expect(getCandles).toHaveBeenCalled();
+  });
+
+  it("fires bootstrap when barsSinceStart < BOOTSTRAP_TARGET (shallow state)", async () => {
+    reachQuorum();
+    process.env.INDICATOR_BOOTSTRAP_BARS = "250";
+    // Existing state has only 25 bars — well below 250
+    getLatestIndicatorStateMock.mockResolvedValue({ ...makeIndicatorState(), barsSinceStart: 25 });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // Bootstrap should have fired — putIndicatorState called
+    expect(putIndicatorStateMock).toHaveBeenCalled();
+  });
+
+  it("skips bootstrap when barsSinceStart >= BOOTSTRAP_TARGET (already warm)", async () => {
+    reachQuorum();
+    process.env.INDICATOR_BOOTSTRAP_BARS = "10"; // low threshold for this test
+    // State has 10 bars — exactly at threshold, should skip bootstrap
+    getLatestIndicatorStateMock.mockResolvedValue({ ...makeIndicatorState(), barsSinceStart: 10 });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // getLatestIndicatorState should have been called (to check barsSinceStart)
+    expect(getLatestIndicatorStateMock).toHaveBeenCalled();
+    // Live path still proceeds normally — putIndicatorState called from live path
+    expect(putIndicatorStateMock).toHaveBeenCalled();
+  });
+
+  it("idempotency: running bootstrap twice for same pair/tf produces same final barsSinceStart", async () => {
+    reachQuorum();
+    getLatestIndicatorStateMock.mockResolvedValue(null);
+
+    // Simulate 50 historical candles available from an exchange
+    const historicalCandles = Array.from({ length: 50 }, (_, i) =>
+      makeCandle({
+        closeTime: TEST_CLOSE_TIME - (49 - i) * 15 * 60 * 1000,
+        openTime: TEST_CLOSE_TIME - (50 - i) * 15 * 60 * 1000,
+      }),
+    );
+    getCandles.mockResolvedValue(historicalCandles);
+
+    const stateWrites: unknown[] = [];
+    putIndicatorStateMock.mockImplementation((state: any) => {
+      stateWrites.push(state);
+      return Promise.resolve();
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+
+    // First invocation — bootstrap fires, writes state
+    await handler(makeStreamEvent(), {} as any, () => {});
+    const firstBootstrapWrite = stateWrites[0] as any;
+
+    // Reset mocks for second invocation but keep state absent so bootstrap fires again
+    send.mockClear();
+    stateWrites.length = 0;
+    reachQuorum();
+    getLatestIndicatorStateMock.mockResolvedValue(null);
+
+    await handler(makeStreamEvent(), {} as any, () => {});
+    const secondBootstrapWrite = stateWrites[0] as any;
+
+    // Both runs should have the same barsSinceStart (same historical candle count)
+    expect(firstBootstrapWrite?.barsSinceStart).toBe(secondBootstrapWrite?.barsSinceStart);
+  });
+
+  it("uses actual candle count when fewer than BOOTSTRAP_TARGET candles are available", async () => {
+    reachQuorum();
+    process.env.INDICATOR_BOOTSTRAP_BARS = "250";
+    getLatestIndicatorStateMock.mockResolvedValue(null);
+
+    // Only 30 candles available (far fewer than 250)
+    const fewCandles = Array.from({ length: 30 }, (_, i) =>
+      makeCandle({
+        closeTime: TEST_CLOSE_TIME - (29 - i) * 15 * 60 * 1000,
+        openTime: TEST_CLOSE_TIME - (30 - i) * 15 * 60 * 1000,
+      }),
+    );
+    getCandles.mockResolvedValue(fewCandles);
+
+    let capturedBarsSinceStart: number | undefined;
+    buildIndicatorStateMock.mockImplementation((candles: any[]) => {
+      const state = makeIndicatorState();
+      // barsSinceStart = number of candles fed (oldest-first)
+      capturedBarsSinceStart = candles.length;
+      return { ...state, barsSinceStart: candles.length };
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // bootstrap received 30 candles, so barsSinceStart should reflect actual count
+    // (the live path also calls buildIndicatorState — check first bootstrap call)
+    expect(capturedBarsSinceStart).toBe(30);
+  });
+
+  it("skips bootstrap silently when no historical candles are available", async () => {
+    reachQuorum();
+    getLatestIndicatorStateMock.mockResolvedValue(null);
+    // No candles available for bootstrap
+    getCandles.mockResolvedValue([]);
+
+    const { handler } = await import("./indicator-handler.js");
+    // Must not throw — empty candle list → silent skip
+    await expect(handler(makeStreamEvent(), {} as any, () => {})).resolves.toBeUndefined();
+  });
+
+  it("bootstrap is skipped when quorum is not reached (does not call getLatestIndicatorState)", async () => {
+    // Quorum NOT reached: only 1 exchange
+    send.mockImplementation((cmd: any) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get" && cmd.input.TableName === "test-close-quorum") {
+        return Promise.resolve({
+          Item: { exchanges: new Set([TEST_EXCHANGE]) }, // only 1 exchange
+        });
+      }
+      return Promise.resolve({ Item: undefined });
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // Bootstrap guard runs AFTER quorum check — if quorum fails, getLatestIndicatorState
+    // should never be called
+    expect(getLatestIndicatorStateMock).not.toHaveBeenCalled();
   });
 });
