@@ -387,7 +387,7 @@ resource "aws_dynamodb_table" "indicator_state" {
 }
 
 # Phase 5a: embedding-cache — stores article embedding vectors for cosine-similarity dedup.
-# Kept separate from news-events because each vector is 1536 floats (text-embedding-3-small)
+# Kept separate from news-events because each vector is 1024 floats (Bedrock Titan v2 — amazon.titan-embed-text-v2:0)
 # and not all consumers need it. TTL = 24 h (set by the enrichment Lambda).
 resource "aws_dynamodb_table" "embedding_cache" {
   name         = "${local.prefix}-embedding-cache"
