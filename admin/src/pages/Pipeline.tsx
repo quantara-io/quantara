@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PAIRS } from "@quantara/shared";
 import { apiFetch } from "../lib/api";
 
 // ---------------------------------------------------------------------------
@@ -54,16 +55,18 @@ interface PipelineData {
 // Constants
 // ---------------------------------------------------------------------------
 
-const TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
-const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
+const TIMEFRAMES = ["15m", "1h", "4h", "1d", "consensus"] as const;
 const POLL_MS = 5_000;
 
-/** Timeframe durations in seconds — used for age colour thresholds. */
+/** Timeframe durations in seconds — used for age colour thresholds.
+ *  `consensus` is a rolled-up pseudo-tf with no fixed cadence; bound it to
+ *  the slowest real tf so the cell never goes red on age alone.  */
 const TF_DURATION_S: Record<string, number> = {
   "15m": 15 * 60,
   "1h": 60 * 60,
   "4h": 4 * 60 * 60,
   "1d": 24 * 60 * 60,
+  consensus: 24 * 60 * 60,
 };
 
 // ---------------------------------------------------------------------------
@@ -111,14 +114,20 @@ function Stat({ label, value, valueClass }: { label: string; value: string; valu
   return (
     <div className="flex items-baseline justify-between gap-1">
       <span className="text-[10px] text-slate-500 shrink-0">{label}</span>
-      <span className={`text-[11px] font-mono tabular-nums truncate ${valueClass ?? "text-slate-300"}`}>{value}</span>
+      <span
+        className={`text-[11px] font-mono tabular-nums truncate ${valueClass ?? "text-slate-300"}`}
+      >
+        {value}
+      </span>
     </div>
   );
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[9px] uppercase tracking-widest text-slate-600 mb-0.5 mt-1.5 first:mt-0">{children}</div>
+    <div className="text-[9px] uppercase tracking-widest text-slate-600 mb-0.5 mt-1.5 first:mt-0">
+      {children}
+    </div>
   );
 }
 
@@ -148,11 +157,12 @@ function CellCard({
     <button
       onClick={onClick}
       className={`w-full text-left rounded-lg border p-2 transition-colors
-        ${selected
-          ? "border-cyan-600 bg-cyan-950/30"
-          : isEmpty
-            ? "border-slate-800 bg-slate-950 opacity-50"
-            : "border-slate-800 bg-slate-900 hover:border-slate-700 hover:bg-slate-800/60"
+        ${
+          selected
+            ? "border-cyan-600 bg-cyan-950/30"
+            : isEmpty
+              ? "border-slate-800 bg-slate-950 opacity-50"
+              : "border-slate-800 bg-slate-900 hover:border-slate-700 hover:bg-slate-800/60"
         }`}
     >
       {isEmpty ? (
@@ -171,10 +181,19 @@ function CellCard({
             value={cell.signal.type ?? "—"}
             valueClass={signalTypeColor(cell.signal.type)}
           />
-          <Stat label="Conf" value={cell.signal.confidence !== null ? `${(cell.signal.confidence * 100).toFixed(0)}%` : "—"} />
+          <Stat
+            label="Conf"
+            value={
+              cell.signal.confidence !== null
+                ? `${(cell.signal.confidence * 100).toFixed(0)}%`
+                : "—"
+            }
+          />
           {cell.signal.ratificationStatus && (
             <div className="mt-0.5">
-              <span className={`text-[9px] px-1.5 py-0.5 rounded border ${ratificationBadge(cell.signal.ratificationStatus)}`}>
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded border ${ratificationBadge(cell.signal.ratificationStatus)}`}
+              >
                 {cell.signal.ratificationStatus}
               </span>
             </div>
@@ -195,13 +214,7 @@ function CellCard({
 // Side panel
 // ---------------------------------------------------------------------------
 
-function SidePanel({
-  cell,
-  onClose,
-}: {
-  cell: PipelineCell;
-  onClose: () => void;
-}) {
+function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void }) {
   return (
     <div className="fixed inset-y-0 right-0 w-full max-w-xl bg-slate-950 border-l border-slate-800 overflow-y-auto z-20 shadow-2xl">
       <div className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
@@ -221,7 +234,9 @@ function SidePanel({
       <div className="p-4 space-y-4">
         {/* Indicator full JSON */}
         <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">Full Indicator State</h3>
+          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
+            Full Indicator State
+          </h3>
           {cell.indicator.raw ? (
             <pre className="text-[10px] text-slate-300 bg-slate-900 rounded p-3 overflow-x-auto whitespace-pre-wrap">
               {JSON.stringify(cell.indicator.raw, null, 2)}
@@ -246,8 +261,12 @@ function SidePanel({
         {/* Interpretation text */}
         {cell.signal.interpretationText && (
           <section>
-            <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">Interpretation (truncated)</h3>
-            <p className="text-xs text-slate-300 bg-slate-900 rounded p-3">{cell.signal.interpretationText}</p>
+            <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
+              Interpretation (truncated)
+            </h3>
+            <p className="text-xs text-slate-300 bg-slate-900 rounded p-3">
+              {cell.signal.interpretationText}
+            </p>
           </section>
         )}
 
@@ -267,7 +286,9 @@ function SidePanel({
                       {(row.type as string | null) ?? "—"}
                     </span>
                     {(row.ratificationStatus as string | null) && (
-                      <span className={`px-1.5 py-0.5 rounded border text-[9px] ${ratificationBadge(row.ratificationStatus as string | null)}`}>
+                      <span
+                        className={`px-1.5 py-0.5 rounded border text-[9px] ${ratificationBadge(row.ratificationStatus as string | null)}`}
+                      >
                         {row.ratificationStatus as string}
                       </span>
                     )}
@@ -277,7 +298,8 @@ function SidePanel({
                         : "—"}
                     </span>
                   </div>
-                  {typeof (row.ratificationVerdict as Record<string, unknown> | null | undefined)?.reasoning === "string" && (
+                  {typeof (row.ratificationVerdict as Record<string, unknown> | null | undefined)
+                    ?.reasoning === "string" && (
                     <p className="text-slate-400 line-clamp-2">
                       {String((row.ratificationVerdict as Record<string, unknown>).reasoning)}
                     </p>
@@ -290,12 +312,16 @@ function SidePanel({
 
         {/* Sentiment detail */}
         <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">Sentiment Detail</h3>
+          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
+            Sentiment Detail
+          </h3>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-slate-500">
                 {["Window", "Score", "Magnitude", "Articles", "Age"].map((h) => (
-                  <th key={h} className="text-left font-medium pb-1.5">{h}</th>
+                  <th key={h} className="text-left font-medium pb-1.5">
+                    {h}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -306,10 +332,14 @@ function SidePanel({
               ].map(({ label, data, dur }) => (
                 <tr key={label} className="border-t border-slate-800">
                   <td className="py-1.5 text-slate-400">{label}</td>
-                  <td className={`py-1.5 font-mono ${ageColor(data.ageSeconds, dur)}`}>{fmt(data.score, 3)}</td>
+                  <td className={`py-1.5 font-mono ${ageColor(data.ageSeconds, dur)}`}>
+                    {fmt(data.score, 3)}
+                  </td>
                   <td className="py-1.5 font-mono text-slate-300">{fmt(data.magnitude, 3)}</td>
                   <td className="py-1.5 text-slate-300">{data.articleCount ?? "—"}</td>
-                  <td className={`py-1.5 font-mono ${ageColor(data.ageSeconds, dur)}`}>{fmtAge(data.ageSeconds)}</td>
+                  <td className={`py-1.5 font-mono ${ageColor(data.ageSeconds, dur)}`}>
+                    {fmtAge(data.ageSeconds)}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -395,9 +425,14 @@ export function Pipeline() {
           <table className="w-full border-separate border-spacing-1.5" style={{ minWidth: 640 }}>
             <thead>
               <tr>
-                <th className="text-left text-[10px] uppercase tracking-widest text-slate-500 pb-1 w-24">Pair</th>
+                <th className="text-left text-[10px] uppercase tracking-widest text-slate-500 pb-1 w-24">
+                  Pair
+                </th>
                 {TIMEFRAMES.map((tf) => (
-                  <th key={tf} className="text-center text-[10px] uppercase tracking-widest text-slate-500 pb-1">
+                  <th
+                    key={tf}
+                    className="text-center text-[10px] uppercase tracking-widest text-slate-500 pb-1"
+                  >
                     {tf}
                   </th>
                 ))}
@@ -412,7 +447,9 @@ export function Pipeline() {
                     if (!cell) {
                       return (
                         <td key={tf} className="align-top">
-                          <div className="rounded-lg border border-slate-800 bg-slate-950 p-2 opacity-40 text-[11px] text-slate-600">—</div>
+                          <div className="rounded-lg border border-slate-800 bg-slate-950 p-2 opacity-40 text-[11px] text-slate-600">
+                            —
+                          </div>
                         </td>
                       );
                     }

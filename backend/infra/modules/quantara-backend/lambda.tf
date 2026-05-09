@@ -44,6 +44,9 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
         aws_dynamodb_table.campaigns.arn,
         aws_dynamodb_table.signals_v2.arn, "${aws_dynamodb_table.signals_v2.arn}/index/*",
         aws_dynamodb_table.indicator_state.arn,
+        # Read-only — pipeline-state.service.ts in the admin route reads
+        # 4h + 24h sentiment aggregates per pair for the Pipeline State page.
+        aws_dynamodb_table.sentiment_aggregates.arn,
       ]
     }]
   })

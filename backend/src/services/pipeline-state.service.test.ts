@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Hono } from "hono";
 
 // ---------------------------------------------------------------------------
 // Mock the DynamoDB document client send function
@@ -76,28 +75,36 @@ describe("getPipelineState", () => {
   it("returns cells with populated indicator + signal + sentiment when data exists", async () => {
     // For each QueryCommand call (indicator + signal per pair×tf) and GetCommand (sentiment),
     // return appropriate mock data. We test with filterPair to reduce cardinality.
-    sendMock.mockImplementation((cmd: { _type: string; KeyConditionExpression?: string; Key?: { pair?: string; window?: string } }) => {
-      if (cmd._type === "QueryCommand") {
-        // Determine if this is an indicator or signal query by key expression shape.
-        const expr = cmd.KeyConditionExpression ?? "";
-        if (expr.includes("begins_with")) {
-          // signals-v2 query
-          return Promise.resolve({ Items: [makeSignalItem("BTC/USDT", "15m")] });
+    sendMock.mockImplementation(
+      (cmd: {
+        _type: string;
+        KeyConditionExpression?: string;
+        Key?: { pair?: string; window?: string };
+      }) => {
+        if (cmd._type === "QueryCommand") {
+          // Determine if this is an indicator or signal query by key expression shape.
+          const expr = cmd.KeyConditionExpression ?? "";
+          if (expr.includes("begins_with")) {
+            // signals-v2 query
+            return Promise.resolve({ Items: [makeSignalItem("BTC/USDT", "15m")] });
+          }
+          // indicator-state query
+          return Promise.resolve({ Items: [makeIndicatorItem("BTC/USDT", "binanceus", "15m")] });
         }
-        // indicator-state query
-        return Promise.resolve({ Items: [makeIndicatorItem("BTC/USDT", "binanceus", "15m")] });
-      }
-      if (cmd._type === "GetCommand") {
-        const key = cmd.Key as { pair: string; window: string } | undefined;
-        return Promise.resolve({ Item: makeSentimentItem(key?.pair ?? "BTC/USDT", key?.window ?? "4h") });
-      }
-      return Promise.resolve({});
-    });
+        if (cmd._type === "GetCommand") {
+          const key = cmd.Key as { pair: string; window: string } | undefined;
+          return Promise.resolve({
+            Item: makeSentimentItem(key?.pair ?? "BTC/USDT", key?.window ?? "4h"),
+          });
+        }
+        return Promise.resolve({});
+      },
+    );
 
     const { getPipelineState } = await import("./pipeline-state.service.js");
     const result = await getPipelineState("BTC/USDT");
 
-    expect(result.cells.length).toBe(4); // 4 timeframes for 1 pair
+    expect(result.cells.length).toBe(5); // 4 real timeframes + consensus
     expect(result.generatedAt).toBeTruthy();
 
     const cell = result.cells[0];
@@ -130,7 +137,7 @@ describe("getPipelineState", () => {
     const { getPipelineState } = await import("./pipeline-state.service.js");
     const result = await getPipelineState("BTC/USDT");
 
-    expect(result.cells.length).toBe(4);
+    expect(result.cells.length).toBe(5); // 4 real timeframes + consensus
     const cell = result.cells[0];
     expect(cell.indicator.rsi14).toBeNull();
     expect(cell.indicator.ageSeconds).toBeNull();
@@ -139,7 +146,7 @@ describe("getPipelineState", () => {
     expect(cell.sentiment4h.score).toBeNull();
   });
 
-  it("returns all 5 pairs × 4 timeframes = 20 cells when no filter given", async () => {
+  it("returns all 5 pairs × 5 timeframes (incl. consensus) = 25 cells when no filter given", async () => {
     sendMock.mockImplementation((cmd: { _type: string }) => {
       if (cmd._type === "QueryCommand") return Promise.resolve({ Items: [] });
       if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
@@ -148,7 +155,52 @@ describe("getPipelineState", () => {
 
     const { getPipelineState } = await import("./pipeline-state.service.js");
     const result = await getPipelineState();
-    expect(result.cells.length).toBe(20); // 5 pairs × 4 timeframes
+    expect(result.cells.length).toBe(25); // 5 pairs × (15m / 1h / 4h / 1d / consensus)
+  });
+
+  it("fetches sentiment per-pair (not per-pair-per-tf)", async () => {
+    // 5 timeframes × 1 pair = 5 cells. Sentiment is per-pair, so the
+    // GetCommand for sentiment_aggregates should fire exactly twice for the
+    // single pair (4h + 24h windows), not 10 times (twice per cell).
+    let getCount = 0;
+    sendMock.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === "GetCommand") {
+        getCount += 1;
+        return Promise.resolve({ Item: undefined });
+      }
+      if (cmd._type === "QueryCommand") return Promise.resolve({ Items: [] });
+      return Promise.resolve({});
+    });
+
+    const { getPipelineState } = await import("./pipeline-state.service.js");
+    await getPipelineState("BTC/USDT");
+    expect(getCount).toBe(2); // 4h + 24h, fetched once per pair
+  });
+
+  it("includes a `consensus` column with rolled-up cross-tf signal lookup", async () => {
+    sendMock.mockImplementation((cmd: { _type: string; KeyConditionExpression?: string }) => {
+      if (cmd._type === "QueryCommand") {
+        // For the signals_v2 consensus query the tfPrefix filter is dropped:
+        // KeyConditionExpression is "#pair = :pair" exactly.
+        const expr = cmd.KeyConditionExpression ?? "";
+        if (expr === "#pair = :pair") {
+          return Promise.resolve({
+            Items: [
+              { pair: "BTC/USDT", sk: "1d#5", type: "sell", confidence: 0.7, asOf: Date.now() },
+            ],
+          });
+        }
+        return Promise.resolve({ Items: [] });
+      }
+      if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
+      return Promise.resolve({});
+    });
+
+    const { getPipelineState } = await import("./pipeline-state.service.js");
+    const result = await getPipelineState("BTC/USDT");
+    const consensusCell = result.cells.find((c) => c.timeframe === "consensus");
+    expect(consensusCell).toBeDefined();
+    expect(consensusCell?.signal.type).toBe("sell");
   });
 
   it("returns an empty cells array if filterPair does not match any configured pair", async () => {
@@ -164,14 +216,16 @@ describe("getPipelineState", () => {
         const expr = cmd.KeyConditionExpression ?? "";
         if (expr.includes("begins_with")) {
           return Promise.resolve({
-            Items: [{
-              pair: "BTC/USDT",
-              sk: "15m#12345",
-              type: "sell",
-              confidence: 0.7,
-              asOf: Date.now() - 1000,
-              interpretation: { text: longText },
-            }],
+            Items: [
+              {
+                pair: "BTC/USDT",
+                sk: "15m#12345",
+                type: "sell",
+                confidence: 0.7,
+                asOf: Date.now() - 1000,
+                interpretation: { text: longText },
+              },
+            ],
           });
         }
         return Promise.resolve({ Items: [] });
@@ -221,7 +275,7 @@ describe("getPipelineState", () => {
     const { getPipelineState } = await import("./pipeline-state.service.js");
     const result = await getPipelineState("BTC/USDT");
     // All cells should still be returned with null values
-    expect(result.cells.length).toBe(4);
+    expect(result.cells.length).toBe(5); // 4 real timeframes + consensus
     const cell = result.cells[0];
     expect(cell.indicator.raw).toBeNull();
     expect(cell.signal.type).toBeNull();
@@ -229,54 +283,6 @@ describe("getPipelineState", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Route integration test
-// ---------------------------------------------------------------------------
-
-describe("GET /pipeline-state route", () => {
-  it("returns 200 with success envelope containing cells array", async () => {
-    sendMock.mockImplementation((cmd: { _type: string }) => {
-      if (cmd._type === "QueryCommand") return Promise.resolve({ Items: [] });
-      if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
-      return Promise.resolve({});
-    });
-
-    // Build a minimal Hono app with just the admin route (without auth middleware)
-    const { getPipelineState } = await import("./pipeline-state.service.js");
-    const app = new Hono();
-    app.get("/pipeline-state", async (c) => {
-      const pair = c.req.query("pair");
-      const data = await getPipelineState(pair);
-      return c.json({ success: true, data });
-    });
-
-    const res = await app.request("/pipeline-state");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { success: boolean; data: { cells: unknown[]; generatedAt: string } };
-    expect(body.success).toBe(true);
-    expect(Array.isArray(body.data.cells)).toBe(true);
-    expect(body.data.generatedAt).toBeTruthy();
-  });
-
-  it("filters by pair query param", async () => {
-    sendMock.mockImplementation((cmd: { _type: string }) => {
-      if (cmd._type === "QueryCommand") return Promise.resolve({ Items: [] });
-      if (cmd._type === "GetCommand") return Promise.resolve({ Item: undefined });
-      return Promise.resolve({});
-    });
-
-    const { getPipelineState } = await import("./pipeline-state.service.js");
-    const app = new Hono();
-    app.get("/pipeline-state", async (c) => {
-      const pair = c.req.query("pair");
-      const data = await getPipelineState(pair);
-      return c.json({ success: true, data });
-    });
-
-    const res = await app.request("/pipeline-state?pair=BTC%2FUSDT");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { success: boolean; data: { cells: { pair: string }[] } };
-    expect(body.data.cells.length).toBe(4);
-    expect(body.data.cells.every((c) => c.pair === "BTC/USDT")).toBe(true);
-  });
-});
+// Note: route-level tests for `/pipeline-state` (auth + middleware + 400 on
+// bad pair, etc.) live in `backend/src/routes/admin.test.ts` so they exercise
+// the real `admin.ts` handler chain. This file is service-unit-only.

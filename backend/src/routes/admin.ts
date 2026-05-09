@@ -80,6 +80,15 @@ admin.get("/signals", async (c) => {
 
 admin.get("/pipeline-state", async (c) => {
   const pair = c.req.query("pair");
+  if (pair !== undefined && !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
   const data = await getPipelineState(pair);
   return c.json({ success: true, data });
 });

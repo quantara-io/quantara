@@ -9,6 +9,8 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 
+import { PAIRS } from "@quantara/shared";
+
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 // ---------------------------------------------------------------------------
@@ -20,8 +22,7 @@ const INDICATOR_STATE_TABLE =
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
 
 const SIGNALS_V2_TABLE =
-  process.env.TABLE_SIGNALS_V2 ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+  process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
 
 const SENTIMENT_AGGREGATES_TABLE =
   process.env.TABLE_SENTIMENT_AGGREGATES ??
@@ -31,18 +32,25 @@ const SENTIMENT_AGGREGATES_TABLE =
 // Configuration
 // ---------------------------------------------------------------------------
 
-const CONFIGURED_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
-const BLEND_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
-type BlendTimeframe = (typeof BLEND_TIMEFRAMES)[number];
+// `consensus` is a pseudo-timeframe column showing the cross-timeframe rolled-up
+// state for the pair: the freshest indicator_state row written under
+// `pair#consensus#*` (consensus exchange path inside indicator-handler) and the
+// newest signals_v2 row regardless of emitting timeframe.
+const PIPELINE_TIMEFRAMES = ["15m", "1h", "4h", "1d", "consensus"] as const;
+type PipelineTimeframe = (typeof PIPELINE_TIMEFRAMES)[number];
 
 const DEFAULT_EXCHANGE = "binanceus";
+const CONSENSUS_EXCHANGE = "consensus";
 
 /** Timeframe durations in milliseconds — used for ageSeconds colour thresholds. */
-export const TF_DURATION_MS: Record<BlendTimeframe, number> = {
+export const TF_DURATION_MS: Record<PipelineTimeframe, number> = {
   "15m": 15 * 60 * 1000,
   "1h": 60 * 60 * 1000,
   "4h": 4 * 60 * 60 * 1000,
   "1d": 24 * 60 * 60 * 1000,
+  // No fixed cadence — pick the slowest tf bound so the cell never goes red on
+  // age alone.
+  consensus: 24 * 60 * 60 * 1000,
 };
 
 // ---------------------------------------------------------------------------
@@ -85,7 +93,7 @@ export interface SentimentWindowCell {
 
 export interface PipelineCell {
   pair: string;
-  timeframe: BlendTimeframe;
+  timeframe: PipelineTimeframe;
   indicator: IndicatorStateCell;
   signal: SignalCell;
   sentiment4h: SentimentWindowCell;
@@ -104,10 +112,18 @@ export interface PipelineStateResult {
 async function fetchIndicatorState(
   pair: string,
   exchange: string,
-  timeframe: BlendTimeframe,
+  timeframe: PipelineTimeframe,
 ): Promise<IndicatorStateCell> {
   try {
-    const pk = `${pair}#${exchange}#${timeframe}`;
+    // For the `consensus` pseudo-timeframe column, indicator-handler stamps
+    // consensus-exchange rows per real timeframe. We pick the 15m row as the
+    // representative "current consensus state" since 15m updates fastest.
+    // (Per-tf consensus internals are still visible in the standard columns
+    // when the worker rolls those out separately.)
+    const pk =
+      timeframe === "consensus"
+        ? `${pair}#${CONSENSUS_EXCHANGE}#15m`
+        : `${pair}#${exchange}#${timeframe}`;
     const result = await client.send(
       new QueryCommand({
         TableName: INDICATOR_STATE_TABLE,
@@ -122,8 +138,7 @@ async function fetchIndicatorState(
     if (!item) return emptyIndicator();
 
     const asOfMs = (item.asOfMs as number | undefined) ?? null;
-    const ageSeconds =
-      asOfMs !== null ? Math.round((Date.now() - asOfMs) / 1000) : null;
+    const ageSeconds = asOfMs !== null ? Math.round((Date.now() - asOfMs) / 1000) : null;
 
     return {
       barsSinceStart: (item.barsSinceStart as number | null) ?? null,
@@ -155,40 +170,50 @@ function emptyIndicator(): IndicatorStateCell {
   };
 }
 
-async function fetchSignal(pair: string, timeframe: BlendTimeframe): Promise<SignalCell> {
+async function fetchSignal(pair: string, timeframe: PipelineTimeframe): Promise<SignalCell> {
   try {
-    // Fetch latest 5 items for this pair × tf (newest first) so we can surface
-    // ratification history in the side panel.
-    const result = await client.send(
-      new QueryCommand({
-        TableName: SIGNALS_V2_TABLE,
-        KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :tfPrefix)",
-        ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
-        ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${timeframe}#` },
-        ScanIndexForward: false,
-        Limit: 5,
-      }),
-    );
+    // Fetch latest 5 items (newest first) for the side-panel history view.
+    // For the `consensus` column, drop the tfPrefix filter so the freshest
+    // signal across ANY emitting timeframe is surfaced.
+    const result =
+      timeframe === "consensus"
+        ? await client.send(
+            new QueryCommand({
+              TableName: SIGNALS_V2_TABLE,
+              KeyConditionExpression: "#pair = :pair",
+              ExpressionAttributeNames: { "#pair": "pair" },
+              ExpressionAttributeValues: { ":pair": pair },
+              ScanIndexForward: false,
+              Limit: 5,
+            }),
+          )
+        : await client.send(
+            new QueryCommand({
+              TableName: SIGNALS_V2_TABLE,
+              KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :tfPrefix)",
+              ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+              ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${timeframe}#` },
+              ScanIndexForward: false,
+              Limit: 5,
+            }),
+          );
 
     const items = (result.Items ?? []) as Record<string, unknown>[];
     if (items.length === 0) return emptySignal();
 
     const latest = items[0];
     const asOfMs = (latest.asOf as number | undefined) ?? null;
-    const ageSeconds =
-      asOfMs !== null ? Math.round((Date.now() - asOfMs) / 1000) : null;
+    const ageSeconds = asOfMs !== null ? Math.round((Date.now() - asOfMs) / 1000) : null;
 
     // interpretation.text — the signal store materialises this via buildInterpretation;
     // it may be stored in perTimeframe or at top level depending on version.
     // We pull from ratificationVerdict.reasoning as fallback.
-    const rawInterpretation = (
-      (latest.interpretation as Record<string, unknown> | undefined)?.text ??
+    const rawInterpretation = ((latest.interpretation as Record<string, unknown> | undefined)
+      ?.text ??
       (latest.ratificationVerdict as Record<string, unknown> | undefined)?.reasoning ??
-      null
-    ) as string | null;
+      null) as string | null;
 
-    const interpretationText =
-      rawInterpretation !== null ? rawInterpretation.slice(0, 160) : null;
+    const interpretationText = rawInterpretation !== null ? rawInterpretation.slice(0, 160) : null;
 
     return {
       type: (latest.type as string | null) ?? null,
@@ -218,10 +243,7 @@ function emptySignal(): SignalCell {
   };
 }
 
-async function fetchSentiment(
-  pair: string,
-  window: "4h" | "24h",
-): Promise<SentimentWindowCell> {
+async function fetchSentiment(pair: string, window: "4h" | "24h"): Promise<SentimentWindowCell> {
   try {
     const result = await client.send(
       new GetCommand({
@@ -234,8 +256,7 @@ async function fetchSentiment(
 
     const computedAt = (item.computedAt as string | undefined) ?? null;
     const updatedAtMs = computedAt !== null ? new Date(computedAt).getTime() : null;
-    const ageSeconds =
-      updatedAtMs !== null ? Math.round((Date.now() - updatedAtMs) / 1000) : null;
+    const ageSeconds = updatedAtMs !== null ? Math.round((Date.now() - updatedAtMs) / 1000) : null;
 
     return {
       score: (item.meanScore as number | null) ?? null,
@@ -266,31 +287,52 @@ function emptySentiment(): SentimentWindowCell {
 /**
  * Fetch the full pipeline state for all (or one) pair × timeframe cells.
  *
+ * Sentiment is per-pair (not per-pair-per-tf), so it's fetched ONCE per pair
+ * and reused across the per-tf cells. With 5 pairs × 5 timeframes that's
+ * 5 sentiment-aggregate GETs per window per request instead of 25 — matters
+ * at the 5-second poll cadence under multiple admin sessions.
+ *
  * Empty cells (no data) are returned with null fields rather than omitted,
  * so the frontend can render "—" without error.
  */
-export async function getPipelineState(
-  filterPair?: string,
-): Promise<PipelineStateResult> {
+export async function getPipelineState(filterPair?: string): Promise<PipelineStateResult> {
   const pairs =
     filterPair !== undefined
-      ? CONFIGURED_PAIRS.filter((p) => p === filterPair)
-      : CONFIGURED_PAIRS;
+      ? (PAIRS as readonly string[]).filter((p) => p === filterPair)
+      : (PAIRS as readonly string[]);
 
-  // Fan out all fetches concurrently.
+  // Per-pair sentiment fetched once and shared across all timeframe cells.
+  const perPairSentiment = await Promise.all(
+    pairs.map(async (pair) => {
+      const [sentiment4h, sentiment24h] = await Promise.all([
+        fetchSentiment(pair, "4h"),
+        fetchSentiment(pair, "24h"),
+      ]);
+      return { pair, sentiment4h, sentiment24h };
+    }),
+  );
+  const sentimentByPair = new Map(perPairSentiment.map((s) => [s.pair, s]));
+
+  // Fan out per-tf indicator + signal queries concurrently across all cells.
   const cellPromises: Promise<PipelineCell>[] = [];
 
   for (const pair of pairs) {
-    for (const timeframe of BLEND_TIMEFRAMES) {
+    const sentiment = sentimentByPair.get(pair);
+    for (const timeframe of PIPELINE_TIMEFRAMES) {
       cellPromises.push(
         (async (): Promise<PipelineCell> => {
-          const [indicator, signal, sentiment4h, sentiment24h] = await Promise.all([
+          const [indicator, signal] = await Promise.all([
             fetchIndicatorState(pair, DEFAULT_EXCHANGE, timeframe),
             fetchSignal(pair, timeframe),
-            fetchSentiment(pair, "4h"),
-            fetchSentiment(pair, "24h"),
           ]);
-          return { pair, timeframe, indicator, signal, sentiment4h, sentiment24h };
+          return {
+            pair,
+            timeframe,
+            indicator,
+            signal,
+            sentiment4h: sentiment?.sentiment4h ?? emptySentiment(),
+            sentiment24h: sentiment?.sentiment24h ?? emptySentiment(),
+          };
         })(),
       );
     }
