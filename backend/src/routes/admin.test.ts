@@ -7,6 +7,7 @@ const getNewsUsageMock = vi.fn();
 const getWhitelistMock = vi.fn();
 const setWhitelistMock = vi.fn();
 const getSignalsMock = vi.fn();
+const getPipelineStateMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
@@ -16,6 +17,10 @@ vi.mock("../services/admin.service.js", () => ({
   getWhitelist: getWhitelistMock,
   setWhitelist: setWhitelistMock,
   getSignals: getSignalsMock,
+}));
+
+vi.mock("../services/pipeline-state.service.js", () => ({
+  getPipelineState: getPipelineStateMock,
 }));
 
 let currentAuth: Record<string, unknown> = {
@@ -43,6 +48,7 @@ beforeEach(() => {
   getWhitelistMock.mockReset();
   setWhitelistMock.mockReset();
   getSignalsMock.mockReset();
+  getPipelineStateMock.mockReset();
   currentAuth = {
     userId: "user_admin",
     email: "admin@example.com",
@@ -433,5 +439,47 @@ describe("GET /market (extended)", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { data: { dispersion: number } };
     expect(body.data.dispersion).toBeCloseTo(dispersion);
+  });
+});
+
+describe("GET /pipeline-state", () => {
+  it("returns 200 with cells from the service", async () => {
+    getPipelineStateMock.mockResolvedValue({
+      cells: [],
+      generatedAt: "2026-05-09T00:00:00Z",
+    });
+    const app = await loadApp();
+    const res = await app.request("/pipeline-state");
+    expect(res.status).toBe(200);
+    expect(getPipelineStateMock).toHaveBeenCalledWith(undefined);
+    const body = (await res.json()) as { success: boolean; data: { cells: unknown[] } };
+    expect(body.success).toBe(true);
+    expect(Array.isArray(body.data.cells)).toBe(true);
+  });
+
+  it("forwards a valid pair to the service", async () => {
+    getPipelineStateMock.mockResolvedValue({ cells: [], generatedAt: "2026-05-09T00:00:00Z" });
+    const app = await loadApp();
+    const res = await app.request("/pipeline-state?pair=BTC/USDT");
+    expect(res.status).toBe(200);
+    expect(getPipelineStateMock).toHaveBeenCalledWith("BTC/USDT");
+  });
+
+  it("returns 400 when pair is not in PAIRS", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pipeline-state?pair=FOO/BAR");
+    expect(res.status).toBe(400);
+    expect(getPipelineStateMock).not.toHaveBeenCalled();
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("rejects non-admin auth context with 403", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/pipeline-state");
+    expect(res.status).toBe(403);
+    expect(getPipelineStateMock).not.toHaveBeenCalled();
   });
 });
