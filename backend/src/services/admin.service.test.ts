@@ -152,6 +152,38 @@ describe("encodeNewsCursor / decodeNewsCursor", () => {
     const bad = Buffer.from(JSON.stringify({ notDay: "foo" })).toString("base64url");
     expect(decodeNewsCursor(bad)).toBeNull();
   });
+
+  it("drops a malformed lastEvaluatedKey but keeps the day", async () => {
+    // Regression: previously, decodeNewsCursor accepted any lastEvaluatedKey
+    // shape and passed it straight to ExclusiveStartKey, where DynamoDB would
+    // throw and the endpoint would return an empty page. Now an invalid
+    // lastEvaluatedKey is silently dropped so the caller falls back to a
+    // day-only resume.
+    const { decodeNewsCursor } = await importService();
+    const malformed = Buffer.from(
+      JSON.stringify({
+        day: "2026-05-08",
+        lastEvaluatedKey: { nested: { bad: "shape" } }, // nested object — invalid for DDB key
+      }),
+    ).toString("base64url");
+    expect(decodeNewsCursor(malformed)).toEqual({ day: "2026-05-08" });
+  });
+
+  it("rejects lastEvaluatedKey containing arrays or null values", async () => {
+    // JSON.stringify drops `undefined` values, so the only round-trippable
+    // invalid LEK shapes are arrays-as-values, null-as-value, and nested
+    // objects (covered above).
+    const { decodeNewsCursor } = await importService();
+    for (const lek of [
+      { ok: "yes", arr: [1, 2] },
+      { ok: "yes", nullVal: null },
+    ]) {
+      const enc = Buffer.from(
+        JSON.stringify({ day: "2026-05-08", lastEvaluatedKey: lek }),
+      ).toString("base64url");
+      expect(decodeNewsCursor(enc)).toEqual({ day: "2026-05-08" });
+    }
+  });
 });
 
 describe("getNews", () => {
@@ -377,6 +409,47 @@ describe("getNews", () => {
     expect(result.news).toHaveLength(0);
     expect(result.nextCursor).toBeNull();
     expect(queryCalls).toBe(0);
+
+    vi.useRealTimers();
+  });
+
+  it("does not emit a nextCursor when the page fills exactly at the lookback boundary", async () => {
+    // Regression: when the page filled on the oldest allowed day and the
+    // loop advanced `currentDay` past NEWS_LOOKBACK_DAYS at the bottom, we
+    // would still emit a cursor pointing to that out-of-window day. The next
+    // call would short-circuit on the daysWalked check and return an empty
+    // page — confusing for clients.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
+    // Mock: today and yesterday return 0 items, then day NEWS_LOOKBACK_DAYS-1
+    // ago (i.e. 2026-04-26) returns exactly the requested 2 items so the
+    // page fills there and `currentDay` advances to 2026-04-25 — which is
+    // outside the 14-day window from today (2026-05-09).
+    const items = [
+      { newsId: "p1", publishedAt: "2026-04-26T10:00:00Z", publishedDay: "2026-04-26" },
+      { newsId: "p2", publishedAt: "2026-04-26T09:00:00Z", publishedDay: "2026-04-26" },
+    ];
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown> };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const day = cmd.input?.ExpressionAttributeValues?.[":day"] as string | undefined;
+          if (day === "2026-04-26") return { Items: items };
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    const { getNews } = await importService();
+    const result = await getNews(2);
+
+    expect(result.news).toHaveLength(2);
+    expect(result.nextCursor).toBeNull();
 
     vi.useRealTimers();
   });

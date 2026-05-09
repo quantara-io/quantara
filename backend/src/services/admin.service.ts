@@ -52,19 +52,45 @@ export function encodeNewsCursor(cursor: NewsCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
-/** Decode an opaque cursor. Returns null if the input is invalid. */
+/**
+ * Validate that an unknown value is a plausible DynamoDB ExclusiveStartKey:
+ * a flat object whose values are primitives DDB accepts in keys (string,
+ * number, boolean). Anything else (nested objects, arrays, null/undefined,
+ * functions) gets rejected so a malformed `lastEvaluatedKey` from a forged
+ * or corrupted cursor doesn't reach the SDK and fail the whole request.
+ */
+function isValidLastEvaluatedKey(v: unknown): v is Record<string, string | number | boolean> {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  for (const val of Object.values(v as Record<string, unknown>)) {
+    if (typeof val !== "string" && typeof val !== "number" && typeof val !== "boolean") {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Decode an opaque cursor. Returns null if the input is invalid. If the
+ * cursor's `day` is well-formed but `lastEvaluatedKey` has the wrong shape,
+ * we drop just the `lastEvaluatedKey` field rather than rejecting the whole
+ * cursor — the caller can still resume at the day boundary.
+ */
 export function decodeNewsCursor(encoded: string): NewsCursor | null {
   try {
     const obj = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as unknown;
     if (
-      typeof obj === "object" &&
-      obj !== null &&
-      "day" in obj &&
-      typeof (obj as { day: unknown }).day === "string"
+      typeof obj !== "object" ||
+      obj === null ||
+      !("day" in obj) ||
+      typeof (obj as { day: unknown }).day !== "string"
     ) {
-      return obj as NewsCursor;
+      return null;
     }
-    return null;
+    const day = (obj as { day: string }).day;
+    const rawLek = (obj as { lastEvaluatedKey?: unknown }).lastEvaluatedKey;
+    if (rawLek === undefined) return { day };
+    if (!isValidLastEvaluatedKey(rawLek)) return { day };
+    return { day, lastEvaluatedKey: rawLek };
   } catch {
     return null;
   }
@@ -494,14 +520,15 @@ export interface NewsUsage {
  *
  * The returned `nextCursor` is an opaque base64url token that encodes the
  * resume position (day + DynamoDB LastEvaluatedKey). Pass it as the `cursor`
- * query param on the next request to load the next page.
+ * query param on the next request to load the next page. `nextCursor` is
+ * suppressed when the resume position would already be outside the lookback
+ * window — emitting it would just produce an empty next page.
  *
- * NOTE: Requires the `published-day-index` GSI to be deployed (Terraform
- * change in backend/infra — flagged needs-human-review). The ingestion write
- * path must also populate `publishedDay` on every record (done in this PR).
- * Existing rows without `publishedDay` will not appear in paginated results
- * until the backfill script (`ingestion/scripts/backfill-published-day.ts`)
- * is run.
+ * NOTE: Requires the `published-day-index` GSI to be deployed and `ACTIVE`
+ * (added in #203). The ingestion write path populates `publishedDay` on every
+ * new record (#202). Pre-existing rows must be backfilled with
+ * `ingestion/scripts/backfill-published-day.ts` before they appear in
+ * paginated results.
  */
 export async function getNews(
   limit = 50,
@@ -511,6 +538,11 @@ export async function getNews(
   fearGreed: { value: number; classification: string } | null;
   nextCursor: string | null;
 }> {
+  // Kick off the fear-greed fetch up front so it overlaps with the day-by-day
+  // Query loop instead of adding sequential latency. We `await` it just before
+  // returning. Errors are absorbed by `getFearGreed()` itself (returns null).
+  const fearGreedPromise = getFearGreed();
+
   try {
     const cursor: NewsCursor = cursorToken
       ? (decodeNewsCursor(cursorToken) ?? { day: todayUtc() })
@@ -570,21 +602,33 @@ export async function getNews(
     // have more days to walk and could yield more rows, emit a cursor.
     //
     // When the page filled exactly on day-exhaustion, `currentDay` was already
-    // advanced to the previous calendar day at the bottom of the loop body
-    // (line 564). The next page should resume from that already-advanced day —
-    // applying `prevDay()` again here would skip a calendar day per page.
+    // advanced to the previous calendar day at the bottom of the loop body.
+    // The next page should resume from that already-advanced day — applying
+    // `prevDay()` again here would skip a calendar day per page.
+    //
+    // Suppress the cursor when the resume day is already past
+    // `NEWS_LOOKBACK_DAYS` (would only happen at the lookback boundary and a
+    // resume-key still mid-day on that boundary). Emitting it would return a
+    // cursor whose next call would short-circuit on day 1 of the loop and
+    // return an empty page — confusing for clients/UI.
     let nextCursor: string | null = null;
     if (collected.length >= limit) {
-      const nextCursorObj: NewsCursor = resumeKey
-        ? { day: currentDay, lastEvaluatedKey: resumeKey }
-        : { day: currentDay };
-      nextCursor = encodeNewsCursor(nextCursorObj);
+      const resumeDay = currentDay;
+      const resumeDaysFromToday = Math.round((startDayMs - dayToMs(resumeDay)) / 86400000);
+      if (resumeDaysFromToday < NEWS_LOOKBACK_DAYS) {
+        const nextCursorObj: NewsCursor = resumeKey
+          ? { day: resumeDay, lastEvaluatedKey: resumeKey }
+          : { day: resumeDay };
+        nextCursor = encodeNewsCursor(nextCursorObj);
+      }
     }
 
-    const fearGreed = await getFearGreed();
+    const fearGreed = await fearGreedPromise;
     return { news: collected, fearGreed, nextCursor };
   } catch (err) {
     console.error("[admin.service] getNews failed:", err);
+    // Make sure the prefetched fearGreed promise doesn't reject unhandled.
+    void fearGreedPromise.catch(() => {});
     return { news: [], fearGreed: null, nextCursor: null };
   }
 }

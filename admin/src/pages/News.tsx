@@ -248,7 +248,15 @@ export function News() {
       if (res.success && res.data) {
         setPages((prev) => [...prev, res.data!.news]);
         setNextCursor(res.data.nextCursor);
+        setError("");
+      } else {
+        // Surface the failure so repeat clicks aren't silently swallowed.
+        // Leave `nextCursor` unchanged so a retry can try the same cursor.
+        setError(res.error?.message ?? "Failed to load more news");
       }
+    } catch (err) {
+      // Network / fetch threw — same UX as a non-success response.
+      setError((err as Error)?.message ?? "Failed to load more news");
     } finally {
       setLoadingMore(false);
     }
