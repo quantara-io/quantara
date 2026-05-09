@@ -89,7 +89,10 @@ admin.get("/news/usage", async (c) => {
     since = new Date(sinceRaw);
     if (isNaN(since.getTime())) {
       return c.json(
-        { success: false, error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" } },
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
         400,
       );
     }
