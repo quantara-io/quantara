@@ -72,6 +72,23 @@ jobs:
           role-to-assume: arn:aws:iam::442725244722:role/GitHubDeployRole
           aws-region: ${{ env.AWS_REGION }}
 
+      # The backend + ingestion zips need to exist before terraform plan
+      # (it references the dist/*.zip + dist/index.js paths via archive_file
+      # data sources). Without these, plan fails with "could not archive
+      # missing file".
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build ingestion bundle (for archive_file data sources)
+        run: npm run package --workspace=quantara-ingestion
+
+      - name: Build backend bundle (for archive_file data sources)
+        run: npm run package --workspace=quantara-backend
+
       - name: Terraform init
         working-directory: backend/infra/dev
         run: terraform init -input=false -no-color
