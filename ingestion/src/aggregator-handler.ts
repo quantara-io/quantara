@@ -25,6 +25,21 @@ const WINDOWS: AggregationWindow[] = ["4h", "24h"];
 /** Pairs that always get refreshed on the fallback schedule. */
 const ALL_PAIRS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
 
+/**
+ * Sentiment-shock ratification trigger ships dark by default. When off, the
+ * aggregator preserves pre-#181 behavior (sentiment_aggregates writes still
+ * happen), but skips the Fear&Greed lookup, bundle assembly, and the shock
+ * check — none of which are needed without the trigger.
+ *
+ * Note: the optimistic-concurrency machinery inside `recomputeSentimentAggregate`
+ * (previousAggregate Get + conditional Put + retry loop) stays on regardless,
+ * because it fixes a read-then-write race that exists independent of shock
+ * detection. Disabling it with the flag would regress correctness.
+ */
+function isShockRatificationEnabled(): boolean {
+  return (process.env.ENABLE_SENTIMENT_SHOCK_RATIFICATION ?? "false").toLowerCase() === "true";
+}
+
 export async function handler(event: SQSEvent | ScheduledEvent, _context: Context): Promise<void> {
   const sqsEvent = event as SQSEvent;
 
@@ -100,6 +115,12 @@ async function recomputePair(pair: string): Promise<void> {
   // incomplete and shock comparisons unreliable.
   const successful = windowResults.filter((r) => r.result !== null);
   if (successful.length !== windowResults.length) return;
+
+  // Shock ratification ships dark behind ENABLE_SENTIMENT_SHOCK_RATIFICATION.
+  // When off, stop here — the aggregate writes from Step 1 are the entire
+  // pre-#181 contract. Skipping Steps 2 + 3 saves a Fear&Greed read and a
+  // function call per pair per cycle.
+  if (!isShockRatificationEnabled()) return;
 
   // Step 2: assemble a SentimentBundle from the freshly-written aggregates.
   // Read F&G state once (the recompute loop's `getFearGreedContext` only
