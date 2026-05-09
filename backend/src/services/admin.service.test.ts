@@ -243,7 +243,11 @@ describe("getNews", () => {
     expect(result.nextCursor).toBeNull();
   });
 
-  it("emits nextCursor when the page is full", async () => {
+  it("emits nextCursor pointing at the next calendar day when the page fills exactly on day-exhaustion", async () => {
+    // Mock the system clock so `todayUtc()` resolves to 2026-05-09.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
     const items = Array.from({ length: 2 }, (_, i) => ({
       newsId: `n${i}`,
       publishedAt: `2026-05-09T${String(12 - i).padStart(2, "0")}:00:00Z`,
@@ -251,15 +255,24 @@ describe("getNews", () => {
     }));
     dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
       if (cmd.__cmd === "Get") return { Item: null };
+      // No LastEvaluatedKey → day exhausted by this query.
       if (cmd.__cmd === "Query") return { Items: items };
       return {};
     });
 
-    const { getNews } = await importService();
+    const { getNews, decodeNewsCursor } = await importService();
     const result = await getNews(2);
+
     expect(result.news).toHaveLength(2);
-    // nextCursor must be a non-null string since we filled the page.
     expect(typeof result.nextCursor).toBe("string");
+
+    // Regression: cursor must point to the immediately-prior day (2026-05-08).
+    // Earlier impl applied prevDay() twice — once in the loop, once when
+    // building the cursor — silently skipping a calendar day per page.
+    const decoded = decodeNewsCursor(result.nextCursor!);
+    expect(decoded).toEqual({ day: "2026-05-08" });
+
+    vi.useRealTimers();
   });
 
   it("resumes from cursor on next page call", async () => {

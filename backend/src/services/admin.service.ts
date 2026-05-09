@@ -567,12 +567,16 @@ export async function getNews(
 
     // Build nextCursor: if we stopped mid-page (have a resumeKey) or still
     // have more days to walk and could yield more rows, emit a cursor.
+    //
+    // When the page filled exactly on day-exhaustion, `currentDay` was already
+    // advanced to the previous calendar day at the bottom of the loop body
+    // (line 564). The next page should resume from that already-advanced day —
+    // applying `prevDay()` again here would skip a calendar day per page.
     let nextCursor: string | null = null;
     if (collected.length >= limit) {
-      // There may be more rows — always emit a cursor when we filled the page.
       const nextCursorObj: NewsCursor = resumeKey
         ? { day: currentDay, lastEvaluatedKey: resumeKey }
-        : { day: prevDay(currentDay) };
+        : { day: currentDay };
       nextCursor = encodeNewsCursor(nextCursorObj);
     }
 

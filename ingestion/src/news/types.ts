@@ -28,8 +28,6 @@ export interface NewsRecord {
   title: string;
   url: string;
   publishedAt: string;
-  /** GSI partition key for the `published-day-index` GSI: ISO date (YYYY-MM-DD). */
-  publishedDay: string;
   currencies: string[];
   rawSentiment: string;
   status: "raw" | "enriched" | "failed";

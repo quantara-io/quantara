@@ -85,14 +85,12 @@ export async function fetchAlpacaNews(options?: {
 const NEWS_TTL_DAYS = 30;
 
 export function alpacaToNewsRecord(item: AlpacaNewsItem): NewsRecord {
-  const publishedAt = new Date(item.created_at).toISOString();
   return {
     newsId: `alpaca-${item.id}`,
     source: item.source,
     title: item.headline,
     url: item.url,
-    publishedAt,
-    publishedDay: publishedAt.slice(0, 10),
+    publishedAt: new Date(item.created_at).toISOString(),
     currencies: item.symbols ?? [],
     rawSentiment: "neutral",
     status: "raw",
