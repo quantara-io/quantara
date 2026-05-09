@@ -11,6 +11,7 @@ import type { PriceSnapshot } from "./fetcher.js";
 
 const WATCHDOG_INTERVAL_MS = 60_000;
 const STALE_THRESHOLD_MS = 5 * 60_000;
+const COINBASE_BACKFILL_INTERVAL_MS = 30_000;
 
 interface StreamState {
   exchange: ExchangeId;
@@ -29,6 +30,8 @@ export class MarketStreamManager {
   private exchanges: Map<ExchangeId, any> = new Map();
   private abortController = new AbortController();
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Tracks the last closeTime (ms) we successfully wrote for each coinbase pair. */
+  private coinbaseLastCloseTime: Map<TradingPair, number> = new Map();
 
   getStatus(): Record<string, any> {
     const connections: Record<string, any> = {};
@@ -76,6 +79,10 @@ export class MarketStreamManager {
         this.startTickerStream(exchangeId, exchange, pair);
         if (supportsOHLCV) {
           this.startOHLCVStream(exchangeId, exchange, pair);
+        } else if (exchangeId === "coinbase") {
+          // Coinbase Advanced Trade WS has no candles channel.
+          // Use REST polling instead so coinbase contributes to close-quorum.
+          this.startCoinbaseBackfillLoop(exchange, pair);
         }
       }
     }
@@ -191,6 +198,101 @@ export class MarketStreamManager {
     run().catch((err) => {
       if (!this.abortController.signal.aborted) {
         console.error(`[Stream] OHLCV loop fatal ${key}: ${(err as Error).message}`);
+      }
+    });
+  }
+
+  /**
+   * Polls Coinbase REST every 30s for the most-recently-closed 1m bar per pair.
+   * Coinbase's CCXT Pro adapter does not support watchOHLCV, so this loop fills
+   * the gap needed for close-quorum (≥2/3 exchanges).
+   *
+   * Strategy: fetch the latest 2 bars, take bar[0] (the closed one), skip if
+   * its closeTime matches what we already wrote (idempotent).
+   */
+  private startCoinbaseBackfillLoop(exchange: any, pair: TradingPair): void {
+    const exchangeId: ExchangeId = "coinbase";
+    const symbol = getSymbol(exchangeId, pair);
+    const timeframe: Timeframe = "1m";
+
+    const run = async () => {
+      while (!this.abortController.signal.aborted) {
+        try {
+          // Fetch 2 bars: [closed_bar, open_bar]. Bar at index 0 is the most
+          // recently closed one; bar at index 1 is the still-open current bar.
+          const ohlcv: (number | null)[][] = await exchange.fetchOHLCV(
+            symbol,
+            timeframe,
+            undefined,
+            2,
+          );
+
+          if (ohlcv.length < 2) {
+            // Not enough data yet (exchange may be catching up); try again next tick.
+            await sleep(COINBASE_BACKFILL_INTERVAL_MS);
+            continue;
+          }
+
+          const [ts, open, high, low, close, volume] = ohlcv[0];
+
+          if (ts == null) {
+            await sleep(COINBASE_BACKFILL_INTERVAL_MS);
+            continue;
+          }
+
+          const closeTime = ts + 60_000;
+
+          // Idempotent skip: if we already wrote this bar, do nothing.
+          const lastCloseTime = this.coinbaseLastCloseTime.get(pair);
+          if (lastCloseTime === closeTime) {
+            await sleep(COINBASE_BACKFILL_INTERVAL_MS);
+            continue;
+          }
+
+          const candle: Candle = {
+            exchange: exchangeId,
+            symbol,
+            pair,
+            timeframe,
+            openTime: ts,
+            closeTime,
+            open: Number(open ?? 0),
+            high: Number(high ?? 0),
+            low: Number(low ?? 0),
+            close: Number(close ?? 0),
+            volume: Number(volume ?? 0),
+            isClosed: true,
+            source: "live",
+          };
+
+          await storeCandles([candle]);
+          this.coinbaseLastCloseTime.set(pair, closeTime);
+
+          console.log(
+            `[CoinbaseBackfill] wrote ${pair}@${new Date(closeTime).toISOString()}`,
+          );
+
+          // Update stream freshness so the watchdog sees coinbase as alive.
+          const key = `${exchangeId}:${pair}`;
+          const state = this.streams.get(key);
+          if (state) state.lastDataAt = Date.now();
+        } catch (err) {
+          if (this.abortController.signal.aborted) break;
+          console.error(
+            `[CoinbaseBackfill] error for ${pair}: ${(err as Error).message}`,
+          );
+          // Do not rethrow — one pair's failure must not kill other pairs.
+        }
+
+        await sleep(COINBASE_BACKFILL_INTERVAL_MS);
+      }
+    };
+
+    run().catch((err) => {
+      if (!this.abortController.signal.aborted) {
+        console.error(
+          `[CoinbaseBackfill] loop fatal for ${pair}: ${(err as Error).message}`,
+        );
       }
     });
   }
