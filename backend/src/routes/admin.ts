@@ -13,6 +13,7 @@ import {
   getSignals,
   getRatifications,
 } from "../services/admin.service.js";
+import { getPipelineState } from "../services/pipeline-state.service.js";
 
 const admin = new Hono();
 
@@ -76,6 +77,21 @@ admin.get("/signals", async (c) => {
 
   const signals = await getSignals(pair, since, limit);
   return c.json({ success: true, data: { signals } });
+});
+
+admin.get("/pipeline-state", async (c) => {
+  const pair = c.req.query("pair");
+  if (pair !== undefined && !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+  const data = await getPipelineState(pair);
+  return c.json({ success: true, data });
 });
 
 admin.get("/ratifications", async (c) => {
