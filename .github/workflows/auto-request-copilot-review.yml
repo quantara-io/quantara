@@ -6,10 +6,18 @@ name: Auto-request Copilot review
 #
 # Copilot's review is advisory — it does not block merge. Existing flows
 # (quantara-reviewer subagent, codex second-opinion, human review) still apply.
+#
+# Triggers:
+#   - opened / reopened / ready_for_review: initial review on PR creation
+#   - synchronize: re-review after a push (new commits to the PR branch).
+#     When a reviewer submits a review GitHub removes them from the requested
+#     list, so re-pushing the request prompts Copilot to look at the new diff.
+#     The 422 (already-requested) response is treated as a no-op so this is
+#     idempotent across rapid-fire pushes.
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
 
 permissions:
   pull-requests: write
