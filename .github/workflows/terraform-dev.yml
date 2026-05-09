@@ -16,11 +16,15 @@ name: Terraform (dev)
 # creating new resources, updating IAM, etc. They can run in parallel
 # because they target different operations.
 #
-# Reuses the existing `GitHubDeployRole` in the dev account (442725244722)
-# referenced by the org-level `AWS_DEPLOY_ROLE_ARN` variable — same role the
-# `deploy-dev` job in ci.yml uses. It already has `AdministratorAccess`, so
-# Terraform can read state from `quantara-tf-state-dev` and provision the
-# managed resources without any extra IAM setup.
+# Reuses the existing `GitHubDeployRole` in the dev account (442725244722) —
+# same role the `deploy-dev` job in ci.yml uses. It already has
+# `AdministratorAccess` and trusts both `pull_request` events and
+# `ref:refs/heads/main`, so Terraform can read state from
+# `quantara-tf-state-dev` and provision managed resources with no extra IAM
+# setup. ARN is hardcoded (it's not a secret, just an account ID + role
+# name) because using `vars.AWS_DEPLOY_ROLE_ARN` would require declaring
+# `environment: dev` to inherit the env-scoped variable, which would gate
+# every PR plan on the dev environment's reviewer approval.
 #
 # Required setup (one-time, org-admin):
 #   - Create GitHub environment `dev-terraform` with required reviewers
@@ -65,7 +69,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::442725244722:role/GitHubDeployRole
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform init
@@ -171,7 +175,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::442725244722:role/GitHubDeployRole
           aws-region: ${{ env.AWS_REGION }}
 
       # The ingestion zips need to exist before terraform apply (it references
