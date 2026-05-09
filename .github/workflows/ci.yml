@@ -21,6 +21,12 @@ jobs:
   # no-op plan.
   changes:
     runs-on: ubuntu-latest
+    # `pull-requests: read` is required by dorny/paths-filter — on PRs it
+    # uses the GitHub API to list changed files. Without this it errors
+    # with "Resource not accessible by integration".
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       infra: ${{ steps.filter.outputs.infra }}
     steps:
