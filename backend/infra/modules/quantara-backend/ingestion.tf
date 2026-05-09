@@ -290,14 +290,43 @@ resource "aws_iam_role_policy" "enrichment_bedrock" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = ["bedrock:InvokeModel"]
-      Resource = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-haiku*",
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-haiku*",
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["bedrock:InvokeModel"]
+        Resource = [
+          # Direct foundation models in this region (kept for any code paths
+          # invoking the bare foundation-model ARN — none currently active,
+          # but cheap to retain).
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-haiku*",
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-haiku*",
+          # Cross-region inference profile (us.* prefix) that's actually
+          # invoked by ingestion/src/enrichment/bedrock.ts and
+          # ingestion/src/news/enrich.ts since PR #162. The profile resource
+          # lives in this account.
+          "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.claude-haiku*",
+          # Foundation-model ARNs in any region the inference profile may
+          # route to. Bedrock evaluates IAM against both the profile entry
+          # point AND the underlying model in whichever region serves the
+          # request, so this second arm is required for cross-region
+          # profiles to actually work.
+          "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku*",
+        ]
+      },
+      {
+        # AWS Marketplace permissions are required for Bedrock to enable
+        # model access at the principal level. Anthropic models on Bedrock
+        # are sold via Marketplace; without these actions the Lambda gets
+        # "Model access is denied due to IAM user or service role is not
+        # authorized to perform the required AWS Marketplace actions" even
+        # though `bedrock:InvokeModel` is allowed. Admin/CLI users don't
+        # see this because AdministratorAccess includes aws-marketplace:*.
+        # Resource must be "*" — these are account-level actions.
+        Effect   = "Allow"
+        Action   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"]
+        Resource = "*"
+      },
+    ]
   })
 }
 
