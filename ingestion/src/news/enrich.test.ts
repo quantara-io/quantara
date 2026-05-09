@@ -4,11 +4,11 @@
  * - llmTags (mocked Bedrock Haiku)
  * - tagPairs (union + dedup)
  * - classifySentiment (mocked Bedrock, score/magnitude bounds)
- * - checkDedup (mocked OpenAI fetch + mocked DynamoDB embedding-cache)
+ * - checkDedup (mocked Bedrock Titan embeddings + mocked DynamoDB embedding-cache)
  * - extractJson / cosineSimilarity helpers
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mock @aws-sdk/client-bedrock-runtime
@@ -36,22 +36,19 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Mock @aws-sdk/client-ssm
+// Helpers to encode Bedrock responses for the two model types this file uses
 // ---------------------------------------------------------------------------
 
-const ssmSendMock = vi.fn();
-vi.mock("@aws-sdk/client-ssm", () => ({
-  SSMClient: vi.fn().mockImplementation(() => ({ send: ssmSendMock })),
-  GetParameterCommand: vi.fn().mockImplementation((input) => ({ __cmd: "GetParameter", input })),
-}));
-
-// ---------------------------------------------------------------------------
-// Helper to encode a Bedrock Haiku JSON response
-// ---------------------------------------------------------------------------
-
+/** Wrap a Haiku-shaped response: `{content:[{text:"<json>"}]}` → bytes. */
 function bedrockJsonResponse(payload: unknown): { body: Uint8Array } {
   const text = JSON.stringify(payload);
   const wrapped = JSON.stringify({ content: [{ text }] });
+  return { body: new TextEncoder().encode(wrapped) };
+}
+
+/** Wrap a Titan v2 embedding response: `{embedding:[...],inputTextTokenCount:N}` → bytes. */
+function bedrockEmbeddingResponse(vector: number[]): { body: Uint8Array } {
+  const wrapped = JSON.stringify({ embedding: vector, inputTextTokenCount: 5 });
   return { body: new TextEncoder().encode(wrapped) };
 }
 
@@ -63,9 +60,6 @@ beforeEach(() => {
   vi.resetModules();
   bedrockSendMock.mockReset();
   dynamoSendMock.mockReset();
-  ssmSendMock.mockReset();
-  // Suppress OpenAI key SSM lookup in tests that use embeddings
-  process.env.OPENAI_API_KEY = "test-key";
   process.env.TABLE_EMBEDDING_CACHE = "test-embedding-cache";
 });
 
@@ -352,26 +346,19 @@ describe("classifySentiment", () => {
 // checkDedup — mocked fetch (OpenAI embeddings) + mocked DynamoDB
 // ---------------------------------------------------------------------------
 
-const EMBEDDING_DIM = 4; // tiny vectors for tests
+// Bedrock Titan v2 returns 1024-dim vectors, and the production code now
+// validates that exactly. Tests build a one-hot-style vector at index 0 so
+// cosine similarity remains predictable while satisfying the dimension check.
+const EMBEDDING_DIM = 1024;
 function makeVec(val: number): number[] {
-  return [val, 0, 0, 0];
+  const v = new Array<number>(EMBEDDING_DIM).fill(0);
+  v[0] = val;
+  return v;
 }
 
 describe("checkDedup", () => {
-  beforeEach(() => {
-    // Mock global fetch for OpenAI embeddings API
-    vi.stubGlobal("fetch", vi.fn());
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
   function mockEmbeddingResponse(vector: number[]) {
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      json: async () => ({ data: [{ embedding: vector }] }),
-    });
+    bedrockSendMock.mockResolvedValue(bedrockEmbeddingResponse(vector));
   }
 
   it("returns duplicateOf=null and caches the vector when no cached items", async () => {
@@ -391,12 +378,12 @@ describe("checkDedup", () => {
     });
 
     expect(result.duplicateOf).toBeNull();
-    expect(result.embeddingModel).toBe("text-embedding-3-small");
+    expect(result.embeddingModel).toBe("amazon.titan-embed-text-v2:0");
     // Verify PutCommand was called to cache the vector
     const puts = dynamoSendMock.mock.calls.filter((c) => c[0].__cmd === "Put");
     expect(puts).toHaveLength(1);
     expect(puts[0][0].input.Item.articleId).toBe("art-1");
-    expect(puts[0][0].input.Item.model).toBe("text-embedding-3-small");
+    expect(puts[0][0].input.Item.model).toBe("amazon.titan-embed-text-v2:0");
   });
 
   it("detects a duplicate when cosine similarity exceeds threshold", async () => {
@@ -409,7 +396,7 @@ describe("checkDedup", () => {
             {
               articleId: "art-original",
               vector: makeVec(1), // identical → cosine sim = 1
-              model: "text-embedding-3-small",
+              model: "amazon.titan-embed-text-v2:0",
               dim: EMBEDDING_DIM,
               publishedAt: "2026-05-07T00:00:00Z",
               ttl: Math.floor(Date.now() / 1000) + 3600,
@@ -470,15 +457,17 @@ describe("checkDedup", () => {
 
   it("does not flag as duplicate when similarity is below threshold", async () => {
     // Orthogonal vectors: cosine sim = 0 < 0.85
-    mockEmbeddingResponse([1, 0, 0, 0]);
+    mockEmbeddingResponse(makeVec(1)); // hot at index 0
+    const orthogonal = new Array<number>(EMBEDDING_DIM).fill(0);
+    orthogonal[1] = 1; // hot at index 1 → orthogonal to makeVec(...)
     dynamoSendMock.mockImplementation(async (cmd: { __cmd: string }) => {
       if (cmd.__cmd === "Scan") {
         return {
           Items: [
             {
               articleId: "art-different",
-              vector: [0, 1, 0, 0], // orthogonal → cosine sim = 0
-              model: "text-embedding-3-small",
+              vector: orthogonal,
+              model: "amazon.titan-embed-text-v2:0",
               dim: EMBEDDING_DIM,
               publishedAt: "2026-05-07T00:00:00Z",
               ttl: Math.floor(Date.now() / 1000) + 3600,
@@ -500,8 +489,7 @@ describe("checkDedup", () => {
     expect(result.duplicateOf).toBeNull();
   });
 
-  it("uses the OPENAI_API_KEY env var and sends the correct model", async () => {
-    process.env.OPENAI_API_KEY = "sk-test-123";
+  it("invokes Bedrock Titan v2 with the correct model and request shape", async () => {
     mockEmbeddingResponse(makeVec(0.5));
     dynamoSendMock.mockImplementation(async (cmd: { __cmd: string }) => {
       if (cmd.__cmd === "Scan") return { Items: [] };
@@ -511,13 +499,49 @@ describe("checkDedup", () => {
     const { checkDedup, EMBEDDING_MODEL } = await import("./enrich.js");
     await checkDedup({ id: "x", title: "t", body: "b", publishedAt: "2026-05-07T00:00:00Z" });
 
-    const fetchCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
-    expect(fetchCalls).toHaveLength(1);
-    const [url, init] = fetchCalls[0];
-    expect(url).toBe("https://api.openai.com/v1/embeddings");
-    expect(init.headers.Authorization).toBe("Bearer sk-test-123");
-    const body = JSON.parse(init.body);
-    expect(body.model).toBe(EMBEDDING_MODEL);
-    expect(EMBEDDING_MODEL).toBe("text-embedding-3-small");
+    const invokeCalls = bedrockSendMock.mock.calls.filter(
+      (c) => c[0]?.__cmd === "InvokeModel" && c[0]?.input?.modelId === EMBEDDING_MODEL,
+    );
+    expect(invokeCalls).toHaveLength(1);
+    const cmd = invokeCalls[0][0];
+    expect(cmd.input.modelId).toBe(EMBEDDING_MODEL);
+    expect(cmd.input.contentType).toBe("application/json");
+    const body = JSON.parse(cmd.input.body);
+    expect(body.inputText).toMatch(/t\s*b/); // title + body concatenation
+    expect(body.dimensions).toBe(1024);
+    expect(body.normalize).toBe(true);
+    expect(EMBEDDING_MODEL).toBe("amazon.titan-embed-text-v2:0");
+  });
+
+  it("throws an actionable error when Titan returns a wrong-dim embedding", async () => {
+    // Bedrock somehow returns 512 dims when we asked for 1024 — must surface
+    // expected/actual dimensions, not silently fail downstream in cosineSimilarity.
+    const wrongDim = new Array<number>(512).fill(0);
+    wrongDim[0] = 1;
+    bedrockSendMock.mockResolvedValue(bedrockEmbeddingResponse(wrongDim));
+    dynamoSendMock.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Scan") return { Items: [] };
+      return {};
+    });
+
+    const { checkDedup } = await import("./enrich.js");
+    await expect(
+      checkDedup({ id: "x", title: "t", body: "b", publishedAt: "2026-05-07T00:00:00Z" }),
+    ).rejects.toThrow(/expected 1024.*got 512/);
+  });
+
+  it("throws when Titan returns non-finite values in the embedding", async () => {
+    const badVec = makeVec(1);
+    badVec[5] = NaN; // poison
+    bedrockSendMock.mockResolvedValue(bedrockEmbeddingResponse(badVec));
+    dynamoSendMock.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Scan") return { Items: [] };
+      return {};
+    });
+
+    const { checkDedup } = await import("./enrich.js");
+    await expect(
+      checkDedup({ id: "x", title: "t", body: "b", publishedAt: "2026-05-07T00:00:00Z" }),
+    ).rejects.toThrow(/non-finite values/);
   });
 });

@@ -311,6 +311,11 @@ resource "aws_iam_role_policy" "enrichment_bedrock" {
           # request, so this second arm is required for cross-region
           # profiles to actually work.
           "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku*",
+          # Amazon Titan Text Embeddings v2 — direct foundation model (no
+          # inference profile needed; Titan is on-demand). Region-scoped
+          # because the call doesn't fan out cross-region the way Anthropic
+          # cross-region inference profiles do.
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text*",
         ]
       },
       {
