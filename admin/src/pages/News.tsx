@@ -236,7 +236,9 @@ export function News() {
     if (!nextCursor || loadingMore || pages.length >= MAX_PAGES) return;
     setLoadingMore(true);
     try {
-      const res = await apiFetch<NewsData>(`/api/admin/news?limit=50&cursor=${encodeURIComponent(nextCursor)}`);
+      const res = await apiFetch<NewsData>(
+        `/api/admin/news?limit=50&cursor=${encodeURIComponent(nextCursor)}`,
+      );
       if (res.success && res.data) {
         setPages((prev) => [...prev, res.data!.news]);
         setNextCursor(res.data.nextCursor);

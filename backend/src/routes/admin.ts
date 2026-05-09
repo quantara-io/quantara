@@ -82,7 +82,10 @@ admin.get("/news", async (c) => {
   const limit = parseInt(limitRaw, 10);
   if (isNaN(limit) || limit < 1 || limit > 200) {
     return c.json(
-      { success: false, error: { code: "BAD_REQUEST", message: "limit must be between 1 and 200" } },
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "limit must be between 1 and 200" },
+      },
       400,
     );
   }

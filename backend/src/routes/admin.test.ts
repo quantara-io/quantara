@@ -146,7 +146,11 @@ describe("GET /news", () => {
   });
 
   it("exposes nextCursor in the response data", async () => {
-    getNewsMock.mockResolvedValue({ news: [{ newsId: "x" }], fearGreed: null, nextCursor: "tok123" });
+    getNewsMock.mockResolvedValue({
+      news: [{ newsId: "x" }],
+      fearGreed: null,
+      nextCursor: "tok123",
+    });
     const app = await loadApp();
     const res = await app.request("/news");
     expect(res.status).toBe(200);

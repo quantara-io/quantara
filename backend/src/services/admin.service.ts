@@ -512,7 +512,9 @@ export async function getNews(
   nextCursor: string | null;
 }> {
   try {
-    const cursor: NewsCursor = cursorToken ? (decodeNewsCursor(cursorToken) ?? { day: todayUtc() }) : { day: todayUtc() };
+    const cursor: NewsCursor = cursorToken
+      ? (decodeNewsCursor(cursorToken) ?? { day: todayUtc() })
+      : { day: todayUtc() };
 
     const collected: Record<string, unknown>[] = [];
     let currentDay = cursor.day;

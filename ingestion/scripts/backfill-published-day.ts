@@ -21,11 +21,7 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DynamoDBDocumentClient,
-  ScanCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -71,7 +67,9 @@ async function backfill(): Promise<void> {
       // Derive publishedDay from publishedAt (ISO-8601 → YYYY-MM-DD).
       const publishedAt = item.publishedAt;
       if (!publishedAt || typeof publishedAt !== "string" || publishedAt.length < 10) {
-        console.warn(`[backfill] Row newsId=${item.newsId} has invalid publishedAt="${publishedAt}" — skipping`);
+        console.warn(
+          `[backfill] Row newsId=${item.newsId} has invalid publishedAt="${publishedAt}" — skipping`,
+        );
         skipped++;
         continue;
       }
@@ -79,7 +77,9 @@ async function backfill(): Promise<void> {
       const publishedDay = publishedAt.slice(0, 10);
 
       if (DRY_RUN) {
-        console.log(`[backfill] DRY RUN: would set publishedDay=${publishedDay} on newsId=${item.newsId}`);
+        console.log(
+          `[backfill] DRY RUN: would set publishedDay=${publishedDay} on newsId=${item.newsId}`,
+        );
         updated++;
         continue;
       }
@@ -97,7 +97,9 @@ async function backfill(): Promise<void> {
         );
         updated++;
         if (updated % 100 === 0) {
-          console.log(`[backfill] Progress: scanned=${scanned} updated=${updated} skipped=${skipped} errors=${errors}`);
+          console.log(
+            `[backfill] Progress: scanned=${scanned} updated=${updated} skipped=${skipped} errors=${errors}`,
+          );
         }
       } catch (err: unknown) {
         // ConditionalCheckFailedException means a concurrent run already wrote it — not an error.

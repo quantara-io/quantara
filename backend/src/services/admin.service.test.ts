@@ -133,7 +133,11 @@ describe("encodeNewsCursor / decodeNewsCursor", () => {
     const { encodeNewsCursor, decodeNewsCursor } = await importService();
     const cursor = {
       day: "2026-05-08",
-      lastEvaluatedKey: { newsId: "abc", publishedAt: "2026-05-08T10:00:00Z", publishedDay: "2026-05-08" },
+      lastEvaluatedKey: {
+        newsId: "abc",
+        publishedAt: "2026-05-08T10:00:00Z",
+        publishedDay: "2026-05-08",
+      },
     };
     expect(decodeNewsCursor(encodeNewsCursor(cursor))).toEqual(cursor);
   });
@@ -153,8 +157,18 @@ describe("encodeNewsCursor / decodeNewsCursor", () => {
 describe("getNews", () => {
   it("queries the GSI by publishedDay and returns items newest-first", async () => {
     const mockItems = [
-      { newsId: "b", publishedAt: "2026-05-09T12:00:00Z", publishedDay: "2026-05-09", title: "new" },
-      { newsId: "a", publishedAt: "2026-05-09T08:00:00Z", publishedDay: "2026-05-09", title: "old" },
+      {
+        newsId: "b",
+        publishedAt: "2026-05-09T12:00:00Z",
+        publishedDay: "2026-05-09",
+        title: "new",
+      },
+      {
+        newsId: "a",
+        publishedAt: "2026-05-09T08:00:00Z",
+        publishedDay: "2026-05-09",
+        title: "old",
+      },
     ];
     dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
       if (cmd.__cmd === "Query") return { Items: mockItems };
@@ -172,14 +186,21 @@ describe("getNews", () => {
 
   it("walks back to the previous day when current day has fewer rows than limit", async () => {
     // Today returns 1 item; yesterday returns 2 more.
-    const todayItem = { newsId: "t1", publishedAt: "2026-05-09T10:00:00Z", publishedDay: "2026-05-09" };
+    const todayItem = {
+      newsId: "t1",
+      publishedAt: "2026-05-09T10:00:00Z",
+      publishedDay: "2026-05-09",
+    };
     const yesterdayItems = [
       { newsId: "y1", publishedAt: "2026-05-08T23:00:00Z", publishedDay: "2026-05-08" },
       { newsId: "y2", publishedAt: "2026-05-08T12:00:00Z", publishedDay: "2026-05-08" },
     ];
     let callCount = 0;
     dynamoSend.mockImplementation(
-      async (cmd: { __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown> };
+      }) => {
         if (cmd.__cmd === "Get") return { Item: null };
         if (cmd.__cmd === "Query") {
           callCount++;
@@ -249,7 +270,10 @@ describe("getNews", () => {
       { newsId: "p2a", publishedAt: "2026-05-08T20:00:00Z", publishedDay: "2026-05-08" },
     ];
     dynamoSend.mockImplementation(
-      async (cmd: { __cmd: string; input?: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown> };
+      }) => {
         if (cmd.__cmd === "Get") return { Item: null };
         if (cmd.__cmd === "Query") {
           const day = cmd.input?.ExpressionAttributeValues?.[":day"] as string | undefined;
