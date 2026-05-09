@@ -224,6 +224,30 @@ resource "aws_iam_role_policy" "ingestion_ecs_sqs" {
   })
 }
 
+resource "aws_iam_role_policy" "ingestion_ecs_task_alpaca_ssm" {
+  name = "${local.prefix}-ingestion-ecs-task-alpaca-ssm"
+  role = aws_iam_role.ingestion_ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+        ]
+        Resource = local.alpaca_ssm_param_arns
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = data.aws_kms_alias.ssm.target_key_arn
+      },
+    ]
+  })
+}
+
 # ===========================================================================
 # CloudWatch Log Group
 # ===========================================================================
