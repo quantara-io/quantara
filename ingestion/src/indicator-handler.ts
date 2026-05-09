@@ -98,6 +98,11 @@ interface StreamCandle {
 // ---------------------------------------------------------------------------
 
 export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent) => {
+  // Reset per-invocation caches before processing the batch. Lambda warm-pool
+  // reuse keeps module-scope state alive across invocations; reset to ensure
+  // the first record in each batch refreshes daily-cadence values like Fear/Greed.
+  resetFearGreedCache();
+
   for (const record of event.Records) {
     if (record.eventName !== "INSERT" && record.eventName !== "MODIFY") continue;
     if (!record.dynamodb?.NewImage) continue;
@@ -241,7 +246,17 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
       `[IndicatorHandler] ${pair}/${timeframe}: signal written (type=${blended.type} confidence=${blended.confidence.toFixed(3)}).`,
     );
   } catch (err) {
-    if (err instanceof ConditionalCheckFailedException) {
+    // With @aws-sdk/lib-dynamodb the Document Client may surface conditional
+    // failures as a generic Error with `.name` set rather than as an instance
+    // of ConditionalCheckFailedException. Match the more permissive pattern
+    // used in signal-store.ts to avoid false re-throws → unnecessary stream retries.
+    if (
+      err instanceof ConditionalCheckFailedException ||
+      (err instanceof Error &&
+        (err.name === "ConditionalCheckFailedException" ||
+          (err as { __type?: string }).__type ===
+            "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException"))
+    ) {
       // Another concurrent handler won the race — this is expected and safe.
       console.log(
         `[IndicatorHandler] ${pair}/${timeframe}@${closeTime}: conditional Put lost the race — another handler already wrote the signal. Idempotent skip.`,
@@ -356,6 +371,31 @@ async function getFearGreed(): Promise<number | null> {
 }
 
 /**
+ * Per-invocation Fear/Greed cache.
+ *
+ * The DDB Streams event source mapping batches up to 10 records per Lambda
+ * invocation. Without this cache, computeBlendedSignal would issue a fresh
+ * GetItem for fear-greed on every record — wasted reads since the value is
+ * updated daily and won't change within a millisecond-scale batch window.
+ *
+ * Reset on every fresh invocation: Lambda execution context reuse can keep
+ * this populated across invocations, but the value still updates daily and
+ * the worst-case staleness is the cron interval. For testability and to
+ * avoid surprises across long-lived warm Lambdas, the handler resets it at
+ * the top of each invocation.
+ */
+let fearGreedCache: { value: number | null } | null = null;
+function resetFearGreedCache(): void {
+  fearGreedCache = null;
+}
+async function getFearGreedCached(): Promise<number | null> {
+  if (fearGreedCache !== null) return fearGreedCache.value;
+  const value = await getFearGreed();
+  fearGreedCache = { value };
+  return value;
+}
+
+/**
  * Full indicator computation for a single (pair, timeframe, closeTime) tuple.
  * Pulls 250 bars per exchange, canonicalizes, builds IndicatorState, scores,
  * persists vote, then blends all 4 TF votes for the pair.
@@ -367,7 +407,10 @@ async function computeBlendedSignal(
   tf: SignalTimeframe,
   closeTime: number,
 ): Promise<import("@quantara/shared").BlendedSignal | null> {
-  const fearGreed = await getFearGreed();
+  // Memoized per invocation — see getFearGreedCached above. With batch_size=10
+  // on the DDB Streams ESM, a non-cached read would multiply DDB GetItem calls
+  // ~10× per invocation for a value that changes daily.
+  const fearGreed = await getFearGreedCached();
 
   const CANDLE_LIMIT = 250;
   const perExchangeLatest: Record<string, import("@quantara/shared").Candle | null> = {};
