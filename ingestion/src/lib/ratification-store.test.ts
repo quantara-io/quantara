@@ -178,3 +178,110 @@ describe("getRecentRatifications", () => {
     expect(results[0].pair).toBe("BTC/USDT");
   });
 });
+
+// ---------------------------------------------------------------------------
+// getRecentShockRatifications — used by the sentiment-shock cost gate.
+// Critical because DDB applies Limit BEFORE FilterExpression, so a single
+// page can return zero rows even when shocks exist in the time range.
+// ---------------------------------------------------------------------------
+
+describe("getRecentShockRatifications", () => {
+  function makeShockRecord(invokedAt: string): RatificationRecord {
+    return { ...makeRecord(), invokedAt, triggerReason: "sentiment_shock" };
+  }
+
+  it("issues a Query with the correct KeyCondition, FilterExpression, and ScanIndexForward=false", async () => {
+    sendMock.mockResolvedValueOnce({ Items: [] });
+    const { getRecentShockRatifications } = await import("./ratification-store.js");
+    await getRecentShockRatifications("BTC/USDT", "2026-05-09T00:00:00.000Z");
+
+    const cmd = sendMock.mock.calls[0][0] as { __cmd: string; input: Record<string, unknown> };
+    expect(cmd.__cmd).toBe("Query");
+    expect(cmd.input.TableName).toBe("test-ratifications");
+    expect(cmd.input.KeyConditionExpression).toBe("#pair = :pair AND invokedAtRecordId >= :since");
+    expect(cmd.input.FilterExpression).toBe("triggerReason = :shock");
+    expect(cmd.input.ScanIndexForward).toBe(false);
+    const values = cmd.input.ExpressionAttributeValues as Record<string, string>;
+    expect(values[":pair"]).toBe("BTC/USDT");
+    expect(values[":since"]).toBe("2026-05-09T00:00:00.000Z");
+    expect(values[":shock"]).toBe("sentiment_shock");
+  });
+
+  it("returns shock records (post-filter) as RatificationRecord array", async () => {
+    const r1 = makeShockRecord("2026-05-09T10:00:00.000Z");
+    const r2 = makeShockRecord("2026-05-09T10:30:00.000Z");
+    sendMock.mockResolvedValueOnce({ Items: [r2, r1] });
+    const { getRecentShockRatifications } = await import("./ratification-store.js");
+    const out = await getRecentShockRatifications("BTC/USDT", "2026-05-09T00:00:00.000Z", 5);
+    expect(out).toHaveLength(2);
+    expect(out[0].triggerReason).toBe("sentiment_shock");
+  });
+
+  it("paginates when the first DDB page is filtered to zero shock rows but more pages exist", async () => {
+    // First page: nothing matches the filter, but LastEvaluatedKey is set
+    // (DDB applies Limit before FilterExpression — this is the exact
+    // scenario the cost gate would otherwise fail open under).
+    sendMock.mockResolvedValueOnce({
+      Items: [],
+      LastEvaluatedKey: { pair: "BTC/USDT", invokedAtRecordId: "cursor-1" },
+    });
+    // Second page returns the shock row.
+    const r1 = makeShockRecord("2026-05-09T09:30:00.000Z");
+    sendMock.mockResolvedValueOnce({ Items: [r1] });
+
+    const { getRecentShockRatifications } = await import("./ratification-store.js");
+    const out = await getRecentShockRatifications("BTC/USDT", "2026-05-09T00:00:00.000Z", 5);
+    expect(out).toHaveLength(1);
+    expect(out[0].invokedAt).toBe("2026-05-09T09:30:00.000Z");
+
+    // Second call must include the ExclusiveStartKey from page 1.
+    const secondCmd = sendMock.mock.calls[1][0] as { input: Record<string, unknown> };
+    expect(secondCmd.input.ExclusiveStartKey).toEqual({
+      pair: "BTC/USDT",
+      invokedAtRecordId: "cursor-1",
+    });
+  });
+
+  it("stops paginating once targetCount shock rows have been collected", async () => {
+    const r1 = makeShockRecord("2026-05-09T10:00:00.000Z");
+    const r2 = makeShockRecord("2026-05-09T10:30:00.000Z");
+    sendMock.mockResolvedValueOnce({
+      Items: [r2, r1],
+      LastEvaluatedKey: { pair: "BTC/USDT", invokedAtRecordId: "cursor-1" },
+    });
+
+    const { getRecentShockRatifications } = await import("./ratification-store.js");
+    const out = await getRecentShockRatifications("BTC/USDT", "2026-05-09T00:00:00.000Z", 2);
+    expect(out).toHaveLength(2);
+    // Second page should NOT be queried — target reached.
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops paginating when DDB returns no LastEvaluatedKey", async () => {
+    sendMock.mockResolvedValueOnce({ Items: [] }); // no LastEvaluatedKey
+    const { getRecentShockRatifications } = await import("./ratification-store.js");
+    const out = await getRecentShockRatifications("BTC/USDT", "2026-05-09T00:00:00.000Z", 10);
+    expect(out).toEqual([]);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// putRatificationRecord — recordId is now part of the persisted item.
+// ---------------------------------------------------------------------------
+
+describe("putRatificationRecord — recordId persistence", () => {
+  it("stores a server-generated recordId on the DDB item", async () => {
+    sendMock.mockResolvedValueOnce({});
+    const { putRatificationRecord } = await import("./ratification-store.js");
+    const record = makeRecord();
+    const recordId = await putRatificationRecord(record);
+
+    expect(recordId).toMatch(/^[0-9a-f-]{36}$/i); // UUID
+    const cmd = sendMock.mock.calls[0][0] as { __cmd: string; input: Record<string, unknown> };
+    expect(cmd.__cmd).toBe("Put");
+    const item = cmd.input.Item as Record<string, unknown>;
+    expect(item.recordId).toBe(recordId);
+    expect(item.invokedAtRecordId).toContain(recordId);
+  });
+});

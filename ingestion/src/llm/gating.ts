@@ -137,21 +137,38 @@ export async function countRatificationsToday(pair: string): Promise<number> {
 export async function shouldInvokeRatification(
   ctx: RatifyContext,
 ): Promise<{ shouldInvoke: boolean; reason: string }> {
-  // 1. Confidence floor
+  const isShock = ctx.triggerReason === "sentiment_shock";
+
+  // 1. Confidence floor — applies to all callers, including shock.
   if (ctx.candidate.confidence < CONFIDENCE_FLOOR) {
     return { shouldInvoke: false, reason: "candidate confidence < 0.6" };
   }
 
-  // 2. Per-(pair, TF) rate limit (5 min)
-  const lastInvocation = await getLastRatificationFor(ctx.pair, ctx.candidate.emittingTimeframe);
-  if (lastInvocation && Date.now() - Date.parse(lastInvocation) < RATE_LIMIT_MS) {
-    return { shouldInvoke: false, reason: "per-(pair, TF) rate limit" };
+  // 2. Per-(pair, TF) rate limit (5 min) — bar-close path only.
+  // Sentiment-shock has already passed its own per-pair cooldown +
+  // hourly-cap check in `sentiment-shock.ts:checkSentimentShockCostGate`,
+  // so applying the 5-min bar-close rate limit on top would suppress
+  // legitimate out-of-cycle ratifications.
+  if (!isShock) {
+    const lastInvocation = await getLastRatificationFor(ctx.pair, ctx.candidate.emittingTimeframe);
+    if (lastInvocation && Date.now() - Date.parse(lastInvocation) < RATE_LIMIT_MS) {
+      return { shouldInvoke: false, reason: "per-(pair, TF) rate limit" };
+    }
   }
 
-  // 3. Per-pair daily cap (100/pair/day)
+  // 3. Per-pair daily cap (100/pair/day) — applies to shock too. The
+  // shock's own hourly cap is the tighter check; the daily cap is here as
+  // a defence-in-depth against runaway cost.
   const todayCount = await countRatificationsToday(ctx.pair);
   if (todayCount >= DAILY_CAP) {
-    // Above cap: only invoke if ALL three trigger conditions fire (rare extreme cases)
+    if (isShock) {
+      // Shock at the daily cap: hard-stop. Don't fall through to the
+      // all-three-conditions override since shock already cleared its
+      // own gating layer; honouring the cap is the right behaviour.
+      return { shouldInvoke: false, reason: "per-pair daily cap exceeded (shock)" };
+    }
+    // Above cap on the bar-close path: only invoke if ALL three trigger
+    // conditions fire (rare extreme cases).
     const allConditions = recentNewsExists(ctx) && volatilityFlagSet(ctx) && fngShifted(ctx);
     if (!allConditions) {
       return {
@@ -161,7 +178,13 @@ export async function shouldInvokeRatification(
     }
   }
 
-  // 4. At least one trigger condition
+  // 4. Trigger condition — bar-close path only.
+  // Sentiment-shock has its own detector (large delta + magnitude floor)
+  // and shouldn't be re-checked against the bar-close trigger conditions.
+  if (isShock) {
+    return { shouldInvoke: true, reason: "sentiment_shock" };
+  }
+
   if (recentNewsExists(ctx) || volatilityFlagSet(ctx) || fngShifted(ctx)) {
     return { shouldInvoke: true, reason: triggerReason(ctx) };
   }

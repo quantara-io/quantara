@@ -45,16 +45,79 @@ export interface SentimentAggregate {
   fearGreedLatest: number | null;
 }
 
+export interface RecomputeResult {
+  /** The freshly-computed aggregate (just written to DDB). */
+  aggregate: SentimentAggregate;
+  /**
+   * The previous aggregate that was in DDB before this write, or null if this
+   * is the first-ever computation for this (pair, window).
+   *
+   * Exposed so callers can hand it to the sentiment-shock detector for a
+   * prev/next comparison without a second DDB read.
+   */
+  previousAggregate: SentimentAggregate | null;
+}
+
 /**
  * Compute and persist a sentiment aggregate for the given pair and window.
  * Idempotent: overwrites any existing row for the same (pair, window).
+ *
+ * Returns both the new aggregate and the prior aggregate so callers can detect
+ * sentiment shocks without an extra DDB read.
+ *
+ * Concurrency safety: read-then-write is gated by a conditional Put on the
+ * previously-observed `computedAt` (or absence-of-row). If a concurrent
+ * invocation slips a write between our Get and Put, our Put fails with
+ * `ConditionalCheckFailedException` and we retry up to MAX_CONCURRENCY_RETRIES
+ * times. This guarantees the returned `previousAggregate` actually corresponds
+ * to the row that was overwritten — without it, two concurrent recomputes
+ * could hand the sentiment-shock detector inconsistent prev→next deltas.
  */
+const MAX_CONCURRENCY_RETRIES = 3;
+
 export async function recomputeSentimentAggregate(
   pair: string,
   window: AggregationWindow,
-): Promise<SentimentAggregate> {
+): Promise<RecomputeResult> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < MAX_CONCURRENCY_RETRIES; attempt++) {
+    try {
+      return await recomputeSentimentAggregateOnce(pair, window);
+    } catch (err) {
+      // Only retry the optimistic-lock conflict; everything else propagates.
+      const name = (err as { name?: string } | null)?.name;
+      if (name !== "ConditionalCheckFailedException") {
+        throw err;
+      }
+      lastError = err;
+      console.warn(
+        `[Aggregator] Concurrent write detected for ${pair}/${window}, retrying (attempt ${attempt + 1}/${MAX_CONCURRENCY_RETRIES})`,
+      );
+    }
+  }
+
+  throw new Error(
+    `[Aggregator] Failed to recompute ${pair}/${window} after ${MAX_CONCURRENCY_RETRIES} concurrent-write retries: ${(lastError as Error)?.message ?? "unknown"}`,
+  );
+}
+
+async function recomputeSentimentAggregateOnce(
+  pair: string,
+  window: AggregationWindow,
+): Promise<RecomputeResult> {
   const now = Date.now();
   const sinceISO = new Date(now - WINDOW_MS[window]).toISOString();
+
+  // Read the current (previous) aggregate before overwriting it, so callers
+  // can do a prev/next shock comparison in a single pass.
+  const prevResult = await client.send(
+    new GetCommand({
+      TableName: SENTIMENT_AGGREGATES_TABLE,
+      Key: { pair, window },
+    }),
+  );
+  const previousAggregate = (prevResult.Item as SentimentAggregate | undefined) ?? null;
 
   // Query all fan-out rows for this pair published within the window.
   const articles = await queryNewsByPair(pair, sinceISO);
@@ -84,10 +147,22 @@ export async function recomputeSentimentAggregate(
     fearGreedLatest,
   };
 
+  // Optimistic concurrency: only overwrite if the row is still the one we
+  // just read (or no row existed). On conflict the outer loop re-reads.
+  const condition = previousAggregate
+    ? {
+        ConditionExpression: "computedAt = :prevComputedAt",
+        ExpressionAttributeValues: { ":prevComputedAt": previousAggregate.computedAt },
+      }
+    : {
+        ConditionExpression: "attribute_not_exists(computedAt)",
+      };
+
   await client.send(
     new PutCommand({
       TableName: SENTIMENT_AGGREGATES_TABLE,
       Item: aggregate,
+      ...condition,
     }),
   );
 
@@ -95,7 +170,7 @@ export async function recomputeSentimentAggregate(
     `[Aggregator] ${pair}/${window}: articles=${articleCount}, meanScore=${meanScore?.toFixed(3) ?? "null"}`,
   );
 
-  return aggregate;
+  return { aggregate, previousAggregate };
 }
 
 interface FearGreedContext {

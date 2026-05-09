@@ -66,6 +66,29 @@ export interface RatifyContext {
   whaleSummary?: WhaleSummary | null;
   pricePoints: ExchangePricePoint[];
   fearGreed: { value: number; trend24h: number };
+  /**
+   * Why this ratification was triggered. Defaults to "bar_close" when absent.
+   *
+   * - "bar_close"       — regular per-bar-close ratification path.
+   * - "sentiment_shock" — out-of-cycle trigger from a sentiment aggregate
+   *                       shock. Bypasses the bar-close-specific gates
+   *                       (5-min per-(pair, TF) rate limit, trigger-condition
+   *                       check) since the sentiment-shock module already
+   *                       ran its own detector + cost gate. Confidence floor
+   *                       and per-pair daily cap still apply.
+   *
+   * Also persisted on every `RatificationRecord` written by `ratifySignal`,
+   * along with the optional `previousRatificationId` link to the most-recent
+   * bar_close ratification.
+   */
+  triggerReason?: "bar_close" | "sentiment_shock";
+  /**
+   * For sentiment_shock contexts: the recordId of the most-recent bar_close
+   * ratification for this pair at shock time. Carried through to every
+   * `RatificationRecord` written by `ratifySignal` so downstream tooling can
+   * trace which bar-close verdict the shock superseded.
+   */
+  previousRatificationId?: string;
 }
 
 /**
@@ -188,6 +211,13 @@ export async function ratifySignal(
   const invokedAt = new Date().toISOString();
   const startMs = Date.now();
 
+  // Pull trigger metadata once so every persisted RatificationRecord
+  // carries the same triggerReason / previousRatificationId values. The
+  // sentiment-shock module relies on this — without it the single record
+  // written by ratifySignal would be mis-tagged as "bar_close".
+  const triggerReason = context.triggerReason ?? "bar_close";
+  const previousRatificationId = context.previousRatificationId;
+
   // ------------------------------------------------------------------
   // Step 1: Cost gating
   // ------------------------------------------------------------------
@@ -211,6 +241,8 @@ export async function ratifySignal(
       // with news-driven invocations.
       invokedReason: gateReasonToInvokedReason(gate.reason),
       invokedAt,
+      triggerReason,
+      previousRatificationId,
     });
     const signal: BlendedSignal = { ...context.candidate, ratificationStatus: "not-required" };
     return {
@@ -244,6 +276,8 @@ export async function ratifySignal(
       costUsd: 0,
       invokedReason,
       invokedAt,
+      triggerReason,
+      previousRatificationId,
     });
     const signal: BlendedSignal = { ...cached, ratificationStatus: "ratified" };
     return {
@@ -301,6 +335,9 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
   const { context, cacheKey, userJson, userJsonHash, invokedReason, invokedAt, startMs, onStage2 } =
     params;
 
+  const triggerReason = context.triggerReason ?? "bar_close";
+  const previousRatificationId = context.previousRatificationId;
+
   const algoVerdict = {
     type: context.candidate.type,
     confidence: context.candidate.confidence,
@@ -356,6 +393,8 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
       costUsd: 0,
       invokedReason,
       invokedAt,
+      triggerReason,
+      previousRatificationId,
     });
     // Graceful fallback: write stage-2 as "ratified" with algo verdict
     await invokeStage2Fallback({
@@ -398,6 +437,8 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
       costUsd,
       invokedReason,
       invokedAt,
+      triggerReason,
+      previousRatificationId,
     });
     await invokeStage2Fallback({ context, algoVerdict, onStage2 });
     return;
@@ -424,6 +465,8 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
       costUsd,
       invokedReason,
       invokedAt,
+      triggerReason,
+      previousRatificationId,
     });
     await invokeStage2Fallback({ context, algoVerdict, onStage2 });
     return;
@@ -473,6 +516,8 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
     costUsd,
     invokedReason,
     invokedAt,
+    triggerReason,
+    previousRatificationId,
   });
 
   console.log(
@@ -569,6 +614,7 @@ function gateReasonToInvokedReason(gateReason: string): InvokedReason {
   // Trigger reasons (gate.shouldInvoke=true). The triggerReason() helper
   // composes these with explicit "news"/"vol"/"fng" tokens, so substring
   // checks are reliable here.
+  if (gateReason === "sentiment_shock") return "sentiment_shock";
   if (gateReason.includes("news") && gateReason.includes("vol") && gateReason.includes("fng")) {
     return "all";
   }

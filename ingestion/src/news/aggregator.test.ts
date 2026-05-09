@@ -127,17 +127,52 @@ describe("computeTrend24h", () => {
 describe("recomputeSentimentAggregate", () => {
   it("returns articleCount=0 and meanScore=null when no articles exist in the window", async () => {
     queryNewsByPairMock.mockResolvedValue([]);
-    // Stub the Fear & Greed GetCommand
+    // Calls: GetCommand (prev aggregate), GetCommand (Fear & Greed), PutCommand
     ddbSendMock.mockResolvedValue({ Item: null });
 
     const { recomputeSentimentAggregate } = await import("./aggregator.js");
-    const result = await recomputeSentimentAggregate("BTC", "4h");
+    const { aggregate } = await recomputeSentimentAggregate("BTC", "4h");
 
-    expect(result.pair).toBe("BTC");
-    expect(result.window).toBe("4h");
-    expect(result.articleCount).toBe(0);
-    expect(result.meanScore).toBeNull();
-    expect(result.meanMagnitude).toBeNull();
+    expect(aggregate.pair).toBe("BTC");
+    expect(aggregate.window).toBe("4h");
+    expect(aggregate.articleCount).toBe(0);
+    expect(aggregate.meanScore).toBeNull();
+    expect(aggregate.meanMagnitude).toBeNull();
+  });
+
+  it("returns previousAggregate=null when no prior row exists", async () => {
+    queryNewsByPairMock.mockResolvedValue([]);
+    ddbSendMock.mockResolvedValue({ Item: null });
+
+    const { recomputeSentimentAggregate } = await import("./aggregator.js");
+    const { previousAggregate } = await recomputeSentimentAggregate("BTC", "4h");
+
+    expect(previousAggregate).toBeNull();
+  });
+
+  it("returns previousAggregate when a prior row exists", async () => {
+    queryNewsByPairMock.mockResolvedValue([]);
+    const prevItem = {
+      pair: "BTC",
+      window: "4h",
+      computedAt: "2026-05-09T10:00:00Z",
+      articleCount: 3,
+      meanScore: 0.2,
+      meanMagnitude: 0.4,
+      fearGreedTrend24h: null,
+      fearGreedLatest: 55,
+    };
+    // First send = GetCommand (prev aggregate), second = GetCommand (Fear & Greed), third = PutCommand
+    ddbSendMock
+      .mockResolvedValueOnce({ Item: prevItem }) // prev aggregate
+      .mockResolvedValueOnce({ Item: null }) // Fear & Greed
+      .mockResolvedValueOnce({}); // PutCommand
+
+    const { recomputeSentimentAggregate } = await import("./aggregator.js");
+    const { previousAggregate } = await recomputeSentimentAggregate("BTC", "4h");
+
+    expect(previousAggregate).not.toBeNull();
+    expect(previousAggregate?.meanScore).toBe(0.2);
   });
 
   it("computes correct meanScore excluding duplicate articles", async () => {
@@ -167,14 +202,14 @@ describe("recomputeSentimentAggregate", () => {
     ddbSendMock.mockResolvedValue({ Item: null });
 
     const { recomputeSentimentAggregate } = await import("./aggregator.js");
-    const result = await recomputeSentimentAggregate("ETH", "24h");
+    const { aggregate } = await recomputeSentimentAggregate("ETH", "24h");
 
-    expect(result.articleCount).toBe(2); // a3 excluded
-    expect(result.meanScore).toBeCloseTo(0.6, 5); // (0.8 + 0.4) / 2
-    expect(result.meanMagnitude).toBeCloseTo(0.7, 5); // (0.9 + 0.5) / 2
+    expect(aggregate.articleCount).toBe(2); // a3 excluded
+    expect(aggregate.meanScore).toBeCloseTo(0.6, 5); // (0.8 + 0.4) / 2
+    expect(aggregate.meanMagnitude).toBeCloseTo(0.7, 5); // (0.9 + 0.5) / 2
   });
 
-  it("writes the aggregate to DynamoDB (PutCommand called once)", async () => {
+  it("writes the aggregate to DynamoDB (PutCommand called)", async () => {
     queryNewsByPairMock.mockResolvedValue([
       {
         articleId: "a1",
@@ -189,23 +224,25 @@ describe("recomputeSentimentAggregate", () => {
     const { recomputeSentimentAggregate } = await import("./aggregator.js");
     await recomputeSentimentAggregate("SOL", "4h");
 
-    // First call = GetCommand for Fear & Greed, second call = PutCommand for aggregate
-    expect(ddbSendMock).toHaveBeenCalledTimes(2);
-    const putCall = ddbSendMock.mock.calls[1][0];
+    // Calls: GetCommand (prev aggregate), GetCommand (Fear & Greed), PutCommand
+    expect(ddbSendMock).toHaveBeenCalledTimes(3);
+    const putCall = ddbSendMock.mock.calls[2][0];
     expect(putCall.Item?.pair).toBe("SOL");
     expect(putCall.Item?.window).toBe("4h");
   });
 
   it("includes fearGreedLatest when the metadata record exists", async () => {
     queryNewsByPairMock.mockResolvedValue([]);
-    ddbSendMock.mockResolvedValueOnce({
-      Item: { value: 72, history: [], classification: "Greed" },
-    });
-    ddbSendMock.mockResolvedValueOnce({}); // PutCommand
+    ddbSendMock
+      .mockResolvedValueOnce({ Item: null }) // GetCommand (prev aggregate)
+      .mockResolvedValueOnce({
+        Item: { value: 72, history: [], classification: "Greed" },
+      }) // GetCommand (Fear & Greed)
+      .mockResolvedValueOnce({}); // PutCommand
 
     const { recomputeSentimentAggregate } = await import("./aggregator.js");
-    const result = await recomputeSentimentAggregate("BTC", "24h");
+    const { aggregate } = await recomputeSentimentAggregate("BTC", "24h");
 
-    expect(result.fearGreedLatest).toBe(72);
+    expect(aggregate.fearGreedLatest).toBe(72);
   });
 });
