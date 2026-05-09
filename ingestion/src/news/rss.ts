@@ -105,6 +105,7 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
           title: item.title,
           url: item.link,
           publishedAt,
+          publishedDay: publishedAt.slice(0, 10),
           currencies,
           rawSentiment: "neutral",
           status: "raw",
