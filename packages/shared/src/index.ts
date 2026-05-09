@@ -27,6 +27,11 @@ export {
 } from "./constants/signals.js";
 export { PAIRS, type TradingPair } from "./constants/pairs.js";
 export { VOL_GATE_THRESHOLDS } from "./constants/vol-gates.js";
+export {
+  HAIKU_INPUT_PRICE_PER_M,
+  HAIKU_OUTPUT_PRICE_PER_M,
+  HAIKU_MODEL_TAG,
+} from "./constants/llm-pricing.js";
 
 // Signal interpretation helper — Phase B2 (#171)
 export { buildInterpretation } from "./signals/interpretation.js";

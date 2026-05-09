@@ -14,6 +14,10 @@ import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedroc
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
+import { HAIKU_MODEL_TAG } from "@quantara/shared";
+
+import { recordLlmUsage } from "../lib/metadata-store.js";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -38,16 +42,13 @@ const DEDUP_WINDOW_HOURS = 24;
 // isn't supported." The org SCP permits `bedrock:InvokeModel*` cross-region.
 const HAIKU_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
-// Stable model tag stamped on the `model` field of `SentimentResult`.
-// Decoupled from the invocation ID so AWS-side rotations (different inference
-// profile, regional change, etc.) don't change what callers see. The
-// pre-existing test "model tag is always claude-haiku-4-5" enforces this
-// stability contract. Bump only when the underlying *model* changes in a way
-// that makes prior sentiment outputs incompatible (e.g. Haiku 4.5 → 5.x).
-//
-// Note: this is unrelated to the embedding cache, which keys on
+// `HAIKU_MODEL_TAG` is the stable identifier stamped on `SentimentResult.model`
+// and on the LLM-usage records this file writes via `recordLlmUsage`. It's
+// imported from `@quantara/shared` so the backend's cost-calc reads the same
+// constant rather than maintaining a parallel hard-coded copy. Bump only when
+// the underlying model changes in a way that makes prior outputs incompatible
+// (e.g. Haiku 4.5 → 5.x). Unrelated to the embedding cache, which keys on
 // `EMBEDDING_MODEL` (Amazon Titan Text Embeddings v2) and never reads this tag.
-const HAIKU_MODEL_TAG = "anthropic.claude-haiku-4-5";
 
 // ---------------------------------------------------------------------------
 // AWS clients (module-scope singletons)
@@ -94,6 +95,10 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 /**
  * Invoke Bedrock Haiku (claude-haiku-4-5) in JSON mode and return parsed object.
+ * Records token usage best-effort. NOTE: Phase 5a's enrichArticle calls this
+ * twice per article (pair-tag + sentiment), so we count the *call* but NOT
+ * the article — countAsArticle is false here. The article boundary lives at
+ * the per-article wrapper level if/when Phase 5a goes live as the active path.
  */
 async function invokeHaiku<T>(systemPrompt: string, userContent: string): Promise<T> {
   const response = await bedrock.send(
@@ -109,7 +114,18 @@ async function invokeHaiku<T>(systemPrompt: string, userContent: string): Promis
       }),
     }),
   );
-  const body = JSON.parse(new TextDecoder().decode(response.body));
+  const body = JSON.parse(new TextDecoder().decode(response.body)) as {
+    content?: Array<{ text: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+
+  void recordLlmUsage({
+    modelTag: HAIKU_MODEL_TAG,
+    inputTokens: body.usage?.input_tokens ?? 0,
+    outputTokens: body.usage?.output_tokens ?? 0,
+    countAsArticle: false,
+  });
+
   const text: string = body.content?.[0]?.text ?? "{}";
   return JSON.parse(extractJson(text)) as T;
 }

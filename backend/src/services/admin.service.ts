@@ -4,8 +4,10 @@ import {
   ScanCommand,
   GetCommand,
   QueryCommand,
+  BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal, IndicatorState } from "@quantara/shared";
+import { HAIKU_INPUT_PRICE_PER_M, HAIKU_OUTPUT_PRICE_PER_M } from "@quantara/shared";
 import { ECSClient, DescribeServicesCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
 import {
@@ -427,6 +429,20 @@ export async function getSignals(
   }
 }
 
+const METADATA_TABLE =
+  process.env.TABLE_METADATA ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
+
+export interface NewsUsage {
+  articlesEnriched: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  estimatedCostUsd: number;
+  byModel: Record<
+    string,
+    { calls: number; inputTokens: number; outputTokens: number; costUsd: number }
+  >;
+}
+
 export async function getNews(limit = 50) {
   try {
     const [scan, fearGreed] = await Promise.all([
@@ -440,6 +456,117 @@ export async function getNews(limit = 50) {
   } catch (err) {
     console.error("[admin.service] getNews failed:", err);
     return { news: [], fearGreed: null };
+  }
+}
+
+/**
+ * Aggregate LLM token usage from ingestion-metadata keys of the form
+ * `llm_usage#YYYY-MM-DD` written by `recordLlmUsage` on each Bedrock invocation.
+ *
+ * Storage is **day-bucketed**, so the `since` parameter is truncated to a
+ * date and the window is inclusive of every day from `since-day` through
+ * today. A request for "last 24h" near midnight UTC therefore returns up
+ * to ~48h of data — this is fundamental to day-bucket storage and the UI
+ * label should reflect it ("Today + last N days" rather than a strict
+ * 24h window). Sub-day bucketing would shrink this to one-hour granularity
+ * but trades 24× more DDB writes per active day; not worth it for the
+ * dashboard's accuracy needs.
+ *
+ * Counters are read directly:
+ *   - `calls` = total InvokeModel invocations (1 per call)
+ *   - `articlesEnriched` = total fully-enriched articles (1 per article,
+ *     incremented only on the call that completes the article — see
+ *     `recordLlmUsage(countAsArticle)` for the contract)
+ */
+/** Build the deterministic list of `llm_usage#YYYY-MM-DD` keys from `since` (truncated to date) through today. */
+function dailyUsageKeys(since: Date): string[] {
+  const startMs = Date.UTC(since.getUTCFullYear(), since.getUTCMonth(), since.getUTCDate());
+  const todayMs = (() => {
+    const t = new Date();
+    return Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
+  })();
+  const keys: string[] = [];
+  for (let ms = startMs; ms <= todayMs; ms += 24 * 60 * 60 * 1000) {
+    keys.push(`llm_usage#${new Date(ms).toISOString().slice(0, 10)}`);
+  }
+  return keys;
+}
+
+export async function getNewsUsage(since: Date): Promise<NewsUsage> {
+  try {
+    // Generate the deterministic list of day-keys from `since` to today and
+    // BatchGet them. Previously we Scanned the whole metadata table on every
+    // 60-second poll, which scales linearly with unrelated keys (cooldowns,
+    // close-quorum markers, fear-greed cache, etc.). Day-keys are deterministic
+    // — no reason to scan.
+    //
+    // BatchGet has a 100-key cap per request; a single request covers ~3 months
+    // of usage history, which is far beyond any reasonable dashboard window.
+    // For a hypothetical >100-day request the loop below chunks accordingly.
+    const wantedKeys = dailyUsageKeys(since);
+    const items: Record<string, unknown>[] = [];
+    for (let i = 0; i < wantedKeys.length; i += 100) {
+      const chunk = wantedKeys.slice(i, i + 100);
+      const result = await dynamo.send(
+        new BatchGetCommand({
+          RequestItems: {
+            [METADATA_TABLE]: {
+              Keys: chunk.map((metaKey) => ({ metaKey })),
+            },
+          },
+        }),
+      );
+      const responseItems = (result.Responses?.[METADATA_TABLE] ?? []) as Record<string, unknown>[];
+      items.push(...responseItems);
+    }
+
+    let articlesEnriched = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    const byModel: NewsUsage["byModel"] = {};
+
+    for (const item of items) {
+      const inputTok = (item.totalInputTokens as number) ?? 0;
+      const outputTok = (item.totalOutputTokens as number) ?? 0;
+      const articles = (item.articlesEnriched as number) ?? 0;
+      // Fall back to articles for legacy day-buckets written before the
+      // separate `calls` counter shipped — never under-report total calls.
+      const calls = (item.calls as number) ?? articles;
+      const model: string = (item.modelTag as string) ?? "anthropic.claude-haiku-4-5";
+
+      articlesEnriched += articles;
+      totalInputTokens += inputTok;
+      totalOutputTokens += outputTok;
+
+      if (!byModel[model]) {
+        byModel[model] = { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
+      }
+      byModel[model].calls += calls;
+      byModel[model].inputTokens += inputTok;
+      byModel[model].outputTokens += outputTok;
+    }
+
+    // Compute cost for each model bucket
+    for (const m of Object.values(byModel)) {
+      m.costUsd =
+        (m.inputTokens / 1_000_000) * HAIKU_INPUT_PRICE_PER_M +
+        (m.outputTokens / 1_000_000) * HAIKU_OUTPUT_PRICE_PER_M;
+    }
+
+    const estimatedCostUsd =
+      (totalInputTokens / 1_000_000) * HAIKU_INPUT_PRICE_PER_M +
+      (totalOutputTokens / 1_000_000) * HAIKU_OUTPUT_PRICE_PER_M;
+
+    return { articlesEnriched, totalInputTokens, totalOutputTokens, estimatedCostUsd, byModel };
+  } catch (err) {
+    console.error("[admin.service] getNewsUsage failed:", err);
+    return {
+      articlesEnriched: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      estimatedCostUsd: 0,
+      byModel: {},
+    };
   }
 }
 
