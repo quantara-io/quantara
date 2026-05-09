@@ -346,9 +346,14 @@ describe("classifySentiment", () => {
 // checkDedup — mocked fetch (OpenAI embeddings) + mocked DynamoDB
 // ---------------------------------------------------------------------------
 
-const EMBEDDING_DIM = 4; // tiny vectors for tests
+// Bedrock Titan v2 returns 1024-dim vectors, and the production code now
+// validates that exactly. Tests build a one-hot-style vector at index 0 so
+// cosine similarity remains predictable while satisfying the dimension check.
+const EMBEDDING_DIM = 1024;
 function makeVec(val: number): number[] {
-  return [val, 0, 0, 0];
+  const v = new Array<number>(EMBEDDING_DIM).fill(0);
+  v[0] = val;
+  return v;
 }
 
 describe("checkDedup", () => {
@@ -452,14 +457,16 @@ describe("checkDedup", () => {
 
   it("does not flag as duplicate when similarity is below threshold", async () => {
     // Orthogonal vectors: cosine sim = 0 < 0.85
-    mockEmbeddingResponse([1, 0, 0, 0]);
+    mockEmbeddingResponse(makeVec(1)); // hot at index 0
+    const orthogonal = new Array<number>(EMBEDDING_DIM).fill(0);
+    orthogonal[1] = 1; // hot at index 1 → orthogonal to makeVec(...)
     dynamoSendMock.mockImplementation(async (cmd: { __cmd: string }) => {
       if (cmd.__cmd === "Scan") {
         return {
           Items: [
             {
               articleId: "art-different",
-              vector: [0, 1, 0, 0], // orthogonal → cosine sim = 0
+              vector: orthogonal,
               model: "amazon.titan-embed-text-v2:0",
               dim: EMBEDDING_DIM,
               publishedAt: "2026-05-07T00:00:00Z",
@@ -504,5 +511,37 @@ describe("checkDedup", () => {
     expect(body.dimensions).toBe(1024);
     expect(body.normalize).toBe(true);
     expect(EMBEDDING_MODEL).toBe("amazon.titan-embed-text-v2:0");
+  });
+
+  it("throws an actionable error when Titan returns a wrong-dim embedding", async () => {
+    // Bedrock somehow returns 512 dims when we asked for 1024 — must surface
+    // expected/actual dimensions, not silently fail downstream in cosineSimilarity.
+    const wrongDim = new Array<number>(512).fill(0);
+    wrongDim[0] = 1;
+    bedrockSendMock.mockResolvedValue(bedrockEmbeddingResponse(wrongDim));
+    dynamoSendMock.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Scan") return { Items: [] };
+      return {};
+    });
+
+    const { checkDedup } = await import("./enrich.js");
+    await expect(
+      checkDedup({ id: "x", title: "t", body: "b", publishedAt: "2026-05-07T00:00:00Z" }),
+    ).rejects.toThrow(/expected 1024.*got 512/);
+  });
+
+  it("throws when Titan returns non-finite values in the embedding", async () => {
+    const badVec = makeVec(1);
+    badVec[5] = NaN; // poison
+    bedrockSendMock.mockResolvedValue(bedrockEmbeddingResponse(badVec));
+    dynamoSendMock.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Scan") return { Items: [] };
+      return {};
+    });
+
+    const { checkDedup } = await import("./enrich.js");
+    await expect(
+      checkDedup({ id: "x", title: "t", body: "b", publishedAt: "2026-05-07T00:00:00Z" }),
+    ).rejects.toThrow(/non-finite values/);
   });
 });

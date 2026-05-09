@@ -245,8 +245,21 @@ async function fetchEmbedding(text: string): Promise<number[]> {
     embedding: number[];
     inputTextTokenCount?: number;
   };
-  if (!Array.isArray(json.embedding) || json.embedding.length === 0) {
-    throw new Error(`Bedrock Titan returned empty embedding for input length ${text.length}`);
+  if (!Array.isArray(json.embedding)) {
+    throw new Error(`Bedrock Titan response missing embedding array (input length ${text.length})`);
+  }
+  // Defense-in-depth: validate dimensions and finite-number contents before
+  // handing off to cosineSimilarity, which would otherwise throw on a
+  // mismatched length and bury the actual cause behind a generic math error.
+  if (json.embedding.length !== EMBEDDING_DIMENSIONS) {
+    throw new Error(
+      `Bedrock Titan returned wrong-dim embedding: expected ${EMBEDDING_DIMENSIONS}, got ${json.embedding.length}`,
+    );
+  }
+  if (!json.embedding.every((v) => typeof v === "number" && Number.isFinite(v))) {
+    throw new Error(
+      `Bedrock Titan returned non-finite values in embedding (model ${EMBEDDING_MODEL})`,
+    );
   }
   return json.embedding;
 }
