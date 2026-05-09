@@ -151,7 +151,12 @@ export const handler: Handler<WsConnectEvent, WsConnectResult> = async (event) =
     return { statusCode: 401, body: "Unauthorized" };
   }
 
-  // 3. Parse and validate pairs
+  // 3. Parse channel (optional). "events" channel receives pipeline activity feed
+  //    events; "signals" (default) receives trading signals.
+  const channel = queryParams["channel"] === "events" ? "events" : "signals";
+
+  // 4. Parse and validate pairs (only relevant for signals channel, but store
+  //    them regardless — the events fanout ignores subscribedPairs entirely).
   let pairs: TradingPair[];
   try {
     pairs = parsePairs(queryParams["pairs"]);
@@ -160,7 +165,7 @@ export const handler: Handler<WsConnectEvent, WsConnectResult> = async (event) =
     return { statusCode: 4001, body: "Invalid pairs" };
   }
 
-  // 4. Write connection-registry row
+  // 5. Write connection-registry row
   const now = Date.now();
   const ttl = Math.floor(now / 1000) + SESSION_TTL_SECONDS;
 
@@ -172,6 +177,7 @@ export const handler: Handler<WsConnectEvent, WsConnectResult> = async (event) =
           connectionId,
           userId,
           subscribedPairs: pairs, // stored as List; fanout uses contains()
+          channel, // "signals" | "events" — used by fanout Lambdas to route
           connectedAt: now,
           ttl,
         },
@@ -182,7 +188,7 @@ export const handler: Handler<WsConnectEvent, WsConnectResult> = async (event) =
     return { statusCode: 500, body: "Internal Server Error" };
   }
 
-  logger.info({ connectionId, userId, pairs, ttl }, "ws $connect: connection registered");
+  logger.info({ connectionId, userId, pairs, channel, ttl }, "ws $connect: connection registered");
 
   return { statusCode: 200 };
 };

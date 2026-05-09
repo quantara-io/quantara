@@ -17,6 +17,7 @@ import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dy
 import { HAIKU_MODEL_TAG } from "@quantara/shared";
 
 import { recordLlmUsage } from "../lib/metadata-store.js";
+import { emitPipelineEventSafe } from "../lib/pipeline-events-store.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -362,11 +363,26 @@ export async function enrichArticle(article: {
     checkDedup(article),
   ]);
 
+  const enrichedAt = new Date().toISOString();
+
+  // Activity feed: emit news-enriched event (fire-and-forget, non-fatal).
+  // Only emit for non-duplicate articles to avoid spamming the feed.
+  if (dedup.duplicateOf === null) {
+    emitPipelineEventSafe({
+      type: "news-enriched",
+      newsId: article.id,
+      mentionedPairs,
+      sentimentScore: sentiment.score,
+      sentimentMagnitude: sentiment.magnitude,
+      ts: enrichedAt,
+    });
+  }
+
   return {
     mentionedPairs,
     sentiment,
     duplicateOf: dedup.duplicateOf,
     embeddingModel: dedup.embeddingModel,
-    enrichedAt: new Date().toISOString(),
+    enrichedAt,
   };
 }

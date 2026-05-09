@@ -40,6 +40,7 @@ import {
 import { validateRatification } from "./validate.js";
 import { putRatificationRecord, type InvokedReason } from "../lib/ratification-store.js";
 import type { RatificationVerdictRecord } from "../lib/signal-store.js";
+import { emitPipelineEventSafe } from "../lib/pipeline-events-store.js";
 
 // ---------------------------------------------------------------------------
 // Model config (pinned per issue spec)
@@ -279,6 +280,19 @@ export async function ratifySignal(
       triggerReason,
       previousRatificationId,
     });
+    // Activity feed: emit ratification-fired event for cache-hit path.
+    emitPipelineEventSafe({
+      type: "ratification-fired",
+      pair: context.pair,
+      timeframe: context.candidate.emittingTimeframe,
+      triggerReason,
+      verdict: "ratified",
+      latencyMs: Date.now() - startMs,
+      costUsd: 0,
+      cacheHit: true,
+      ts: new Date().toISOString(),
+    });
+
     const signal: BlendedSignal = { ...cached, ratificationStatus: "ratified" };
     return {
       signal,
@@ -523,6 +537,19 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
   console.log(
     `[Ratifier] Ratified ${context.pair}: ${finalSignal.type} conf=${finalSignal.confidence.toFixed(3)} status=${ratificationStatus}`,
   );
+
+  // Activity feed: emit ratification-fired event (fire-and-forget, non-fatal).
+  emitPipelineEventSafe({
+    type: "ratification-fired",
+    pair: context.pair,
+    timeframe: context.candidate.emittingTimeframe,
+    triggerReason,
+    verdict: ratificationStatus,
+    latencyMs: Date.now() - startMs,
+    costUsd,
+    cacheHit: false,
+    ts: new Date().toISOString(),
+  });
 
   if (onStage2) {
     try {
