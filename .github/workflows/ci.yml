@@ -170,6 +170,14 @@ jobs:
     # require manual approval before each deploy, add yourself as a
     # required reviewer in Settings → Environments → dev.
     environment: dev
+    # Concurrency: only one deploy-dev runs at a time. `cancel-in-progress:
+    # true` because `aws lambda update-function-code` writes are last-write-
+    # wins anyway — when two PRs merge close together, abandon the older
+    # build and let the newer commit's bundle ship. Distinct group from the
+    # terraform apply (different cancellation semantics).
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: true
     permissions:
       id-token: write
       contents: read
