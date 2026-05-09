@@ -80,7 +80,7 @@ jobs:
         id: plan
         working-directory: backend/infra/dev
         run: |
-          terraform plan -input=false -no-color -var-file=secrets.tfvars -out=/tmp/tfplan.bin
+          terraform plan -input=false -no-color -out=/tmp/tfplan.bin
           terraform show -no-color /tmp/tfplan.bin > /tmp/plan-summary.txt
 
           # Capture the high-level summary (last few lines that say "Plan: X to add...")
@@ -200,5 +200,5 @@ jobs:
       - name: Terraform plan + apply
         working-directory: backend/infra/dev
         run: |
-          terraform plan -input=false -no-color -var-file=secrets.tfvars -out=/tmp/tfplan.bin
+          terraform plan -input=false -no-color -out=/tmp/tfplan.bin
           terraform apply -input=false -no-color /tmp/tfplan.bin
