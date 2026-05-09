@@ -63,27 +63,43 @@ export interface RatifyContext {
 }
 
 /**
- * Phase B1: ratifySignal now returns two things:
- *   - signal: the algo or cached result for immediate stage-1 write
- *   - ratificationComplete: a promise that resolves when the LLM stream
- *     finishes and the caller's onStage2 callback has been invoked.
- *     Resolves to void; never rejects (errors are logged + fallback applied).
+ * Phase B1: ratifySignal returns the stage-1 signal synchronously plus a
+ * deferred `kickoffRatification` callback that the caller invokes ONLY
+ * after the stage-1 DDB Put commits. This eliminates the race where a
+ * fast-failing LLM stream could fire its onStage2 UPDATE before the
+ * stage-1 row exists (resulting in a no-op UPDATE that silently leaves
+ * the row stuck on "pending").
  *
  * `ratificationStatus` on the returned signal indicates:
- *   - "pending"       → LLM call in flight; caller should write stage-1 with
- *                        this status and await ratificationComplete for stage-2.
+ *   - "pending"       → LLM call needed; caller writes stage-1 then invokes
+ *                        kickoffRatification() to start the stream.
  *   - "not-required"  → no LLM call needed; stage-1 IS the final state.
- *   - "ratified"      → cache hit; signal is already final (skip stage-2).
+ *   - "ratified"      → cache hit; signal is already final (no stage-2).
  *
- * When status is "pending", the caller must supply onStage2 so the stage-2
- * UPDATE can be performed when the LLM stream completes.
+ * `kickoffRatification` is non-undefined ONLY when `ratificationStatus`
+ * is "pending". It returns the same Promise<void> the prior `ratificationComplete`
+ * field returned: resolves when the LLM stream + stage-2 callback finish;
+ * never rejects (errors are logged + fallback applied).
+ *
+ * `fellBackToAlgo` reflects only the synchronous pre-stream state:
+ *   - true  → gated out before LLM call (stage-1 is the final algo signal)
+ *   - false → cache hit OR pending stream still in flight
+ *
+ * For the fellBackToAlgo state of the post-stream verdict, observe the
+ * `ratificationStatus` on the Stage2Payload when onStage2 fires — the
+ * fallback path emits status="ratified" with algoVerdict equal to the
+ * algo candidate.
  */
 export interface RatifyResult {
   signal: BlendedSignal;
   fellBackToAlgo: boolean;
   cacheHit: boolean;
-  /** Promise that resolves when the LLM stream + stage-2 write complete. */
-  ratificationComplete: Promise<void>;
+  /**
+   * Caller invokes this after stage-1 Put commits. Returns a promise that
+   * resolves when the LLM stream + stage-2 callback finish. Undefined when
+   * no LLM call is needed (gated, cache hit).
+   */
+  kickoffRatification?: () => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +203,6 @@ export async function ratifySignal(
       signal,
       fellBackToAlgo: true,
       cacheHit: false,
-      ratificationComplete: Promise.resolve(),
     };
   }
 
@@ -221,33 +236,35 @@ export async function ratifySignal(
       signal,
       fellBackToAlgo: false,
       cacheHit: true,
-      ratificationComplete: Promise.resolve(),
     };
   }
 
   // ------------------------------------------------------------------
-  // Step 3: Return algo signal as stage-1 (pending), kick off async LLM stream
+  // Step 3: Return algo signal as stage-1 (pending) + a kickoffRatification
+  // callback. The LLM stream is NOT started here — the caller invokes
+  // kickoffRatification ONLY after the stage-1 DDB Put commits. This
+  // guarantees that any onStage2 UPDATE issued by the stream targets a
+  // row that exists.
   // ------------------------------------------------------------------
   const algoSignal: BlendedSignal = { ...context.candidate, ratificationStatus: "pending" };
   const userJson = buildUserMessage(context);
   const userJsonHash = hashUserMessage(userJson);
 
-  const ratificationComplete = runLlmStream({
-    context,
-    cacheKey,
-    userJson,
-    userJsonHash,
-    invokedReason,
-    invokedAt,
-    startMs,
-    onStage2,
-  });
-
   return {
     signal: algoSignal,
     fellBackToAlgo: false,
     cacheHit: false,
-    ratificationComplete,
+    kickoffRatification: () =>
+      runLlmStream({
+        context,
+        cacheKey,
+        userJson,
+        userJsonHash,
+        invokedReason,
+        invokedAt,
+        startMs,
+        onStage2,
+      }),
   };
 }
 

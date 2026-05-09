@@ -222,13 +222,18 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
   // Phase B1 two-stage ratification:
   //   Stage 1 — run ratifySignal immediately to determine ratificationStatus.
   //             Returns synchronously with ratificationStatus = "pending" |
-  //             "not-required" | "ratified" (cache hit) plus a ratificationComplete
-  //             promise that resolves when the LLM stream + stage-2 UPDATE are done.
+  //             "not-required" | "ratified" (cache hit). When status is
+  //             "pending", the result also exposes kickoffRatification(), which
+  //             the caller invokes ONLY AFTER the stage-1 DDB Put commits.
   //   Stage 2 — the onStage2 callback fires when the LLM verdict is ready;
   //             it calls updateSignalRatification to UPDATE the DDB row.
+  //
+  // Race-free ordering: kickoffRatification is the synchronization barrier.
+  // We never start the LLM stream before stage-1 Put is durable, so any
+  // stage-2 UPDATE is guaranteed to find a row to update.
 
   let stage1Signal = blended;
-  let ratificationComplete: Promise<void> = Promise.resolve();
+  let kickoffRatification: (() => Promise<void>) | undefined;
 
   try {
     const sentiment = await buildSentimentBundle(pair);
@@ -270,7 +275,7 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     );
 
     stage1Signal = ratifyResult.signal;
-    ratificationComplete = ratifyResult.ratificationComplete;
+    kickoffRatification = ratifyResult.kickoffRatification;
   } catch (err) {
     console.warn(
       `[IndicatorHandler] ${pair}: ratification setup failed, using algo signal — ${(err as Error).message}`,
@@ -344,12 +349,11 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     throw err;
   }
 
-  // Await the ratification promise AFTER the stage-1 write so the stage-2 UPDATE
-  // is sequenced correctly. Fire-and-forget is intentional here: the Lambda will
-  // stay alive until ratificationComplete settles (Node event loop is not drained
-  // while a Promise is pending). Errors inside ratificationComplete are already
-  // caught by the onStage2 callback above.
-  await ratificationComplete;
+  // Now that stage-1 is durable, kick off the LLM stream. kickoffRatification
+  // is undefined for gated/cache-hit paths — those have no stage-2.
+  if (kickoffRatification) {
+    await kickoffRatification();
+  }
 }
 
 // ---------------------------------------------------------------------------

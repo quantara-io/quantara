@@ -279,8 +279,9 @@ describe("ratifySignal — successful LLM ratification", () => {
     );
     const result = await ratifySignal(ctx);
     // Phase B1: ratifySignal returns immediately with "pending" stage-1 signal.
-    // Await ratificationComplete so the LLM stream resolves before we assert.
-    await result.ratificationComplete;
+    // The caller invokes kickoffRatification() AFTER stage-1 commits; await it
+    // so the LLM stream resolves before we assert.
+    await result.kickoffRatification?.();
     expect(result.fellBackToAlgo).toBe(false);
     expect(result.cacheHit).toBe(false);
     // stage-1 signal has ratificationStatus = "pending"; final verdict is in stage-2.
@@ -294,7 +295,7 @@ describe("ratifySignal — successful LLM ratification", () => {
     anthropicStreamMock.mockReturnValueOnce(makeStreamMock(makeLlmTextContent()));
     const result = await ratifySignal(ctx);
     // Await stage-2 completion so cache + record writes happen before we assert.
-    await result.ratificationComplete;
+    await result.kickoffRatification?.();
     // There should be at least 2 Put calls: cache write + record write
     const putCalls = ddbSendMock.mock.calls.filter(
       (c) => (c[0] as { __cmd: string }).__cmd === "Put",
@@ -309,7 +310,7 @@ describe("ratifySignal — successful LLM ratification", () => {
     anthropicStreamMock.mockReturnValueOnce(makeStreamMock(makeLlmTextContent()));
     const result = await ratifySignal(ctx);
     // Await stage-2 so record write happens before we assert.
-    await result.ratificationComplete;
+    await result.kickoffRatification?.();
     const putCalls = ddbSendMock.mock.calls.filter(
       (c) => (c[0] as { __cmd: string }).__cmd === "Put",
     );
@@ -341,7 +342,7 @@ describe("ratifySignal — validation failures", () => {
     );
     const result = await ratifySignal(ctx);
     // Phase B1: validation failures happen in the async LLM stream; await completion.
-    await result.ratificationComplete;
+    await result.kickoffRatification?.();
     // For validation failures, fellBackToAlgo is signalled via the stage-2 callback.
     // The synchronous result.fellBackToAlgo reflects only the pre-stream gate check.
     expect(getValidationFailureCount()).toBe(1);
@@ -358,7 +359,7 @@ describe("ratifySignal — validation failures", () => {
       makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.9 })),
     );
     const result = await ratifySignal(ctx);
-    await result.ratificationComplete;
+    await result.kickoffRatification?.();
     expect(getValidationFailureCount()).toBeGreaterThanOrEqual(1);
   });
 
@@ -371,11 +372,11 @@ describe("ratifySignal — validation failures", () => {
     // LLM returns garbage
     anthropicStreamMock.mockReturnValueOnce(makeStreamMock("Sorry, I cannot analyze this."));
     const result = await ratifySignal(ctx);
-    await result.ratificationComplete;
+    await result.kickoffRatification?.();
     expect(getValidationFailureCount()).toBeGreaterThanOrEqual(1);
   });
 
-  it("falls back to algo on API error (stream throws)", async () => {
+  it("falls back to algo on API error (stream throws) and invokes onStage2 with algo verdict", async () => {
     const { ratifySignal } = await import("./ratify.js");
     const ctx = makeContext();
     setupDdbForCacheMiss();
@@ -389,12 +390,27 @@ describe("ratifySignal — validation failures", () => {
       finalMessage: async () => ({ usage: { input_tokens: 0, output_tokens: 0 } }),
     };
     anthropicStreamMock.mockReturnValueOnce(errorStream);
-    const result = await ratifySignal(ctx);
-    // Stage-1 returns immediately with "pending"; await stage-2 for error handling.
-    await result.ratificationComplete;
-    // Graceful fallback: signal not stuck on "pending" — onStage2 called with "ratified".
-    // result.signal is the algo candidate with ratificationStatus="pending" (stage-1).
+
+    // Pass onStage2 so the fallback path is actually exercised. Asserting on
+    // the callback's payload is the only way to verify the "never stuck on
+    // pending" acceptance criterion.
+    const onStage2Mock = vi.fn().mockResolvedValue(undefined);
+    const result = await ratifySignal(ctx, onStage2Mock);
+    // Stage-1 returns immediately with "pending"; the caller invokes
+    // kickoffRatification after stage-1 commits.
+    await result.kickoffRatification?.();
+
+    // Stage-1 algo signal is "pending" — caller writes this to DDB.
     expect(result.signal.ratificationStatus).toBe("pending");
+
+    // Stage-2 fallback fired: onStage2 was invoked with status="ratified" (not stuck on pending)
+    // and the verdict mirrors the algo candidate.
+    expect(onStage2Mock).toHaveBeenCalledTimes(1);
+    const stage2Payload = onStage2Mock.mock.calls[0][0];
+    expect(stage2Payload.ratificationStatus).toBe("ratified");
+    expect(stage2Payload.ratificationVerdict.type).toBe(ctx.candidate.type);
+    expect(stage2Payload.ratificationVerdict.confidence).toBe(ctx.candidate.confidence);
+    expect(stage2Payload.algoVerdict).toBeNull();
     // No throw — errors are caught and fallback applied.
   });
 });
@@ -418,7 +434,7 @@ describe("getValidationFailureCount", () => {
     );
     const result = await ratifySignal(ctx);
     // Phase B1: validation happens in the async LLM stream — await completion.
-    await result.ratificationComplete;
+    await result.kickoffRatification?.();
     expect(getValidationFailureCount()).toBe(1);
 
     _resetValidationFailureCount();

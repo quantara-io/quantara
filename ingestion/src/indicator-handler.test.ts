@@ -718,6 +718,103 @@ describe("Indicator computation", () => {
     );
     expect(signalsV2Puts.length).toBeGreaterThan(0);
   });
+
+  // -------------------------------------------------------------------------
+  // Phase B1 two-stage path: stage-1 must commit before stage-2 UPDATE fires
+  // -------------------------------------------------------------------------
+
+  it("stage-1 Put includes ratificationStatus='pending' when ratifySignal returns pending", async () => {
+    ratifySignalMock.mockImplementation(
+      async (ctx: { candidate: BlendedSignal }, _onStage2: unknown) => ({
+        signal: { ...ctx.candidate, ratificationStatus: "pending" as const },
+        fellBackToAlgo: false,
+        cacheHit: false,
+        // Provide a kickoffRatification stub so the handler awaits something realistic.
+        kickoffRatification: async () => undefined,
+      }),
+    );
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const stage1Put = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(stage1Put).toBeDefined();
+    expect(stage1Put![0].input.Item.ratificationStatus).toBe("pending");
+    expect(stage1Put![0].input.ConditionExpression).toBe("attribute_not_exists(pair)");
+  });
+
+  it("kickoffRatification is invoked AFTER stage-1 Put (no race)", async () => {
+    const kickoffOrder: string[] = [];
+    let stage1PutCommitted = false;
+
+    // Track stage-1 Put commit time.
+    send.mockImplementation((cmd: any) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get") {
+        if (cmd.input.TableName === "test-close-quorum") {
+          return Promise.resolve({
+            Item: { exchanges: new Set(["binanceus", "coinbase"]) },
+          });
+        }
+        if (cmd.input.TableName === "test-signals-v2") {
+          return Promise.resolve({}); // no existing row → proceed to compute
+        }
+        return Promise.resolve({});
+      }
+      if (cmd.__cmd === "Put" && cmd.input.TableName === "test-signals-v2") {
+        kickoffOrder.push("stage1-put");
+        stage1PutCommitted = true;
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    });
+
+    ratifySignalMock.mockImplementation(
+      async (ctx: { candidate: BlendedSignal }, _onStage2: unknown) => ({
+        signal: { ...ctx.candidate, ratificationStatus: "pending" as const },
+        fellBackToAlgo: false,
+        cacheHit: false,
+        kickoffRatification: async () => {
+          // The race the reviewer flagged: kickoffRatification must NOT be
+          // called before stage-1 Put commits. If it were, this would be
+          // false and the test would fail.
+          kickoffOrder.push("kickoff-ratification");
+          expect(stage1PutCommitted).toBe(true);
+          return undefined;
+        },
+      }),
+    );
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    expect(kickoffOrder).toEqual(["stage1-put", "kickoff-ratification"]);
+  });
+
+  it("does not invoke kickoffRatification when ratifySignal returns no callback (gated/cache hit)", async () => {
+    const kickoffMock = vi.fn().mockResolvedValue(undefined);
+    ratifySignalMock.mockImplementation(
+      async (ctx: { candidate: BlendedSignal }, _onStage2: unknown) => ({
+        signal: { ...ctx.candidate, ratificationStatus: "not-required" as const },
+        fellBackToAlgo: true,
+        cacheHit: false,
+        // No kickoffRatification — gated path.
+      }),
+    );
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // kickoff was never called because it wasn't returned.
+    expect(kickoffMock).not.toHaveBeenCalled();
+    // Stage-1 still wrote.
+    const signalsV2Puts = send.mock.calls.filter(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Puts.length).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

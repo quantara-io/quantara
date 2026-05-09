@@ -199,8 +199,8 @@ resource "aws_iam_role_policy" "signals_fanout_dynamodb" {
     Version = "2012-10-17"
     Statement = [
       {
-        # Read DDB Streams on the ratified signals table.
-        # IMPORTANT: this is the signals table, NOT signals-v2 (per P2.1 correction).
+        # Read DDB Streams on signals-v2.
+        # Phase B1: stage-1 INSERT + stage-2 MODIFY both happen here.
         Effect = "Allow"
         Action = [
           "dynamodb:GetRecords",
@@ -208,7 +208,7 @@ resource "aws_iam_role_policy" "signals_fanout_dynamodb" {
           "dynamodb:DescribeStream",
           "dynamodb:ListStreams",
         ]
-        Resource = "${aws_dynamodb_table.signals.arn}/stream/*"
+        Resource = "${aws_dynamodb_table.signals_v2.arn}/stream/*"
       },
       {
         # Scan + read connection-registry (find subscribers for a pair).
@@ -277,14 +277,22 @@ resource "aws_lambda_function" "signals_fanout" {
 }
 
 # ---------------------------------------------------------------------------
-# DDB Streams event source mapping: signals → signals-fanout
+# DDB Streams event source mapping: signals-v2 → signals-fanout
 #
-# IMPORTANT: subscribe to aws_dynamodb_table.signals (ratified user-facing table),
-# NOT signals-v2 (pre-ratification compute table). See P2.1 correction in issue #116.
+# Phase B1 (#132): the indicator-handler writes a stage-1 row to signals-v2
+# (with ratificationStatus="pending") and the ratification path issues an
+# UpdateItem on the same row when the LLM verdict is ready. Both INSERT and
+# MODIFY events must reach the fanout so clients see both stages.
+#
+# Original P2.1 note (issue #116) said fanout should subscribe to the
+# user-facing `signals` table — but in practice nothing ever writes to that
+# table; signals-v2 is what the indicator-handler and outcome-tracker
+# actually use as the user-facing surface. Subscribing here so the fanout
+# is aligned with the actual writers.
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_event_source_mapping" "signals_fanout_streams" {
-  event_source_arn  = aws_dynamodb_table.signals.stream_arn
+  event_source_arn  = aws_dynamodb_table.signals_v2.stream_arn
   function_name     = aws_lambda_function.signals_fanout.arn
   starting_position = "LATEST"
   batch_size        = 10
@@ -292,9 +300,9 @@ resource "aws_lambda_event_source_mapping" "signals_fanout_streams" {
 
   filter_criteria {
     filter {
-      # Only process INSERT events — fanout only pushes new ratified signals.
-      # UPDATE (re-ratification) is deferred to v2 per §16 / out-of-scope.
-      pattern = jsonencode({ eventName = ["INSERT"] })
+      # INSERT: stage-1 algo write (ratificationStatus="pending"|"not-required"|"ratified" via cache).
+      # MODIFY: stage-2 ratification UPDATE (status transitions pending → ratified|downgraded).
+      pattern = jsonencode({ eventName = ["INSERT", "MODIFY"] })
     }
   }
 }
