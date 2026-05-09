@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type * as QuantaraShared from "@quantara/shared";
 
 // ---------------------------------------------------------------------------
 // Mock DynamoDB client
@@ -51,7 +52,7 @@ const attachRiskRecommendationMock = vi.fn();
 const defaultRiskProfilesMock = vi.fn();
 
 vi.mock("@quantara/shared", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@quantara/shared")>();
+  const actual = await importOriginal<typeof QuantaraShared>();
   return {
     ...actual,
     attachRiskRecommendation: attachRiskRecommendationMock,

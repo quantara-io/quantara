@@ -30,11 +30,11 @@ import {
   attachRiskRecommendation,
   defaultRiskProfiles,
 } from "@quantara/shared";
+import type { z } from "@hono/zod-openapi";
 
 import { BlendedSignalSchema } from "./schemas/genie.js";
 import { getOrCreateUserRecord } from "./user-store.js";
-import type { z } from "@hono/zod-openapi";
-import { SignalHistoryEntry } from "./schemas/genie.js";
+import type { SignalHistoryEntry } from "./schemas/genie.js";
 
 export type { TradingPair };
 export { PAIRS };
