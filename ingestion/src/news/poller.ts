@@ -89,13 +89,16 @@ export class NewsPoller {
       return;
     }
 
-    const stored = await storeNewsRecords(allRecords);
+    const newRecords = await storeNewsRecords(allRecords);
+    const stored = newRecords.length;
     this.totalPolled += stored;
     this.lastPollAt = Date.now();
 
-    // Send new articles to enrichment queue
+    // Send only genuinely-new articles to enrichment queue.
+    // Previously used allRecords.slice(0, stored) which sent the wrong records
+    // when new items were not at the head of the combined list.
     if (ENRICHMENT_QUEUE && stored > 0) {
-      for (const record of allRecords.slice(0, stored)) {
+      for (const record of newRecords) {
         await publish(ENRICHMENT_QUEUE, "enrich_news", {
           newsId: record.newsId,
           publishedAt: record.publishedAt,
