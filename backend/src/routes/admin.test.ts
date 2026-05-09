@@ -443,11 +443,23 @@ describe("GET /genie-metrics", () => {
   const mockMetrics = {
     windowStart: "2026-05-02T00:00:00.000Z",
     windowEnd: "2026-05-09T00:00:00.000Z",
-    total: { signalCount: 10, ratifiedCount: 6, downgradedCount: 1, gatedCount: 3, fallbackCount: 0 },
-    outcomes: { tp: 4, sl: 2, neutral: 1, pending: 3 },
-    winRate: { overall: 0.667, algoOnly: 0.5, llmRatified: 0.8, llmDowngraded: null },
-    cost: { totalUsd: 0.12, avgPerSignalUsd: 0.012, avgPerTpUsd: 0.03, cacheHitRate: 0.2 },
-    gating: { skipLowConfidence: 1, skipRateLimit: 1, skipDailyCap: 1, skipNotRequired: 0, invoked: 7 },
+    total: {
+      signalCount: 10,
+      ratifiedCount: 6,
+      downgradedCount: 1,
+      gatedCount: 3,
+      fallbackCount: 0,
+    },
+    outcomes: { correct: 4, incorrect: 2, neutral: 1, pending: 3 },
+    winRate: { overall: 0.667, algoOnly: 0.5, llmRatified: 0.8, llmDowngraded: 0.4 },
+    cost: { totalUsd: 0.12, avgPerSignalUsd: 0.012, avgPerCorrectUsd: 0.03, cacheHitRate: 0.2 },
+    gating: {
+      skipLowConfidence: 1,
+      skipRateLimit: 1,
+      skipDailyCap: 1,
+      skipNotRequired: 0,
+      invoked: 7,
+    },
   };
 
   it("returns metrics from service with default params", async () => {
@@ -458,7 +470,7 @@ describe("GET /genie-metrics", () => {
     const body = (await res.json()) as { success: boolean; data: typeof mockMetrics };
     expect(body.success).toBe(true);
     expect(body.data.total.signalCount).toBe(10);
-    expect(body.data.outcomes.tp).toBe(4);
+    expect(body.data.outcomes.correct).toBe(4);
     expect(getGenieMetricsMock).toHaveBeenCalledWith(undefined, undefined, undefined);
   });
 

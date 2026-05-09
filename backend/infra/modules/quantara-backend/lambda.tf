@@ -131,10 +131,10 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
         Resource = "arn:aws:dynamodb:${var.aws_region}:*:table/${local.prefix}-*"
       },
       {
-        # Read-only access for the admin Market and News pages, which Query
-        # and GetItem from ingestion-owned tables. Without this, calls fail
-        # with AccessDeniedException and the admin endpoints silently return
-        # empty results.
+        # Read-only access for the admin Market, News, and Genie-metrics
+        # pages, which Query and GetItem from ingestion-owned tables.
+        # Without this, calls fail with AccessDeniedException and the admin
+        # endpoints silently return empty results.
         Effect = "Allow"
         Action = ["dynamodb:Query", "dynamodb:GetItem"]
         Resource = [
@@ -144,6 +144,10 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
           aws_dynamodb_table.ingestion_metadata.arn,
           aws_dynamodb_table.signals_v2.arn,
           aws_dynamodb_table.indicator_state.arn,
+          # genie-metrics endpoint reads ratifications + signal-outcomes;
+          # without these grants the endpoint returns empty data silently.
+          aws_dynamodb_table.ratifications.arn,
+          aws_dynamodb_table.signal_outcomes.arn,
         ]
       },
     ]
@@ -202,6 +206,8 @@ resource "aws_lambda_function" "api" {
       TABLE_CAMPAIGNS        = aws_dynamodb_table.campaigns.name
       TABLE_INDICATOR_STATE  = aws_dynamodb_table.indicator_state.name
       TABLE_SIGNALS_V2       = aws_dynamodb_table.signals_v2.name
+      TABLE_RATIFICATIONS    = aws_dynamodb_table.ratifications.name
+      TABLE_SIGNAL_OUTCOMES  = aws_dynamodb_table.signal_outcomes.name
       CORS_ORIGIN            = var.cors_origin
       CLOUDFRONT_URL       = "https://${aws_cloudfront_distribution.api.domain_name}"
       ENVIRONMENT          = var.environment
