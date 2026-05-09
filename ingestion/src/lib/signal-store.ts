@@ -285,3 +285,85 @@ export async function markSignalInvalidated(
     throw err;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase B1 — ratification stage-2 UPDATE
+// ---------------------------------------------------------------------------
+
+export type RatificationStatusFinal = "ratified" | "downgraded";
+
+export interface RatificationVerdictRecord {
+  type: "buy" | "sell" | "hold";
+  confidence: number;
+  reasoning: string;
+}
+
+export interface UpdateSignalRatificationParams {
+  /** DDB partition key */
+  pair: string;
+  /** v6 DDB sort key = `tf#closeTime` */
+  sk: string;
+  /** Final status after LLM verdict */
+  ratificationStatus: RatificationStatusFinal;
+  /** The LLM verdict (or algo as fallback on graceful error) */
+  ratificationVerdict: RatificationVerdictRecord;
+  /**
+   * Original algo signal fields — populated when downgraded so the UI
+   * can show what changed. null when status is "ratified".
+   */
+  algoVerdict: RatificationVerdictRecord | null;
+}
+
+/**
+ * Stage-2 UPDATE: write ratification verdict fields onto an existing
+ * signals-v2 row. Also overwrites the top-level type/confidence fields
+ * if the signal was downgraded.
+ *
+ * Idempotent: skips (silently) if ratificationStatus is already final
+ * (i.e., the row was concurrently updated — e.g., a retry race).
+ */
+export async function updateSignalRatification(
+  params: UpdateSignalRatificationParams,
+): Promise<void> {
+  const { pair, sk, ratificationStatus, ratificationVerdict, algoVerdict } = params;
+
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: SIGNALS_V2_TABLE,
+        Key: { pair, sk },
+        // Update ratification fields. Also overwrite top-level type/confidence/reasoning
+        // so reads see the canonical final values without needing to chase ratificationVerdict.
+        UpdateExpression:
+          "SET ratificationStatus = :status, ratificationVerdict = :verdict, " +
+          "algoVerdict = :algoVerdict, #signalType = :type, " +
+          "confidence = :confidence",
+        ExpressionAttributeNames: {
+          "#signalType": "type", // "type" is a reserved word in DDB expressions
+        },
+        ExpressionAttributeValues: {
+          ":status": ratificationStatus,
+          ":verdict": ratificationVerdict,
+          ":algoVerdict": algoVerdict,
+          ":type": ratificationVerdict.type,
+          ":confidence": ratificationVerdict.confidence,
+          // Guard: only update if the row is still in pending state (prevents double-write).
+          ":pending": "pending",
+        },
+        ConditionExpression:
+          "attribute_exists(#signalType) AND ratificationStatus = :pending",
+      }),
+    );
+  } catch (err: unknown) {
+    // ConditionalCheckFailedException: row doesn't exist OR already in final state — idempotent.
+    if (
+      err instanceof Error &&
+      (err.name === "ConditionalCheckFailedException" ||
+        (err as { __type?: string }).__type ===
+          "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException")
+    ) {
+      return;
+    }
+    throw err;
+  }
+}

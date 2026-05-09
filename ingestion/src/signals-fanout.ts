@@ -1,18 +1,19 @@
 /**
  * signals-fanout Lambda handler — design v6, §16.
  *
- * Triggered by DDB Streams on the `quantara-{env}-signals` table
- * (the user-facing RATIFIED signals table per §11.1).
+ * Triggered by DDB Streams on the `quantara-{env}-signals-v2` table.
+ *
+ * Phase B1 change: processes both INSERT and MODIFY events.
+ *   - INSERT: new signal written with ratificationStatus="pending".
+ *   - MODIFY: stage-2 ratification verdict written (status="ratified"|"downgraded").
+ *     The WebSocket client matches by pair+sk and updates the existing signal card
+ *     rather than inserting a new one.
  *
  * IMPORTANT — P2.1 correction (issue #116):
- *   This Lambda subscribes to the `signals` table (ratified), NOT `signals-v2`
- *   (pre-ratification compute/dedup table per §11.6). Fanout from signals-v2
- *   would push pre-ratification candidates; LLM ratification can downgrade them
- *   after the fact and the downgrade would never reach subscribers.
+ *   This Lambda subscribes to the `signals-v2` table (compute/dedup table per §11.6).
+ *   INSERT pushes the algo signal; MODIFY pushes the ratification verdict update.
  *
- * Filter on INSERT only (configured via event source mapping in Terraform).
- *
- * Flow per INSERT record:
+ * Flow per INSERT or MODIFY record:
  *   1. Extract the signal payload from NewImage.
  *   2. Scan connection-registry for rows where subscribedPairs contains the pair.
  *   3. For each matching connectionId, call postToConnection.
@@ -136,7 +137,7 @@ async function deleteStaleConnection(connectionId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function processRecord(record: DynamoDBRecord): Promise<void> {
-  if (record.eventName !== "INSERT") return;
+  if (record.eventName !== "INSERT" && record.eventName !== "MODIFY") return;
   if (!record.dynamodb?.NewImage) return;
 
   const signal = unmarshall(record.dynamodb.NewImage as Parameters<typeof unmarshall>[0]);
@@ -148,8 +149,8 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
   }
 
   logger.info(
-    { pair, signalId: signal["signalId"] ?? signal["createdAt"] },
-    "fanout: processing INSERT",
+    { pair, signalId: signal["signalId"] ?? signal["createdAt"], eventName: record.eventName },
+    `fanout: processing ${record.eventName}`,
   );
 
   // Find all subscribers for this pair

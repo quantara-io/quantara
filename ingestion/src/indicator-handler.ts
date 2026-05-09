@@ -35,7 +35,7 @@ import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
 import { putIndicatorState } from "./lib/indicator-state-store.js";
-import { makeSignalId } from "./lib/signal-store.js";
+import { makeSignalId, updateSignalRatification } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
 import { blendTimeframeVotes, isTrivialChange } from "./signals/blend.js";
@@ -210,13 +210,72 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     return;
   }
 
-  // Step 4 — Compute indicators + blend → conditional Put.
+  // Step 4 — Compute indicators + blend → two-stage write (Phase B1).
   const blended = await computeBlendedSignal(pair, timeframe, closeTime);
   if (!blended) {
     console.log(
       `[IndicatorHandler] ${pair}/${timeframe}: no blended signal produced (all TF votes null or insufficient candles).`,
     );
     return;
+  }
+
+  // Phase B1 two-stage ratification:
+  //   Stage 1 — run ratifySignal immediately to determine ratificationStatus.
+  //             Returns synchronously with ratificationStatus = "pending" |
+  //             "not-required" | "ratified" (cache hit) plus a ratificationComplete
+  //             promise that resolves when the LLM stream + stage-2 UPDATE are done.
+  //   Stage 2 — the onStage2 callback fires when the LLM verdict is ready;
+  //             it calls updateSignalRatification to UPDATE the DDB row.
+
+  let stage1Signal = blended;
+  let ratificationComplete: Promise<void> = Promise.resolve();
+
+  try {
+    const sentiment = await buildSentimentBundle(pair);
+    const ratifyResult = await ratifySignal(
+      {
+        pair,
+        candidate: blended,
+        perTimeframe: blended.perTimeframe,
+        sentiment,
+        whaleSummary: null,
+        pricePoints: [],
+        fearGreed: {
+          value: (await getFearGreedCached()) ?? 50,
+          trend24h: sentiment.fearGreed.trend24h ?? 0,
+        },
+      },
+      // onStage2: called when the LLM stream completes (or falls back on error).
+      // Performs the stage-2 DDB UPDATE so the row transitions from "pending" to final.
+      async (stage2Payload) => {
+        try {
+          await updateSignalRatification({
+            pair,
+            sk,
+            ratificationStatus: stage2Payload.ratificationStatus,
+            ratificationVerdict: stage2Payload.ratificationVerdict,
+            algoVerdict: stage2Payload.algoVerdict,
+          });
+          console.log(
+            `[IndicatorHandler] ${pair}/${timeframe}: stage-2 ratification UPDATE written (status=${stage2Payload.ratificationStatus}).`,
+          );
+        } catch (updateErr) {
+          console.error(
+            `[IndicatorHandler] ${pair}/${timeframe}: stage-2 UPDATE failed:`,
+            updateErr,
+          );
+          // Non-fatal: stage-1 "pending" row is better than a crash-loop.
+        }
+      },
+    );
+
+    stage1Signal = ratifyResult.signal;
+    ratificationComplete = ratifyResult.ratificationComplete;
+  } catch (err) {
+    console.warn(
+      `[IndicatorHandler] ${pair}: ratification setup failed, using algo signal — ${(err as Error).message}`,
+    );
+    // stage1Signal stays as blended (no ratificationStatus field → pre-B1 compatible)
   }
 
   // Use the same signalId/emittedAt shape as signal-store.putSignal so admin.service
@@ -235,18 +294,23 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
           emittedAt,
           closeTime,
           timeframe,
-          type: blended.type,
-          confidence: blended.confidence,
-          volatilityFlag: blended.volatilityFlag,
-          gateReason: blended.gateReason,
-          rulesFired: blended.rulesFired,
-          perTimeframe: blended.perTimeframe,
-          weightsUsed: blended.weightsUsed,
-          asOf: blended.asOf,
-          emittingTimeframe: blended.emittingTimeframe,
-          risk: blended.risk ?? null,
-          invalidatedAt: blended.invalidatedAt ?? null,
-          invalidationReason: blended.invalidationReason ?? null,
+          type: stage1Signal.type,
+          confidence: stage1Signal.confidence,
+          volatilityFlag: stage1Signal.volatilityFlag,
+          gateReason: stage1Signal.gateReason,
+          rulesFired: stage1Signal.rulesFired,
+          perTimeframe: stage1Signal.perTimeframe,
+          weightsUsed: stage1Signal.weightsUsed,
+          asOf: stage1Signal.asOf,
+          emittingTimeframe: stage1Signal.emittingTimeframe,
+          risk: stage1Signal.risk ?? null,
+          invalidatedAt: stage1Signal.invalidatedAt ?? null,
+          invalidationReason: stage1Signal.invalidationReason ?? null,
+          // Phase B1: persist ratificationStatus so clients see "pending" immediately.
+          // "not-required" and "ratified" (cache hit) are already final on stage-1.
+          ratificationStatus: stage1Signal.ratificationStatus ?? null,
+          ratificationVerdict: stage1Signal.ratificationVerdict ?? null,
+          algoVerdict: stage1Signal.algoVerdict ?? null,
           // 90-day TTL
           ttl: Math.floor(Date.now() / 1000) + 86_400 * 90,
         },
@@ -257,7 +321,7 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     );
 
     console.log(
-      `[IndicatorHandler] ${pair}/${timeframe}: signal written (type=${blended.type} confidence=${blended.confidence.toFixed(3)}).`,
+      `[IndicatorHandler] ${pair}/${timeframe}: stage-1 signal written (type=${stage1Signal.type} confidence=${stage1Signal.confidence.toFixed(3)} ratificationStatus=${stage1Signal.ratificationStatus ?? "n/a"}).`,
     );
   } catch (err) {
     // With @aws-sdk/lib-dynamodb the Document Client may surface conditional
@@ -279,6 +343,13 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     }
     throw err;
   }
+
+  // Await the ratification promise AFTER the stage-1 write so the stage-2 UPDATE
+  // is sequenced correctly. Fire-and-forget is intentional here: the Lambda will
+  // stay alive until ratificationComplete settles (Node event loop is not drained
+  // while a Promise is pending). Errors inside ratificationComplete are already
+  // caught by the onStage2 callback above.
+  await ratificationComplete;
 }
 
 // ---------------------------------------------------------------------------
@@ -527,44 +598,15 @@ async function computeBlendedSignal(
     return null;
   }
 
-  // §7.5 Ratification gate.
-  let final = blended;
-  try {
-    const sentiment = await buildSentimentBundle(pair);
-    const ratifyResult = await ratifySignal({
-      pair,
-      candidate: blended,
-      perTimeframe: perTimeframeVotes,
-      sentiment,
-      whaleSummary: null,
-      pricePoints: [],
-      fearGreed: {
-        value: fearGreed ?? 50,
-        trend24h: sentiment.fearGreed.trend24h ?? 0,
-      },
-    });
-    final = ratifyResult.signal;
-    if (!ratifyResult.fellBackToAlgo) {
-      console.log(
-        `[IndicatorHandler] ${pair}: ratified → type=${final.type} confidence=${final.confidence.toFixed(3)}`,
-      );
-    }
-  } catch (err) {
-    console.warn(
-      `[IndicatorHandler] ${pair}: ratification failed, using algo signal — ${(err as Error).message}`,
-    );
-    final = blended;
-  }
-
   const previous = await getLatestSignalForPair(pair);
-  const trivial = isTrivialChange(previous, final);
+  const trivial = isTrivialChange(previous, blended);
   if (!trivial) {
     console.log(
-      `[IndicatorHandler] non-trivial signal change for ${pair}: type=${final.type} confidence=${final.confidence.toFixed(3)}`,
+      `[IndicatorHandler] non-trivial signal change for ${pair}: type=${blended.type} confidence=${blended.confidence.toFixed(3)}`,
     );
   }
 
-  return final;
+  return blended;
 }
 
 /**

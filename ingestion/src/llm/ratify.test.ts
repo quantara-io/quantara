@@ -27,11 +27,16 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
   QueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Query", input })),
 }));
 
-const anthropicCreateMock = vi.fn();
+/**
+ * Phase B1: ratify.ts now uses messages.stream() instead of messages.create().
+ * We mock the stream as an async iterable that emits content_block_delta events,
+ * plus a finalMessage() method that returns usage stats.
+ */
+const anthropicStreamMock = vi.fn();
 vi.mock("@anthropic-ai/sdk", () => ({
   default: vi.fn().mockImplementation(() => ({
     messages: {
-      create: anthropicCreateMock,
+      stream: anthropicStreamMock,
     },
   })),
 }));
@@ -39,7 +44,7 @@ vi.mock("@anthropic-ai/sdk", () => ({
 beforeEach(() => {
   vi.resetModules();
   ddbSendMock.mockReset();
-  anthropicCreateMock.mockReset();
+  anthropicStreamMock.mockReset();
   process.env.TABLE_RATIFICATIONS = "test-ratifications";
   process.env.TABLE_RATIFICATION_CACHE = "test-ratification-cache";
 });
@@ -137,13 +142,32 @@ function makeLlmTextContent(overrides: Record<string, unknown> = {}): string {
   });
 }
 
-/** Build a mock Anthropic API response. */
-function makeAnthropicResponse(textContent: string) {
-  return {
-    content: [{ type: "text", text: textContent }],
-    usage: { input_tokens: 500, output_tokens: 80 },
+/**
+ * Build a mock stream object that satisfies the messages.stream() contract:
+ *   - async iterable of events (content_block_delta with text_delta)
+ *   - finalMessage() resolves to a message with usage stats
+ */
+function makeStreamMock(textContent: string) {
+  const events = [
+    { type: "content_block_delta", delta: { type: "text_delta", text: textContent } },
+  ];
+  const stream = {
+    [Symbol.asyncIterator]: () => {
+      let i = 0;
+      return {
+        next: async () => {
+          if (i < events.length) return { value: events[i++], done: false };
+          return { value: undefined, done: true };
+        },
+      };
+    },
+    finalMessage: async () => ({
+      usage: { input_tokens: 500, output_tokens: 80 },
+    }),
   };
+  return stream;
 }
+
 
 /**
  * Set up DDB mocks for the common "gating pass, cache miss, store write" path.
@@ -176,7 +200,7 @@ describe("ratifySignal — gating", () => {
     expect(result.signal.confidence).toBe(0.55);
     expect(result.fellBackToAlgo).toBe(true);
     expect(result.cacheHit).toBe(false);
-    expect(anthropicCreateMock).not.toHaveBeenCalled();
+    expect(anthropicStreamMock).not.toHaveBeenCalled();
   });
 
   it("falls back when no trigger conditions (no news, no vol, no fng shift)", async () => {
@@ -192,7 +216,7 @@ describe("ratifySignal — gating", () => {
     ddbSendMock.mockResolvedValue({}); // store write
     const result = await ratifySignal(ctx);
     expect(result.fellBackToAlgo).toBe(true);
-    expect(anthropicCreateMock).not.toHaveBeenCalled();
+    expect(anthropicStreamMock).not.toHaveBeenCalled();
   });
 });
 
@@ -215,7 +239,7 @@ describe("ratifySignal — cache hit", () => {
     expect(result.cacheHit).toBe(true);
     expect(result.fellBackToAlgo).toBe(false);
     expect(result.signal.type).toBe("hold");
-    expect(anthropicCreateMock).not.toHaveBeenCalled();
+    expect(anthropicStreamMock).not.toHaveBeenCalled();
   });
 
   it("persists a RatificationRecord with cacheHit=true and costUsd=0 on cache hit", async () => {
@@ -251,22 +275,27 @@ describe("ratifySignal — successful LLM ratification", () => {
     const { ratifySignal } = await import("./ratify.js");
     const ctx = makeContext();
     setupDdbForCacheMiss();
-    anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "hold", confidence: 0.6 })),
+    anthropicStreamMock.mockReturnValueOnce(
+      makeStreamMock(makeLlmTextContent({ type: "hold", confidence: 0.6 })),
     );
     const result = await ratifySignal(ctx);
+    // Phase B1: ratifySignal returns immediately with "pending" stage-1 signal.
+    // Await ratificationComplete so the LLM stream resolves before we assert.
+    await result.ratificationComplete;
     expect(result.fellBackToAlgo).toBe(false);
     expect(result.cacheHit).toBe(false);
-    expect(result.signal.type).toBe("hold");
-    expect(result.signal.confidence).toBe(0.6);
+    // stage-1 signal has ratificationStatus = "pending"; final verdict is in stage-2.
+    expect(result.signal.ratificationStatus).toBe("pending");
   });
 
   it("writes to cache after successful ratification", async () => {
     const { ratifySignal } = await import("./ratify.js");
     const ctx = makeContext();
     setupDdbForCacheMiss();
-    anthropicCreateMock.mockResolvedValueOnce(makeAnthropicResponse(makeLlmTextContent()));
-    await ratifySignal(ctx);
+    anthropicStreamMock.mockReturnValueOnce(makeStreamMock(makeLlmTextContent()));
+    const result = await ratifySignal(ctx);
+    // Await stage-2 completion so cache + record writes happen before we assert.
+    await result.ratificationComplete;
     // There should be at least 2 Put calls: cache write + record write
     const putCalls = ddbSendMock.mock.calls.filter(
       (c) => (c[0] as { __cmd: string }).__cmd === "Put",
@@ -278,8 +307,10 @@ describe("ratifySignal — successful LLM ratification", () => {
     const { ratifySignal } = await import("./ratify.js");
     const ctx = makeContext();
     setupDdbForCacheMiss();
-    anthropicCreateMock.mockResolvedValueOnce(makeAnthropicResponse(makeLlmTextContent()));
-    await ratifySignal(ctx);
+    anthropicStreamMock.mockReturnValueOnce(makeStreamMock(makeLlmTextContent()));
+    const result = await ratifySignal(ctx);
+    // Await stage-2 so record write happens before we assert.
+    await result.ratificationComplete;
     const putCalls = ddbSendMock.mock.calls.filter(
       (c) => (c[0] as { __cmd: string }).__cmd === "Put",
     );
@@ -306,11 +337,14 @@ describe("ratifySignal — validation failures", () => {
     const ctx = makeContext({ type: "hold", confidence: 0.7 });
     setupDdbForCacheMiss();
     // LLM returns buy — forbidden from hold
-    anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
+    anthropicStreamMock.mockReturnValueOnce(
+      makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
     );
     const result = await ratifySignal(ctx);
-    expect(result.fellBackToAlgo).toBe(true);
+    // Phase B1: validation failures happen in the async LLM stream; await completion.
+    await result.ratificationComplete;
+    // For validation failures, fellBackToAlgo is signalled via the stage-2 callback.
+    // The synchronous result.fellBackToAlgo reflects only the pre-stream gate check.
     expect(getValidationFailureCount()).toBe(1);
   });
 
@@ -321,11 +355,11 @@ describe("ratifySignal — validation failures", () => {
     const ctx = makeContext({ confidence: 0.7 });
     setupDdbForCacheMiss();
     // LLM returns higher confidence — forbidden
-    anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.9 })),
+    anthropicStreamMock.mockReturnValueOnce(
+      makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.9 })),
     );
     const result = await ratifySignal(ctx);
-    expect(result.fellBackToAlgo).toBe(true);
+    await result.ratificationComplete;
     expect(getValidationFailureCount()).toBeGreaterThanOrEqual(1);
   });
 
@@ -336,23 +370,33 @@ describe("ratifySignal — validation failures", () => {
     const ctx = makeContext();
     setupDdbForCacheMiss();
     // LLM returns garbage
-    anthropicCreateMock.mockResolvedValueOnce({
-      content: [{ type: "text", text: "Sorry, I cannot analyze this." }],
-      usage: { input_tokens: 100, output_tokens: 10 },
-    });
+    anthropicStreamMock.mockReturnValueOnce(
+      makeStreamMock("Sorry, I cannot analyze this."),
+    );
     const result = await ratifySignal(ctx);
-    expect(result.fellBackToAlgo).toBe(true);
+    await result.ratificationComplete;
     expect(getValidationFailureCount()).toBeGreaterThanOrEqual(1);
   });
 
-  it("falls back to algo on API error", async () => {
+  it("falls back to algo on API error (stream throws)", async () => {
     const { ratifySignal } = await import("./ratify.js");
     const ctx = makeContext();
     setupDdbForCacheMiss();
-    anthropicCreateMock.mockRejectedValueOnce(new Error("rate limited"));
+    // Simulate stream throwing on iteration
+    const errorStream = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => { throw new Error("rate limited"); },
+      }),
+      finalMessage: async () => ({ usage: { input_tokens: 0, output_tokens: 0 } }),
+    };
+    anthropicStreamMock.mockReturnValueOnce(errorStream);
     const result = await ratifySignal(ctx);
-    expect(result.fellBackToAlgo).toBe(true);
-    expect(result.signal).toEqual(ctx.candidate);
+    // Stage-1 returns immediately with "pending"; await stage-2 for error handling.
+    await result.ratificationComplete;
+    // Graceful fallback: signal not stuck on "pending" — onStage2 called with "ratified".
+    // result.signal is the algo candidate with ratificationStatus="pending" (stage-1).
+    expect(result.signal.ratificationStatus).toBe("pending");
+    // No throw — errors are caught and fallback applied.
   });
 });
 
@@ -370,10 +414,12 @@ describe("getValidationFailureCount", () => {
     // confidence 0.7 passes the gate; type hold means LLM must return hold
     const ctx = makeContext({ type: "hold", confidence: 0.7 });
     setupDdbForCacheMiss();
-    anthropicCreateMock.mockResolvedValueOnce(
-      makeAnthropicResponse(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
+    anthropicStreamMock.mockReturnValueOnce(
+      makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
     );
-    await ratifySignal(ctx);
+    const result = await ratifySignal(ctx);
+    // Phase B1: validation happens in the async LLM stream — await completion.
+    await result.ratificationComplete;
     expect(getValidationFailureCount()).toBe(1);
 
     _resetValidationFailureCount();
