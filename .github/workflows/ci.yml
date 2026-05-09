@@ -5,6 +5,16 @@ on:
   push:
     branches: [main]
 
+# Serialize deploys per ref so back-to-back merges to `main` queue rather
+# than racing on `aws lambda update-function-code`. `cancel-in-progress: false`
+# is intentional — cancelling a partially-deployed run mid-flight risks
+# leaving Lambda code and infra out of sync. Latest commit deploys last,
+# which matches the desired "newest wins" semantics on `main`. PR runs are
+# scoped per-PR so they don't block each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
