@@ -15,6 +15,7 @@ import {
   getRatifications,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
+import { getGenieDeepDive } from "../services/genie-deepdive.service.js";
 
 const admin = new Hono();
 
@@ -285,6 +286,52 @@ admin.get("/genie-metrics", async (c) => {
 
   const metrics = await getGenieMetrics(sinceCanon, pair, timeframe);
   return c.json({ success: true, data: metrics });
+});
+
+admin.get("/genie-deepdive", async (c) => {
+  const sinceRaw = c.req.query("since");
+  let sinceCanon: string | undefined;
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    sinceCanon = parsed.toISOString();
+  }
+
+  const pair = c.req.query("pair");
+  if (pair !== undefined && !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  const timeframe = c.req.query("timeframe");
+  if (timeframe !== undefined && !(VALID_TIMEFRAMES as readonly string[]).includes(timeframe)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  const data = await getGenieDeepDive(sinceCanon, pair, timeframe);
+  return c.json({ success: true, data });
 });
 
 export { admin };

@@ -10,6 +10,7 @@ const getSignalsMock = vi.fn();
 const getGenieMetricsMock = vi.fn();
 const getRatificationsMock = vi.fn();
 const getPipelineStateMock = vi.fn();
+const getGenieDeepDiveMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
@@ -25,6 +26,10 @@ vi.mock("../services/admin.service.js", () => ({
 
 vi.mock("../services/pipeline-state.service.js", () => ({
   getPipelineState: getPipelineStateMock,
+}));
+
+vi.mock("../services/genie-deepdive.service.js", () => ({
+  getGenieDeepDive: getGenieDeepDiveMock,
 }));
 
 let currentAuth: Record<string, unknown> = {
@@ -55,6 +60,7 @@ beforeEach(() => {
   getGenieMetricsMock.mockReset();
   getRatificationsMock.mockReset();
   getPipelineStateMock.mockReset();
+  getGenieDeepDiveMock.mockReset();
   currentAuth = {
     userId: "user_admin",
     email: "admin@example.com",
@@ -682,5 +688,83 @@ describe("GET /pipeline-state", () => {
     const res = await app.request("/pipeline-state");
     expect(res.status).toBe(403);
     expect(getPipelineStateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /genie-deepdive", () => {
+  const mockDeepDive = {
+    windowStart: "2026-04-09T00:00:00.000Z",
+    windowEnd: "2026-05-09T00:00:00.000Z",
+    calibration: [
+      { binMin: 0.6, binMax: 0.7, signalCount: 12, winRate: 0.667, avgConfidence: 0.65 },
+    ],
+    rules: {
+      perRule: [{ rule: "rsi_oversold", fireCount: 20, tpRate: 0.75, avgConfidence: 0.7 }],
+      coOccurrence: [
+        { rules: ["rsi_oversold", "ema_cross"], jointCount: 8, tpRateWhenJoint: 0.875 },
+      ],
+    },
+    regime: {
+      byVolatility: [{ atrPercentile: 0, signalCount: 10, winRate: 0.5 }],
+      byHour: [{ utcHour: 12, signalCount: 5, winRate: 0.6 }],
+    },
+  };
+
+  it("returns deep dive data with default params", async () => {
+    getGenieDeepDiveMock.mockResolvedValue(mockDeepDive);
+    const app = await loadApp();
+    const res = await app.request("/genie-deepdive");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockDeepDive };
+    expect(body.success).toBe(true);
+    expect(body.data.calibration).toHaveLength(1);
+    expect(body.data.rules.perRule).toHaveLength(1);
+    expect(getGenieDeepDiveMock).toHaveBeenCalledWith(undefined, undefined, undefined);
+  });
+
+  it("forwards since, pair, and timeframe to the service", async () => {
+    getGenieDeepDiveMock.mockResolvedValue(mockDeepDive);
+    const app = await loadApp();
+    const since = "2026-04-01T00:00:00.000Z";
+    const res = await app.request(
+      `/genie-deepdive?since=${encodeURIComponent(since)}&pair=ETH%2FUSDT&timeframe=1h`,
+    );
+    expect(res.status).toBe(200);
+    expect(getGenieDeepDiveMock).toHaveBeenCalledWith(since, "ETH/USDT", "1h");
+  });
+
+  it("returns 400 when since is not a valid ISO date", async () => {
+    const app = await loadApp();
+    const res = await app.request("/genie-deepdive?since=not-a-date");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getGenieDeepDiveMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when pair is not in PAIRS", async () => {
+    const app = await loadApp();
+    const res = await app.request("/genie-deepdive?pair=FOO/BAR");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getGenieDeepDiveMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when timeframe is not valid", async () => {
+    const app = await loadApp();
+    const res = await app.request("/genie-deepdive?timeframe=5m");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getGenieDeepDiveMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/genie-deepdive");
+    expect(res.status).toBe(403);
+    expect(getGenieDeepDiveMock).not.toHaveBeenCalled();
   });
 });

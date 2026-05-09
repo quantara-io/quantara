@@ -7,6 +7,7 @@ import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Market } from "./pages/Market";
 import { News } from "./pages/News";
+import { Performance } from "./pages/Performance";
 import { Pipeline } from "./pages/Pipeline";
 import { Whitelist } from "./pages/Whitelist";
 import { Ratifications } from "./pages/Ratifications";
@@ -72,6 +73,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Genie />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/performance"
+          element={
+            <AuthGate>
+              <Layout>
+                <Performance />
               </Layout>
             </AuthGate>
           }
