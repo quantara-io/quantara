@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, BatchWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import pino from "pino";
 
 import type { NewsRecord } from "./types.js";
@@ -103,25 +103,32 @@ async function batchWriteWithRetry(records: NewsRecord[]): Promise<NewsRecord[]>
  * UnprocessedItems that exhaust retry attempts, those records are excluded
  * from the returned set.
  *
- * Dedup key: (newsId, publishedAt) — the DynamoDB primary key.  A GetItem
- * check is issued per record before batching writes.  Each check is logged at
- * DEBUG level (gated by LOG_LEVEL) so future regressions are diagnosable
- * without flooding production logs by default.
+ * Dedup key: newsId only.  A Query on the partition key is issued per record
+ * before batching writes — this detects any existing row with the same newsId
+ * regardless of its publishedAt sort key value, so an undated article polled
+ * across a publishedAt bucket boundary does not produce a duplicate row.
+ * Each check is logged at DEBUG level (gated by LOG_LEVEL) so future
+ * regressions are diagnosable without flooding production logs by default.
  */
 export async function storeNewsRecords(records: NewsRecord[]): Promise<NewsRecord[]> {
   if (records.length === 0) return [];
 
-  // Deduplicate: skip records that already exist in the table.
+  // Deduplicate: skip records whose newsId already exists in the table.
+  // Query on the partition key (newsId) with Limit 1 so we detect any row
+  // for this article regardless of publishedAt — a GetItem on (newsId,
+  // publishedAt) would miss rows whose publishedAt changed between polls.
   const newRecords: NewsRecord[] = [];
   for (const record of records) {
     const existing = await client.send(
-      new GetCommand({
+      new QueryCommand({
         TableName: NEWS_TABLE,
-        Key: { newsId: record.newsId, publishedAt: record.publishedAt },
+        KeyConditionExpression: "newsId = :id",
+        ExpressionAttributeValues: { ":id": record.newsId },
         ProjectionExpression: "newsId",
+        Limit: 1,
       }),
     );
-    if (existing.Item) {
+    if (existing.Count && existing.Count > 0) {
       logger.debug(
         { newsId: record.newsId, publishedAt: record.publishedAt, source: record.source },
         "[NewsStore] duplicate skip",

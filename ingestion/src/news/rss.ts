@@ -85,20 +85,18 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
       for (const item of items.slice(0, 20)) {
         const currencies = detectCurrencies(item.title);
 
-        // Derive a stable publishedAt.  Prefer the item's pubDate; fall back
-        // to a deterministic sentinel derived from the item's URL so the same
-        // article never gets a different key on subsequent polls.
-        // Using new Date().toISOString() as a fallback would produce a fresh
-        // key on every poll cycle, writing duplicate rows for every article
-        // whose feed omits a pubDate.
+        // Derive a publishedAt.  Prefer the item's pubDate; fall back to the
+        // current poll time.  Now that dedup is keyed on newsId alone (not the
+        // composite (newsId, publishedAt) primary key), a fresh timestamp on
+        // each poll does not cause duplicate rows.
         let publishedAt: string;
         if (item.pubDate) {
           const parsed = new Date(item.pubDate);
           publishedAt = isNaN(parsed.getTime())
-            ? stableFallbackDate(item.guid || item.link)
+            ? new Date().toISOString()
             : parsed.toISOString();
         } else {
-          publishedAt = stableFallbackDate(item.guid || item.link);
+          publishedAt = new Date().toISOString();
         }
 
         records.push({
@@ -132,40 +130,3 @@ function hashString(str: string): string {
   return Math.abs(hash).toString(36);
 }
 
-/**
- * Produce a deterministic ISO timestamp for articles that have no parseable
- * pubDate.  Anchors at the start of the current UTC day plus a hash-derived
- * offset within the day, so the result is:
- *
- *   - stable for the same article re-polled within the same UTC day (idempotent
- *     dedup against the (newsId, publishedAt) primary key),
- *   - within the past 24 hours of wall-clock time (passes recency-window
- *     queries on `news-events-by-pair` and the freshness gate in
- *     `processNewsEventForInvalidation`),
- *   - distinct between articles polled in the same day (the seed hash spreads
- *     timestamps across the full 86_400-second range).
- *
- * Using `new Date().toISOString()` as the fallback would change publishedAt on
- * every poll cycle and re-write the same article forever; the prior 1970
- * anchor was stable but made articles look permanently stale to all downstream
- * recency-aware queries.
- */
-function stableFallbackDate(seed: string): string {
-  // 15-minute bucket: stable across rapid polls (so the (newsId, publishedAt)
-  // composite key dedups correctly within a quarter-hour), and tight enough
-  // to stay inside the 30-minute freshness window enforced by
-  // `news/invalidation.ts` (FRESHNESS_WINDOW_MS = 30 * 60 * 1000) so undated
-  // articles still trigger sentiment-shock invalidation and contribute to
-  // recency-bounded queries (`queryNewsByPair(pair, sinceISO)`).
-  // Worst-case article age = 15 min, well inside the 30-min window.
-  const bucketMs = 15 * 60 * 1000;
-  const bucketStart = Math.floor(Date.now() / bucketMs) * bucketMs;
-  const offsetSec =
-    Math.abs(
-      hashString(seed)
-        .split("")
-        .reduce((n, c) => n + c.charCodeAt(0), 0),
-    ) %
-    (bucketMs / 1000);
-  return new Date(bucketStart + offsetSec * 1000).toISOString();
-}
