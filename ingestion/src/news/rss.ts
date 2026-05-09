@@ -145,6 +145,11 @@ function hashString(str: string): string {
 function stableFallbackDate(seed: string): string {
   // Map the 32-bit hash to a non-negative offset in the range 0..3600 seconds
   // so the resulting timestamp stays in early 1970 and is clearly "synthetic".
-  const offset = Math.abs(hashString(seed).split("").reduce((n, c) => n + c.charCodeAt(0), 0)) % 3600;
+  const offset =
+    Math.abs(
+      hashString(seed)
+        .split("")
+        .reduce((n, c) => n + c.charCodeAt(0), 0),
+    ) % 3600;
   return new Date(offset * 1000).toISOString();
 }

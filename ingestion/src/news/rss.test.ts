@@ -41,9 +41,7 @@ describe("fetchRssNews", () => {
       .mockRejectedValueOnce(new Error("boom"));
     vi.stubGlobal("fetch", fetchMock);
 
-    const before = Date.now();
     const records = await fetchRssNews();
-    const after = Date.now();
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     // First feed produced 3 valid items (the 4th has no link).
