@@ -12,7 +12,6 @@ interface SignalsData {
 }
 
 const BLENDER_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
-type BlenderTF = (typeof BLENDER_TIMEFRAMES)[number];
 
 // WebSocket endpoint for the realtime signal push channel (PR #131).
 // Configured at build time via VITE_WS_BASE; falls back to a sensible dev URL.
@@ -199,11 +198,13 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
         </span>
       </div>
 
-      {/* Reasoning */}
+      {/* Reasoning. BlendedSignal has no free-text `reasoning` field — the
+          algo verdict is attributed via `rulesFired`. The `invalidationReason`
+          field belongs to the (separate) Phase 6b breaking-news invalidation
+          banner above, not the rules block. When Phase B1 (#132) lands a
+          `ratificationReasoning` field this is where it'll render. */}
       <div className="text-sm text-slate-300">
-        {signal.invalidationReason != null ? (
-          <p className="italic text-yellow-300/80">{signal.invalidationReason}</p>
-        ) : signal.rulesFired.length > 0 ? (
+        {signal.rulesFired.length > 0 ? (
           <ul className="list-disc list-inside space-y-0.5 text-slate-400 text-xs">
             {signal.rulesFired.map((rule) => (
               <li key={rule}>{rule}</li>
@@ -279,8 +280,8 @@ function PerTimeframeTable({
         </thead>
         <tbody>
           {BLENDER_TIMEFRAMES.map((tf) => {
-            const vote: TimeframeVote | null | undefined = perTimeframe[tf as BlenderTF];
-            const weight: number | undefined = weightsUsed[tf as BlenderTF];
+            const vote: TimeframeVote | null | undefined = perTimeframe[tf];
+            const weight: number | undefined = weightsUsed[tf];
             return (
               <tr key={tf} className="border-t border-slate-800/60">
                 <td className="py-1 text-slate-400 font-mono">{tf}</td>
