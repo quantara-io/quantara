@@ -16,6 +16,7 @@ const LAMBDAS = [
   { entry: "enrichment-handler.js", zip: "enrichment.zip" },
   { entry: "indicator-handler.js", zip: "indicator-handler.zip" },
   { entry: "aggregator-handler.js", zip: "aggregator-handler.zip" },
+  { entry: "handlers/close-quorum-monitor.js", zip: "close-quorum-monitor.zip" },
   // WebSocket push channel (design v6, §16)
   { entry: "ws-connect-handler.js", zip: "ws-connect-handler.zip" },
   { entry: "ws-disconnect-handler.js", zip: "ws-disconnect-handler.zip" },

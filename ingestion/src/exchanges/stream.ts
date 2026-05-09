@@ -170,6 +170,7 @@ export class MarketStreamManager {
               close: Number(close ?? 0),
               volume: Number(volume ?? 0),
               isClosed: ts + 60_000 < Date.now(),
+              source: "live",
             };
 
             if (candle.isClosed) {

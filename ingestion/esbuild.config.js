@@ -9,6 +9,7 @@ const shared = {
   minify: true,
   external: [
     "@aws-sdk/client-dynamodb",
+    "@aws-sdk/util-dynamodb",
     "@aws-sdk/lib-dynamodb",
     "@aws-sdk/client-s3",
     "@aws-sdk/client-sqs",
@@ -61,6 +62,13 @@ await build({
   outfile: "dist/aggregator-handler.js",
 });
 
+// Lambda: close-quorum monitor — emits CloseMissed metric on TTL expiry (v6 P2 §11.5)
+await build({
+  ...shared,
+  entryPoints: ["src/handlers/close-quorum-monitor.ts"],
+  outfile: "dist/handlers/close-quorum-monitor.js",
+});
+
 // Fargate: long-running streaming service
 await build({
   ...shared,
@@ -91,5 +99,5 @@ await build({
 });
 
 console.log(
-  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js",
+  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/handlers/close-quorum-monitor.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js",
 );

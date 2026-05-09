@@ -30,6 +30,7 @@ function makeCandles(n = 250, seed = 42): Candle[] {
       close: val,
       volume: 1000 + ((s >>> 4) % 5000),
       isClosed: true,
+      source: "live" as const,
     });
   }
   return candles;

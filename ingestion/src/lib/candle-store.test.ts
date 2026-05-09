@@ -31,6 +31,7 @@ function makeCandle(overrides: Partial<Candle> = {}): Candle {
     close: 105,
     volume: 12.3,
     isClosed: true,
+    source: "live",
     ...overrides,
   };
 }
@@ -75,6 +76,23 @@ describe("storeCandles", () => {
   it("does not call DynamoDB when given an empty list", async () => {
     const { storeCandles } = await import("./candle-store.js");
     await storeCandles([]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("persists the source field in DDB item", async () => {
+    send.mockResolvedValue({});
+    const candle = makeCandle({ source: "backfill" });
+    const { storeCandles } = await import("./candle-store.js");
+    await storeCandles([candle]);
+    const item = send.mock.calls[0][0].input.RequestItems["test-candles"][0].PutRequest.Item;
+    expect(item.source).toBe("backfill");
+  });
+
+  it("throws when source is missing (v6 mandatory field enforcement)", async () => {
+    const { storeCandles } = await import("./candle-store.js");
+    // Cast to bypass TypeScript so we can test runtime guard
+    const candleWithoutSource = { ...makeCandle(), source: undefined } as unknown as import("@quantara/shared").Candle;
+    await expect(storeCandles([candleWithoutSource])).rejects.toThrow(/candle\.source is required/);
     expect(send).not.toHaveBeenCalled();
   });
 });

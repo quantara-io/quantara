@@ -17,6 +17,7 @@ function makeCandle(overrides: Partial<Candle> = {}): Candle {
     close: 30200,
     volume: 100,
     isClosed: true,
+    source: "live",
     ...overrides,
   };
 }

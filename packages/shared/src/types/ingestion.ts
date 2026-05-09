@@ -14,6 +14,10 @@ export interface Candle {
   close: number;
   volume: number;
   isClosed: boolean;
+  /** Origin of this candle — mandatory from v6 onwards. "live" = real-time stream or
+   *  higher-TF aggregator; "backfill" = historical fetch. Used by DDB Streams
+   *  FilterCriteria so the IndicatorLambda only fires on live closes. */
+  source: "live" | "backfill";
 }
 
 export interface RawNewsEvent {

@@ -1,10 +1,10 @@
 # ---------------------------------------------------------------------------
-# Indicator Handler Lambda — Phase 4b
+# Indicator Handler Lambda — v6 P2 (DDB Streams trigger)
 #
-# Orchestrates: indicators → scoring → blending → persistence.
-# Triggered by EventBridge every minute (see eventbridge-indicator-schedule.tf).
-#
-# IAM: read/write indicator-state, signals-v2, ingestion-metadata; read candles.
+# Trigger: DDB Streams on quantara-{env}-candles (FilterCriteria: source=live,
+#          timeframe in [15m,1h,4h,1d]).
+# IAM: read candles stream + read/write close-quorum + read/write signals-v2 +
+#      read/write ingestion-metadata (cooldowns, dispersion history, votes, fear-greed).
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "indicator_handler_lambda" {
@@ -31,28 +31,73 @@ resource "aws_iam_role_policy" "indicator_handler_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:PutItem",
-        "dynamodb:GetItem",
-        "dynamodb:Query",
-        "dynamodb:BatchWriteItem",
-        "dynamodb:UpdateItem",
-      ]
-      Resource = [
-        # Read candles (input).
-        aws_dynamodb_table.candles.arn,
-        "${aws_dynamodb_table.candles.arn}/index/*",
-        # Write indicator state.
-        aws_dynamodb_table.indicator_state.arn,
-        # Write + read signals-v2 (putSignal, getLatestSignal).
-        aws_dynamodb_table.signals_v2.arn,
-        "${aws_dynamodb_table.signals_v2.arn}/index/*",
-        # Read + write ingestion-metadata (cooldowns, dispersion history, votes, fear-greed, staleness).
-        aws_dynamodb_table.ingestion_metadata.arn,
-      ]
-    }]
+    Statement = [
+      {
+        Sid    = "ReadCandlesTableAndStream"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          # DDB Streams permissions for event source mapping
+          "dynamodb:GetShardIterator",
+          "dynamodb:GetRecords",
+          "dynamodb:ListStreams",
+          "dynamodb:DescribeStream",
+        ]
+        Resource = [
+          aws_dynamodb_table.candles.arn,
+          "${aws_dynamodb_table.candles.arn}/index/*",
+          aws_dynamodb_table.candles.stream_arn,
+        ]
+      },
+      {
+        Sid    = "ReadWriteCloseQuorum"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.close_quorum.arn,
+        ]
+      },
+      {
+        Sid    = "ReadWriteSignalsV2"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+        ]
+        Resource = [
+          aws_dynamodb_table.signals_v2.arn,
+        ]
+      },
+      {
+        Sid    = "ReadWriteIndicatorState"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+        ]
+        Resource = [
+          aws_dynamodb_table.indicator_state.arn,
+        ]
+      },
+      {
+        Sid    = "ReadWriteIngestionMetadata"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.ingestion_metadata.arn,
+        ]
+      },
+    ]
   })
 }
 
@@ -70,12 +115,14 @@ resource "aws_lambda_function" "indicator_handler" {
 
   environment {
     variables = {
-      TABLE_PREFIX         = "${local.prefix}-"
-      TABLE_CANDLES        = aws_dynamodb_table.candles.name
+      TABLE_PREFIX          = "${local.prefix}-"
+      TABLE_CANDLES         = aws_dynamodb_table.candles.name
+      TABLE_CLOSE_QUORUM    = aws_dynamodb_table.close_quorum.name
       TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
-      TABLE_SIGNALS_V2     = aws_dynamodb_table.signals_v2.name
-      TABLE_METADATA       = aws_dynamodb_table.ingestion_metadata.name
-      ENVIRONMENT          = var.environment
+      TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
+      TABLE_METADATA        = aws_dynamodb_table.ingestion_metadata.name
+      REQUIRED_EXCHANGE_COUNT = "2"
+      ENVIRONMENT           = var.environment
     }
   }
 
@@ -87,4 +134,42 @@ resource "aws_lambda_function" "indicator_handler" {
   lifecycle {
     replace_triggered_by = [terraform_data.ingestion_build]
   }
+}
+
+# ---------------------------------------------------------------------------
+# DDB Streams event source mapping: candles → indicator_handler
+#
+# FilterCriteria: only fire on live candles with signal timeframes.
+# batch_size=10 and maximum_batching_window_in_seconds=1 reduce the
+# number of Lambda invocations while keeping latency < ~5s.
+# maximum_retry_attempts=3 limits retries for permanent Lambda errors
+# (e.g. provisioned concurrency exhaustion) — DLQ should be added if
+# error visibility is needed.
+# ---------------------------------------------------------------------------
+
+resource "aws_lambda_event_source_mapping" "indicator_from_candles" {
+  event_source_arn  = aws_dynamodb_table.candles.stream_arn
+  function_name     = aws_lambda_function.indicator_handler.arn
+  starting_position = "LATEST"
+
+  filter_criteria {
+    filter {
+      pattern = jsonencode({
+        dynamodb = {
+          NewImage = {
+            timeframe = { S = ["15m", "1h", "4h", "1d"] }
+            source    = { S = ["live"] }
+          }
+        }
+      })
+    }
+  }
+
+  batch_size                         = 10
+  maximum_batching_window_in_seconds = 1
+  maximum_retry_attempts             = 3
+
+  depends_on = [
+    aws_iam_role_policy.indicator_handler_dynamodb,
+  ]
 }
