@@ -80,8 +80,19 @@ export interface IndicatorStateCell {
   atr14: number | null;
   asOf: string | null;
   ageSeconds: number | null;
-  /** Full raw item — forwarded as-is for the side-panel JSON view. */
-  raw: Record<string, unknown> | null;
+}
+
+/**
+ * Trimmed shape of a recent signal row for the side-panel history list. The
+ * grid only renders these fields; we deliberately do NOT forward the full
+ * DDB item (raw `signals_v2` rows can carry large `llmRawResponse` blobs).
+ * The page polls every 5s, so payload size matters at scale.
+ */
+export interface RecentSignalEntry {
+  type: string | null;
+  ratificationStatus: string | null;
+  emittedAt: string | null;
+  reasoning: string | null;
 }
 
 export interface SignalCell {
@@ -91,10 +102,8 @@ export interface SignalCell {
   interpretationText: string | null;
   closeTime: string | null;
   ageSeconds: number | null;
-  /** Full raw item — forwarded as-is for the side-panel JSON view. */
-  raw: Record<string, unknown> | null;
   /** Up to 5 most-recent items from the same (pair × tf) for ratification history. */
-  recentHistory: Record<string, unknown>[];
+  recentHistory: RecentSignalEntry[];
 }
 
 export interface SentimentWindowCell {
@@ -163,7 +172,6 @@ async function fetchIndicatorState(
       atr14: (item.atr14 as number | null) ?? null,
       asOf: asOfMs !== null ? new Date(asOfMs).toISOString() : null,
       ageSeconds,
-      raw: item,
     };
   } catch {
     return emptyIndicator();
@@ -180,7 +188,6 @@ function emptyIndicator(): IndicatorStateCell {
     atr14: null,
     asOf: null,
     ageSeconds: null,
-    raw: null,
   };
 }
 
@@ -231,6 +238,20 @@ async function fetchSignal(
         ? interpretation.text.slice(0, 160)
         : null;
 
+    // Trim recentHistory to the fields the side-panel renders. signals_v2
+    // rows can carry large llmRawResponse blobs; forwarding the full row
+    // for every cell on every 5s poll bloats the response unnecessarily.
+    const recentHistory: RecentSignalEntry[] = items.map((row) => {
+      const verdict = row.ratificationVerdict as Record<string, unknown> | null | undefined;
+      const reasoning = typeof verdict?.reasoning === "string" ? verdict.reasoning : null;
+      return {
+        type: (row.type as string | null) ?? null,
+        ratificationStatus: (row.ratificationStatus as string | null) ?? null,
+        emittedAt: (row.emittedAt as string | null) ?? null,
+        reasoning,
+      };
+    });
+
     return {
       type: (latest.type as string | null) ?? null,
       confidence: (latest.confidence as number | null) ?? null,
@@ -238,8 +259,7 @@ async function fetchSignal(
       interpretationText,
       closeTime: asOfMs !== null ? new Date(asOfMs).toISOString() : null,
       ageSeconds,
-      raw: latest,
-      recentHistory: items,
+      recentHistory,
     };
   } catch {
     return emptySignal();
@@ -275,7 +295,6 @@ function emptySignal(): SignalCell {
     interpretationText: null,
     closeTime: null,
     ageSeconds: null,
-    raw: null,
     recentHistory: [],
   };
 }

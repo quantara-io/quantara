@@ -125,7 +125,6 @@ describe("getPipelineState", () => {
     expect(cell.indicator.rsi14).toBe(55.2);
     expect(cell.indicator.ema50).toBe(43000.5);
     expect(cell.indicator.ageSeconds).toBeGreaterThan(0);
-    expect(cell.indicator.raw).toBeTruthy();
 
     expect(cell.signal.type).toBe("buy");
     expect(cell.signal.confidence).toBe(0.85);
@@ -420,7 +419,7 @@ describe("getPipelineState", () => {
     // All cells should still be returned with null values
     expect(result.cells.length).toBe(5); // 4 real timeframes + consensus
     const cell = result.cells[0];
-    expect(cell.indicator.raw).toBeNull();
+    expect(cell.indicator.asOf).toBeNull();
     expect(cell.signal.type).toBeNull();
     expect(cell.sentiment4h.score).toBeNull();
   });

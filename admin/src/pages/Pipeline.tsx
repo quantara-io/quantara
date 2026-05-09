@@ -15,7 +15,13 @@ interface IndicatorState {
   atr14: number | null;
   asOf: string | null;
   ageSeconds: number | null;
-  raw: Record<string, unknown> | null;
+}
+
+interface RecentSignalEntry {
+  type: string | null;
+  ratificationStatus: string | null;
+  emittedAt: string | null;
+  reasoning: string | null;
 }
 
 interface SignalState {
@@ -25,8 +31,7 @@ interface SignalState {
   interpretationText: string | null;
   closeTime: string | null;
   ageSeconds: number | null;
-  raw: Record<string, unknown> | null;
-  recentHistory: Record<string, unknown>[];
+  recentHistory: RecentSignalEntry[];
 }
 
 interface SentimentWindow {
@@ -150,8 +155,15 @@ function CellCard({
   // Sentiment uses the 4h window duration for colour threshold regardless of tf
   const sentAgeClass = ageColor(cell.sentiment4h.ageSeconds, TF_DURATION_S["4h"]);
 
+  // A cell is "empty" only when ALL data sources are missing — including
+  // both sentiment windows. Without checking 24h, a cell with stale 4h
+  // sentiment but fresh 24h sentiment renders as fully empty even though
+  // there's data available.
   const isEmpty =
-    cell.indicator.asOf === null && cell.signal.type === null && cell.sentiment4h.score === null;
+    cell.indicator.asOf === null &&
+    cell.signal.type === null &&
+    cell.sentiment4h.score === null &&
+    cell.sentiment24h.score === null;
 
   return (
     <button
@@ -232,32 +244,6 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
       </div>
 
       <div className="p-4 space-y-4">
-        {/* Indicator full JSON */}
-        <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
-            Full Indicator State
-          </h3>
-          {cell.indicator.raw ? (
-            <pre className="text-[10px] text-slate-300 bg-slate-900 rounded p-3 overflow-x-auto whitespace-pre-wrap">
-              {JSON.stringify(cell.indicator.raw, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-xs text-slate-600">No data</p>
-          )}
-        </section>
-
-        {/* Signal full row */}
-        <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">Latest Signal</h3>
-          {cell.signal.raw ? (
-            <pre className="text-[10px] text-slate-300 bg-slate-900 rounded p-3 overflow-x-auto whitespace-pre-wrap">
-              {JSON.stringify(cell.signal.raw, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-xs text-slate-600">No data</p>
-          )}
-        </section>
-
         {/* Interpretation text */}
         {cell.signal.interpretationText && (
           <section>
@@ -282,30 +268,29 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
           ) : (
             <div className="space-y-2">
               {cell.signal.recentHistory.map((row, i) => (
-                <div key={i} className="text-[10px] bg-slate-900 rounded p-2">
+                // Stable key: emittedAt is unique per row when present.
+                // Falls back to index only when emittedAt is null (rare —
+                // a row with no emit timestamp is already malformed).
+                <div
+                  key={row.emittedAt ?? `idx-${i}`}
+                  className="text-[10px] bg-slate-900 rounded p-2"
+                >
                   <div className="flex items-center gap-2 mb-1">
-                    <span className={`font-semibold ${signalTypeColor(row.type as string | null)}`}>
-                      {(row.type as string | null) ?? "—"}
+                    <span className={`font-semibold ${signalTypeColor(row.type)}`}>
+                      {row.type ?? "—"}
                     </span>
-                    {(row.ratificationStatus as string | null) && (
+                    {row.ratificationStatus && (
                       <span
-                        className={`px-1.5 py-0.5 rounded border text-[9px] ${ratificationBadge(row.ratificationStatus as string | null)}`}
+                        className={`px-1.5 py-0.5 rounded border text-[9px] ${ratificationBadge(row.ratificationStatus)}`}
                       >
-                        {row.ratificationStatus as string}
+                        {row.ratificationStatus}
                       </span>
                     )}
                     <span className="ml-auto text-slate-500 font-mono">
-                      {(row.emittedAt as string | null)
-                        ? new Date(row.emittedAt as string).toLocaleTimeString()
-                        : "—"}
+                      {row.emittedAt ? new Date(row.emittedAt).toLocaleTimeString() : "—"}
                     </span>
                   </div>
-                  {typeof (row.ratificationVerdict as Record<string, unknown> | null | undefined)
-                    ?.reasoning === "string" && (
-                    <p className="text-slate-400 line-clamp-2">
-                      {String((row.ratificationVerdict as Record<string, unknown>).reasoning)}
-                    </p>
-                  )}
+                  {row.reasoning && <p className="text-slate-400 line-clamp-2">{row.reasoning}</p>}
                 </div>
               ))}
             </div>
