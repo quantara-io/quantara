@@ -11,6 +11,7 @@ import {
   getWhitelist,
   setWhitelist,
   getSignals,
+  getGenieMetrics,
 } from "../services/admin.service.js";
 
 const admin = new Hono();
@@ -113,6 +114,28 @@ admin.put("/whitelist", async (c) => {
     );
   }
   return c.json({ success: true, data: await setWhitelist(body.ips) });
+});
+
+admin.get("/genie-metrics", async (c) => {
+  const sinceRaw = c.req.query("since");
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+  }
+
+  const pair = c.req.query("pair");
+  const timeframe = c.req.query("timeframe");
+
+  const metrics = await getGenieMetrics(sinceRaw, pair, timeframe);
+  return c.json({ success: true, data: metrics });
 });
 
 export { admin };

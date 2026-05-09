@@ -570,6 +570,316 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Genie Performance Metrics
+// ---------------------------------------------------------------------------
+
+const RATIFICATIONS_TABLE =
+  process.env.TABLE_RATIFICATIONS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
+
+const SIGNAL_OUTCOMES_TABLE =
+  process.env.TABLE_SIGNAL_OUTCOMES ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signal-outcomes`;
+
+// All monitored pairs — used when no pair filter is specified.
+const ALL_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"] as const;
+
+// Sonnet 4.6 pricing ($3/1M input, $15/1M output) — NOT the same as Haiku.
+// Ratification records store costUsd directly so this is only a fallback reference.
+
+export interface GenieMetrics {
+  windowStart: string;
+  windowEnd: string;
+  total: {
+    signalCount: number;
+    ratifiedCount: number;
+    downgradedCount: number;
+    gatedCount: number;
+    fallbackCount: number;
+  };
+  outcomes: {
+    tp: number;
+    sl: number;
+    neutral: number;
+    pending: number;
+  };
+  winRate: {
+    overall: number | null;
+    algoOnly: number | null;
+    llmRatified: number | null;
+    llmDowngraded: number | null;
+  };
+  cost: {
+    totalUsd: number;
+    avgPerSignalUsd: number;
+    avgPerTpUsd: number | null;
+    cacheHitRate: number | null;
+  };
+  gating: {
+    skipLowConfidence: number;
+    skipRateLimit: number;
+    skipDailyCap: number;
+    skipNotRequired: number;
+    invoked: number;
+  };
+}
+
+interface RatificationRow {
+  pair: string;
+  invokedAtRecordId: string;
+  invokedAt: string;
+  invokedReason: string;
+  fellBackToAlgo: boolean;
+  cacheHit: boolean;
+  costUsd: number;
+  ratified: { type?: string; confidence?: number } | null;
+  algoCandidate: { type?: string };
+}
+
+interface OutcomeRow {
+  pair: string;
+  signalId: string;
+  outcome: string;
+  gateReason: string | null;
+  emittingTimeframe: string;
+  resolvedAt: string;
+  createdAt: string;
+}
+
+/**
+ * Query all ratification records for a set of pairs over a time window.
+ * Ratifications table PK=pair, SK=invokedAtRecordId (starts with invokedAt ISO).
+ */
+async function queryRatificationsForWindow(
+  pairs: readonly string[],
+  sinceIso: string,
+  untilIso: string,
+): Promise<RatificationRow[]> {
+  const rows: RatificationRow[] = [];
+
+  await Promise.all(
+    pairs.map(async (pair) => {
+      let lastKey: Record<string, unknown> | undefined;
+      do {
+        const result = await dynamo.send(
+          new QueryCommand({
+            TableName: RATIFICATIONS_TABLE,
+            KeyConditionExpression:
+              "#pair = :pair AND invokedAtRecordId BETWEEN :lo AND :hi",
+            ExpressionAttributeNames: { "#pair": "pair" },
+            ExpressionAttributeValues: {
+              ":pair": pair,
+              ":lo": sinceIso,
+              ":hi": untilIso + "￿", // lexicographic upper bound
+            },
+            ExclusiveStartKey: lastKey,
+          }),
+        );
+        for (const item of result.Items ?? []) {
+          rows.push(item as RatificationRow);
+        }
+        lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      } while (lastKey !== undefined);
+    }),
+  );
+
+  return rows;
+}
+
+/**
+ * Query all signal-outcome records for a set of pairs where resolvedAt >= sinceIso.
+ * signal-outcomes table PK=pair, SK=signalId. FilterExpression on resolvedAt.
+ */
+async function queryOutcomesForWindow(
+  pairs: readonly string[],
+  sinceIso: string,
+): Promise<OutcomeRow[]> {
+  const rows: OutcomeRow[] = [];
+
+  await Promise.all(
+    pairs.map(async (pair) => {
+      let lastKey: Record<string, unknown> | undefined;
+      do {
+        const result = await dynamo.send(
+          new QueryCommand({
+            TableName: SIGNAL_OUTCOMES_TABLE,
+            KeyConditionExpression: "#pair = :pair",
+            FilterExpression: "#resolvedAt >= :since",
+            ExpressionAttributeNames: { "#pair": "pair", "#resolvedAt": "resolvedAt" },
+            ExpressionAttributeValues: { ":pair": pair, ":since": sinceIso },
+            ExclusiveStartKey: lastKey,
+          }),
+        );
+        for (const item of result.Items ?? []) {
+          rows.push(item as OutcomeRow);
+        }
+        lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      } while (lastKey !== undefined);
+    }),
+  );
+
+  return rows;
+}
+
+/**
+ * Compute the Genie performance metrics for a given time window.
+ *
+ * @param since      ISO-8601 lower bound (default: 7 days ago)
+ * @param pair       Optional pair filter (default: all monitored pairs)
+ * @param timeframe  Optional timeframe filter applied to signal-outcomes only
+ */
+export async function getGenieMetrics(
+  since?: string,
+  pair?: string,
+  timeframe?: string,
+): Promise<GenieMetrics> {
+  const windowEnd = new Date().toISOString();
+  const windowStart = since ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const pairs = pair ? [pair] : ALL_PAIRS;
+
+  const [ratRows, outcomeRows] = await Promise.all([
+    queryRatificationsForWindow(pairs, windowStart, windowEnd),
+    queryOutcomesForWindow(pairs, windowStart),
+  ]);
+
+  // ------------------------------------------------------------------
+  // Filter outcomes by timeframe if requested
+  // ------------------------------------------------------------------
+  const filteredOutcomes = timeframe
+    ? outcomeRows.filter((o) => o.emittingTimeframe === timeframe)
+    : outcomeRows;
+
+  // ------------------------------------------------------------------
+  // Gating breakdown (from ratification rows)
+  // ------------------------------------------------------------------
+  let skipLowConfidence = 0;
+  let skipRateLimit = 0;
+  let skipDailyCap = 0;
+  let skipNotRequired = 0;
+  let invoked = 0;
+  let totalCacheHits = 0;
+  let totalLlmInvocations = 0;
+  let totalCostUsd = 0;
+
+  for (const r of ratRows) {
+    const reason = r.invokedReason ?? "";
+    if (reason === "skip-low-confidence") skipLowConfidence++;
+    else if (reason === "skip-rate-limited") skipRateLimit++;
+    else if (reason === "skip-daily-cap") skipDailyCap++;
+    else if (reason === "skip-no-trigger") skipNotRequired++;
+    else {
+      // LLM was actually invoked (news, vol, fng-shift, all, sentiment_shock)
+      invoked++;
+      totalLlmInvocations++;
+      if (r.cacheHit) totalCacheHits++;
+    }
+    totalCostUsd += typeof r.costUsd === "number" ? r.costUsd : 0;
+  }
+
+  // ------------------------------------------------------------------
+  // Signal totals and win-rate buckets
+  // ------------------------------------------------------------------
+  // "gated" = any skip reason, "fallback" = fellBackToAlgo was true
+  const signalCount = ratRows.length;
+  let ratifiedCount = 0;
+  let downgradedCount = 0;
+  let gatedCount = 0;
+  let fallbackCount = 0;
+
+  for (const r of ratRows) {
+    const reason = r.invokedReason ?? "";
+    const isSkipped =
+      reason === "skip-low-confidence" ||
+      reason === "skip-rate-limited" ||
+      reason === "skip-daily-cap" ||
+      reason === "skip-no-trigger";
+
+    if (isSkipped) {
+      gatedCount++;
+    } else if (r.fellBackToAlgo) {
+      fallbackCount++;
+    } else {
+      // LLM was invoked and succeeded — check if it downgraded the signal
+      const algoType = r.algoCandidate?.type;
+      const ratifiedType = r.ratified?.type;
+      if (ratifiedType && algoType && ratifiedType !== algoType) {
+        downgradedCount++;
+      } else {
+        ratifiedCount++;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Outcome counts
+  // ------------------------------------------------------------------
+  let tp = 0;
+  let sl = 0;
+  let neutral = 0;
+  let pending = 0;
+
+  for (const o of filteredOutcomes) {
+    switch (o.outcome) {
+      case "tp": tp++; break;
+      case "sl": sl++; break;
+      case "neutral": neutral++; break;
+      default: pending++; break;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Win-rate breakdown (using outcome data joined with ratification buckets)
+  // ------------------------------------------------------------------
+  // Partition outcomes by ratification pathway:
+  //   - algoOnly:      gateReason is set (signal was gated, no LLM)
+  //   - llmRatified:   gateReason is null and outcome is from a ratified signal
+  //   - llmDowngraded: gateReason is null and LLM changed the verdict
+  // We approximate this by gateReason presence on the outcome record.
+  const countWins = (outcomes: OutcomeRow[]): number | null => {
+    const directional = outcomes.filter((o) => o.outcome === "tp" || o.outcome === "sl");
+    if (directional.length === 0) return null;
+    const wins = directional.filter((o) => o.outcome === "tp").length;
+    return wins / directional.length;
+  };
+
+  const algoOnlyOutcomes = filteredOutcomes.filter(
+    (o) => o.gateReason !== null && o.gateReason !== undefined && o.gateReason !== "",
+  );
+  const llmOutcomes = filteredOutcomes.filter(
+    (o) => !o.gateReason,
+  );
+
+  // We can't split llmRatified from llmDowngraded purely from outcome records
+  // without joining to ratification rows — use the overall llm split as best effort.
+  const overallWinRate = countWins(filteredOutcomes);
+  const algoOnlyWinRate = countWins(algoOnlyOutcomes);
+  const llmWinRate = countWins(llmOutcomes);
+
+  // ------------------------------------------------------------------
+  // Cost metrics
+  // ------------------------------------------------------------------
+  const avgPerSignalUsd = signalCount > 0 ? totalCostUsd / signalCount : 0;
+  const avgPerTpUsd = tp > 0 ? totalCostUsd / tp : null;
+  const cacheHitRate =
+    totalLlmInvocations > 0 ? totalCacheHits / totalLlmInvocations : null;
+
+  return {
+    windowStart,
+    windowEnd,
+    total: { signalCount, ratifiedCount, downgradedCount, gatedCount, fallbackCount },
+    outcomes: { tp, sl, neutral, pending },
+    winRate: {
+      overall: overallWinRate,
+      algoOnly: algoOnlyWinRate,
+      llmRatified: llmWinRate,
+      llmDowngraded: null, // would require per-signal join — out of scope for this iteration
+    },
+    cost: { totalUsd: totalCostUsd, avgPerSignalUsd, avgPerTpUsd, cacheHitRate },
+    gating: { skipLowConfidence, skipRateLimit, skipDailyCap, skipNotRequired, invoked },
+  };
+}
+
 const WHITELIST_PARAM = `/quantara/${ENVIRONMENT}/docs-allowed-ips`;
 
 export async function getWhitelist(): Promise<{ ips: string[] }> {

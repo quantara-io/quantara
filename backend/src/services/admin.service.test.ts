@@ -377,6 +377,269 @@ describe("computeDispersion via getMarket — dedupe fix (Bug 2)", () => {
   });
 });
 
+describe("getGenieMetrics", () => {
+  // Helper: build a minimal ratification row
+  function makeRatRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      pair: "BTC/USDT",
+      invokedAtRecordId: "2026-05-01T00:00:00.000Z#abc",
+      invokedAt: "2026-05-01T00:00:00.000Z",
+      invokedReason: "news",
+      fellBackToAlgo: false,
+      cacheHit: false,
+      costUsd: 0.01,
+      ratified: { type: "buy", confidence: 0.85 },
+      algoCandidate: { type: "buy" },
+      ...overrides,
+    };
+  }
+
+  // Helper: build a minimal outcome row
+  function makeOutcomeRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      pair: "BTC/USDT",
+      signalId: "sig-1",
+      outcome: "tp",
+      gateReason: null,
+      emittingTimeframe: "1h",
+      resolvedAt: "2026-05-01T01:00:00.000Z",
+      createdAt: "2026-05-01T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("returns zero-counts when both tables are empty", async () => {
+    // DynamoDB returns empty pages for all queries
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics();
+
+    expect(result.total.signalCount).toBe(0);
+    expect(result.outcomes.tp).toBe(0);
+    expect(result.outcomes.sl).toBe(0);
+    expect(result.cost.totalUsd).toBe(0);
+    expect(result.gating.invoked).toBe(0);
+    expect(result.winRate.overall).toBeNull();
+    expect(result.cost.cacheHitRate).toBeNull();
+  });
+
+  it("counts gating reasons correctly", async () => {
+    const rows = [
+      makeRatRow({ invokedReason: "skip-low-confidence" }),
+      makeRatRow({ invokedReason: "skip-rate-limited" }),
+      makeRatRow({ invokedReason: "skip-daily-cap" }),
+      makeRatRow({ invokedReason: "skip-no-trigger" }),
+      makeRatRow({ invokedReason: "news" }), // invoked
+      makeRatRow({ invokedReason: "vol" }),  // invoked
+    ];
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.input?.TableName?.includes("ratifications")) {
+          return { Items: rows };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.gating.skipLowConfidence).toBe(1);
+    expect(result.gating.skipRateLimit).toBe(1);
+    expect(result.gating.skipDailyCap).toBe(1);
+    expect(result.gating.skipNotRequired).toBe(1);
+    expect(result.gating.invoked).toBe(2);
+    expect(result.total.gatedCount).toBe(4);
+  });
+
+  it("computes cache hit rate from invoked rows", async () => {
+    const rows = [
+      makeRatRow({ invokedReason: "news", cacheHit: true, costUsd: 0 }),
+      makeRatRow({ invokedReason: "news", cacheHit: false, costUsd: 0.02 }),
+      makeRatRow({ invokedReason: "vol", cacheHit: false, costUsd: 0.02 }),
+    ];
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.input?.TableName?.includes("ratifications")) {
+          return { Items: rows };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    // 1 cache hit out of 3 LLM invocations = 1/3
+    expect(result.cost.cacheHitRate).toBeCloseTo(1 / 3, 5);
+    expect(result.cost.totalUsd).toBeCloseTo(0.04, 5);
+  });
+
+  it("computes win rate from outcome rows", async () => {
+    const outcomeRows = [
+      makeOutcomeRow({ outcome: "tp", gateReason: null }),
+      makeOutcomeRow({ outcome: "tp", gateReason: null }),
+      makeOutcomeRow({ outcome: "sl", gateReason: null }),
+      makeOutcomeRow({ outcome: "neutral", gateReason: null }),
+    ];
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.input?.TableName?.includes("ratifications")) {
+          return { Items: [] };
+        }
+        return { Items: outcomeRows };
+      },
+    );
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    // 2 tp, 1 sl, 1 neutral → directional = 3, wins = 2 → win rate = 2/3
+    expect(result.outcomes.tp).toBe(2);
+    expect(result.outcomes.sl).toBe(1);
+    expect(result.outcomes.neutral).toBe(1);
+    expect(result.winRate.overall).toBeCloseTo(2 / 3, 5);
+  });
+
+  it("partitions algo-only vs llm outcomes by gateReason presence", async () => {
+    const outcomeRows = [
+      // algo-only (gated): 1 tp, 1 sl → win rate 0.5
+      makeOutcomeRow({ outcome: "tp", gateReason: "skip-no-trigger" }),
+      makeOutcomeRow({ outcome: "sl", gateReason: "skip-no-trigger" }),
+      // llm: 2 tp, 0 sl → win rate 1.0
+      makeOutcomeRow({ outcome: "tp", gateReason: null }),
+      makeOutcomeRow({ outcome: "tp", gateReason: null }),
+    ];
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.input?.TableName?.includes("ratifications")) {
+          return { Items: [] };
+        }
+        return { Items: outcomeRows };
+      },
+    );
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.winRate.algoOnly).toBeCloseTo(0.5, 5);
+    expect(result.winRate.llmRatified).toBeCloseTo(1.0, 5);
+  });
+
+  it("computes avgPerTpUsd as null when there are no TPs", async () => {
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.input?.TableName?.includes("ratifications")) {
+          return { Items: [makeRatRow({ costUsd: 0.05 })] };
+        }
+        // outcomes: only sl
+        return { Items: [makeOutcomeRow({ outcome: "sl" })] };
+      },
+    );
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.outcomes.tp).toBe(0);
+    expect(result.cost.avgPerTpUsd).toBeNull();
+    expect(result.cost.totalUsd).toBeCloseTo(0.05, 5);
+  });
+
+  it("filters outcomes by timeframe when specified", async () => {
+    const outcomeRows = [
+      makeOutcomeRow({ outcome: "tp", emittingTimeframe: "1h" }),
+      makeOutcomeRow({ outcome: "sl", emittingTimeframe: "4h" }),
+      makeOutcomeRow({ outcome: "tp", emittingTimeframe: "1h" }),
+    ];
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.input?.TableName?.includes("ratifications")) {
+          return { Items: [] };
+        }
+        return { Items: outcomeRows };
+      },
+    );
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    const result = await getGenieMetrics(undefined, "BTC/USDT", "1h");
+
+    // Only "1h" outcomes (2 tp)
+    expect(result.outcomes.tp).toBe(2);
+    expect(result.outcomes.sl).toBe(0);
+  });
+
+  it("uses provided since as windowStart", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieMetrics } = await importService();
+    const since = "2026-04-01T00:00:00.000Z";
+    const result = await getGenieMetrics(since);
+
+    expect(result.windowStart).toBe(since);
+    expect(result.windowEnd).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("defaults windowStart to 7 days ago when since is omitted", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieMetrics } = await importService();
+    const before = Date.now();
+    const result = await getGenieMetrics();
+    const after = Date.now();
+
+    const windowStartMs = new Date(result.windowStart).getTime();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    // windowStart should be ~7 days before now
+    expect(windowStartMs).toBeGreaterThanOrEqual(before - sevenDaysMs - 5000);
+    expect(windowStartMs).toBeLessThanOrEqual(after - sevenDaysMs + 5000);
+  });
+
+  it("detects downgraded signals when LLM changes type from algo", async () => {
+    const rows = [
+      makeRatRow({
+        invokedReason: "news",
+        algoCandidate: { type: "buy" },
+        ratified: { type: "sell" }, // type changed → downgraded
+        fellBackToAlgo: false,
+      }),
+      makeRatRow({
+        invokedReason: "vol",
+        algoCandidate: { type: "buy" },
+        ratified: { type: "buy" }, // same type → ratified
+        fellBackToAlgo: false,
+      }),
+    ];
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.input?.TableName?.includes("ratifications")) {
+          return { Items: rows };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getGenieMetrics } = await importService();
+    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    const result = await getGenieMetrics(undefined, "BTC/USDT");
+
+    expect(result.total.downgradedCount).toBe(1);
+    expect(result.total.ratifiedCount).toBe(1);
+  });
+});
+
 describe("getStatus", () => {
   it("returns aggregated AWS status with timestamp", async () => {
     dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
