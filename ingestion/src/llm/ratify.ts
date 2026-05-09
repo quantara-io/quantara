@@ -430,26 +430,9 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
   }
 
   // ------------------------------------------------------------------
-  // Success: persist + invoke stage-2
+  // Success: build the final signal, then persist + invoke stage-2
   // ------------------------------------------------------------------
   const ratified = validation.ratified;
-  await putCachedRatification(cacheKey, ratified);
-
-  await putRatificationRecord({
-    pair: context.pair,
-    timeframe: context.candidate.emittingTimeframe,
-    algoCandidate: context.candidate,
-    llmRequest: { model: RATIFICATION_MODEL, systemHash: SYSTEM_HASH, userJsonHash },
-    llmRawResponse,
-    cacheHit: false,
-    validation: { ok: true },
-    ratified,
-    fellBackToAlgo: false,
-    latencyMs: Date.now() - startMs,
-    costUsd,
-    invokedReason,
-    invokedAt,
-  });
 
   const isDowngraded =
     parsedResponse.type !== context.candidate.type ||
@@ -469,6 +452,28 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
     ratificationVerdict,
     algoVerdict: isDowngraded ? algoVerdict : null,
   };
+
+  // Cache the *final* signal (with ratificationVerdict.reasoning + source: "llm")
+  // so a later cache hit can surface the LLM narrative through buildInterpretation.
+  // Without this, the cached row would have ratificationStatus "ratified" but no
+  // verdict, and the cache-hit consumer would render the narrative as algo-only.
+  await putCachedRatification(cacheKey, finalSignal);
+
+  await putRatificationRecord({
+    pair: context.pair,
+    timeframe: context.candidate.emittingTimeframe,
+    algoCandidate: context.candidate,
+    llmRequest: { model: RATIFICATION_MODEL, systemHash: SYSTEM_HASH, userJsonHash },
+    llmRawResponse,
+    cacheHit: false,
+    validation: { ok: true },
+    ratified: finalSignal,
+    fellBackToAlgo: false,
+    latencyMs: Date.now() - startMs,
+    costUsd,
+    invokedReason,
+    invokedAt,
+  });
 
   console.log(
     `[Ratifier] Ratified ${context.pair}: ${finalSignal.type} conf=${finalSignal.confidence.toFixed(3)} status=${ratificationStatus}`,
