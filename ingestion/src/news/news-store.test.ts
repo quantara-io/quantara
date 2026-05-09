@@ -89,9 +89,7 @@ describe("storeNewsRecords", () => {
     send.mockImplementation(async (cmd: { __cmd: string }) => {
       if (cmd.__cmd === "Query") {
         // first record exists, second doesn't
-        return i++ === 0
-          ? { Count: 1, Items: [{ newsId: "old" }] }
-          : { Count: 0, Items: [] };
+        return i++ === 0 ? { Count: 1, Items: [{ newsId: "old" }] } : { Count: 0, Items: [] };
       }
       return {};
     });

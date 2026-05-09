@@ -92,9 +92,7 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
         let publishedAt: string;
         if (item.pubDate) {
           const parsed = new Date(item.pubDate);
-          publishedAt = isNaN(parsed.getTime())
-            ? new Date().toISOString()
-            : parsed.toISOString();
+          publishedAt = isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
         } else {
           publishedAt = new Date().toISOString();
         }
@@ -129,4 +127,3 @@ function hashString(str: string): string {
   }
   return Math.abs(hash).toString(36);
 }
-
