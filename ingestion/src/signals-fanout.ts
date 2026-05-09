@@ -186,12 +186,16 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
         | "downgraded"
         | "not-required"
         | null,
-      ratificationVerdict: (signal["ratificationVerdict"] ?? null) as
-        | { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string }
-        | null,
-      algoVerdict: (signal["algoVerdict"] ?? null) as
-        | { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string }
-        | null,
+      ratificationVerdict: (signal["ratificationVerdict"] ?? null) as {
+        type: "buy" | "sell" | "hold";
+        confidence: number;
+        reasoning: string;
+      } | null,
+      algoVerdict: (signal["algoVerdict"] ?? null) as {
+        type: "buy" | "sell" | "hold";
+        confidence: number;
+        reasoning: string;
+      } | null,
     }),
   };
 

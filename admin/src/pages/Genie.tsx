@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { PAIRS } from "@quantara/shared";
-import type { BlendedSignal, RiskRecommendation, SignalInterpretation, TimeframeVote } from "@quantara/shared";
+import type {
+  BlendedSignal,
+  RiskRecommendation,
+  SignalInterpretation,
+  TimeframeVote,
+} from "@quantara/shared";
 
 import { apiFetch } from "../lib/api";
 import { getAccessToken } from "../lib/auth";
@@ -256,12 +261,10 @@ function InterpretationBlock({ interpretation }: { interpretation: SignalInterpr
         <p className="text-xs text-slate-500">
           Algo:{" "}
           <span className="font-mono text-slate-400">
-            {interpretation.originalAlgo.type} {Math.round(interpretation.originalAlgo.confidence * 100)}%
+            {interpretation.originalAlgo.type}{" "}
+            {Math.round(interpretation.originalAlgo.confidence * 100)}%
           </span>{" "}
-          &rarr; LLM:{" "}
-          <span className="font-mono text-amber-400">
-            downgraded
-          </span>
+          &rarr; LLM: <span className="font-mono text-amber-400">downgraded</span>
         </p>
       )}
     </div>

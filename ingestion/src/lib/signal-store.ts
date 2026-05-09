@@ -18,7 +18,6 @@ const SIGNALS_V2_TABLE =
 /** 90-day TTL for signals */
 const TTL_SECONDS = 86400 * 90;
 
-
 /**
  * v6 schema: signals-v2 PK = `pair`, SK = `tf#closeTime` (deterministic).
  * Concurrent handlers on the same close-boundary write the same SK, so
@@ -158,12 +157,16 @@ export async function getRecentSignals(
   merged.sort((a, b) => Number(b["asOf"] ?? 0) - Number(a["asOf"] ?? 0));
 
   return merged.slice(0, limit).map((item) => {
-    const partial: Pick<BlendedSignal, "ratificationStatus" | "ratificationVerdict" | "algoVerdict" | "rulesFired" | "pair" | "type"> = {
+    const partial: Pick<
+      BlendedSignal,
+      "ratificationStatus" | "ratificationVerdict" | "algoVerdict" | "rulesFired" | "pair" | "type"
+    > = {
       pair: item.pair as string,
       type: item.type as BlendedSignal["type"],
       rulesFired: (item.rulesFired as string[]) ?? [],
       ratificationStatus: (item.ratificationStatus ?? null) as BlendedSignal["ratificationStatus"],
-      ratificationVerdict: (item.ratificationVerdict ?? null) as BlendedSignal["ratificationVerdict"],
+      ratificationVerdict: (item.ratificationVerdict ??
+        null) as BlendedSignal["ratificationVerdict"],
       algoVerdict: (item.algoVerdict ?? null) as BlendedSignal["algoVerdict"],
     };
     return {
@@ -181,7 +184,8 @@ export async function getRecentSignals(
       invalidatedAt: (item.invalidatedAt ?? null) as string | null,
       invalidationReason: (item.invalidationReason ?? null) as string | null,
       ratificationStatus: (item.ratificationStatus ?? null) as BlendedSignal["ratificationStatus"],
-      ratificationVerdict: (item.ratificationVerdict ?? null) as BlendedSignal["ratificationVerdict"],
+      ratificationVerdict: (item.ratificationVerdict ??
+        null) as BlendedSignal["ratificationVerdict"],
       algoVerdict: (item.algoVerdict ?? null) as BlendedSignal["algoVerdict"],
       interpretation: buildInterpretation(partial),
       signalId: item.signalId as string,

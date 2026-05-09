@@ -95,9 +95,7 @@ describe("buildInterpretation — llm-ratified", () => {
       }),
     );
     expect(result.source).toBe("llm-ratified");
-    expect(result.text).toBe(
-      "EMA cross confirmed by RSI momentum and MACD histogram expansion.",
-    );
+    expect(result.text).toBe("EMA cross confirmed by RSI momentum and MACD histogram expansion.");
     expect(result.originalAlgo).toBeUndefined();
   });
 });

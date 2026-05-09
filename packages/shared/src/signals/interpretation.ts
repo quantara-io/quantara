@@ -18,12 +18,7 @@ import type { BlendedSignal, SignalInterpretation } from "../types/signals.js";
 export function buildInterpretation(
   signal: Pick<
     BlendedSignal,
-    | "ratificationStatus"
-    | "ratificationVerdict"
-    | "algoVerdict"
-    | "rulesFired"
-    | "pair"
-    | "type"
+    "ratificationStatus" | "ratificationVerdict" | "algoVerdict" | "rulesFired" | "pair" | "type"
   >,
 ): SignalInterpretation {
   const rulesSummary =
