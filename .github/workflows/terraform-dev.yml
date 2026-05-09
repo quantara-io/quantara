@@ -36,12 +36,14 @@ on:
     paths:
       - "backend/infra/**"
       - ".github/workflows/terraform-dev.yml"
+  # `push` paths intentionally exclude the workflow file itself — editing
+  # this workflow on main shouldn't fire `terraform apply`. Infra changes
+  # remerged on main will still trigger apply via `backend/infra/**`.
   push:
     branches:
       - main
     paths:
       - "backend/infra/**"
-      - ".github/workflows/terraform-dev.yml"
 
 env:
   TF_VERSION: 1.14.0
@@ -53,7 +55,12 @@ jobs:
   # will change. Does NOT apply.
   # ---------------------------------------------------------------------------
   plan:
-    if: github.event_name == 'pull_request'
+    # Skip plan on PRs from forks. The trust policy on `GitHubDeployRole`
+    # allows any `pull_request` from this repo to assume the role (which
+    # has AdministratorAccess in dev), so a fork PR that modified this
+    # workflow could exfiltrate / abuse credentials. Internal PRs from
+    # branches in this repo are still allowed.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -146,11 +153,12 @@ jobs:
             const issue_number = context.issue.number;
 
             // Look for an existing plan comment from this workflow and update it
-            // rather than spam the PR with a new comment per push.
-            const { data: comments } = await github.rest.issues.listComments({
-              owner, repo, issue_number,
-            });
+            // rather than spam the PR with a new comment per push. Paginate so
+            // we find the marker on busy PRs with >30 comments.
             const marker = '## Terraform plan — `backend/infra/dev`';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
             const existing = comments.find((c) => c.body && c.body.startsWith(marker));
             if (existing) {
               await github.rest.issues.updateComment({
