@@ -59,11 +59,11 @@ function makeSignal(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
 }
 
 describe("putSignal", () => {
-  it("writes a PutCommand with pair as PK and emittedAtSignalId as SK", async () => {
+  it("writes a PutCommand with pair as PK and v6 deterministic sk = `tf#closeTime`", async () => {
     send.mockResolvedValue({});
     const signal = makeSignal();
     const { putSignal } = await import("./signal-store.js");
-    const { signalId, emittedAt } = await putSignal(signal);
+    const { signalId, emittedAt, sk } = await putSignal(signal);
 
     expect(send).toHaveBeenCalledOnce();
     const cmd = send.mock.calls[0][0];
@@ -75,7 +75,9 @@ describe("putSignal", () => {
     expect(item.type).toBe("buy");
     expect(item.signalId).toBe(signalId);
     expect(item.emittedAt).toBe(emittedAt);
-    expect(item.emittedAtSignalId).toBe(`${emittedAt}#${signalId}`);
+    // v6 deterministic SK = tf#closeTime, where closeTime = signal.asOf
+    expect(item.sk).toBe(`15m#${signal.asOf}`);
+    expect(sk).toBe(`15m#${signal.asOf}`);
     expect(item.confidence).toBe(0.72);
     expect(item.volatilityFlag).toBe(false);
     expect(item.gateReason).toBeNull();
@@ -167,7 +169,7 @@ describe("getLatestSignal", () => {
     const signalId = "00000000abcd-some-uuid";
     const storedItem = {
       pair: signal.pair,
-      emittedAtSignalId: `${emittedAt}#${signalId}`,
+      sk: `15m#1700000000000`,
       signalId,
       emittedAt,
       type: signal.type,
@@ -187,12 +189,18 @@ describe("getLatestSignal", () => {
     const { getLatestSignal } = await import("./signal-store.js");
     const result = await getLatestSignal("BTC/USDT");
 
-    expect(send).toHaveBeenCalledOnce();
+    // v6: getLatestSignal → getRecentSignals(1) issues 4 per-TF queries.
+    expect(send).toHaveBeenCalledTimes(4);
     const cmd = send.mock.calls[0][0];
     expect(cmd.__cmd).toBe("Query");
     expect(cmd.input.ScanIndexForward).toBe(false);
     expect(cmd.input.Limit).toBe(1);
-    expect(cmd.input.ExpressionAttributeValues).toEqual({ ":pair": "BTC/USDT" });
+    expect(cmd.input.ExpressionAttributeValues[":pair"]).toBe("BTC/USDT");
+    // Each call targets a distinct blended TF prefix.
+    const tfPrefixes = send.mock.calls.map(
+      (c: any) => c[0].input.ExpressionAttributeValues[":tfPrefix"],
+    );
+    expect(new Set(tfPrefixes)).toEqual(new Set(["15m#", "1h#", "4h#", "1d#"]));
     expect(cmd.input.TableName).toBe("test-signals-v2");
 
     // Round-trip
@@ -236,48 +244,61 @@ describe("getRecentSignals", () => {
     expect(send.mock.calls[0][0].input.Limit).toBe(10);
   });
 
-  it("returns multiple results in order", async () => {
-    const signal1 = makeSignal({ asOf: 1700000060000, type: "buy" });
-    const signal2 = makeSignal({ asOf: 1700000000000, type: "sell" });
+  it("returns multiple results merged across TFs in descending asOf order", async () => {
+    const signal1 = makeSignal({ asOf: 1700000060000, type: "buy", emittingTimeframe: "15m" });
+    const signal2 = makeSignal({ asOf: 1700000000000, type: "sell", emittingTimeframe: "1h" });
     const emittedAt1 = new Date(signal1.asOf).toISOString();
     const emittedAt2 = new Date(signal2.asOf).toISOString();
-    send.mockResolvedValue({
-      Items: [
-        {
-          pair: signal1.pair,
-          emittedAtSignalId: `${emittedAt1}#id-1`,
-          signalId: "id-1",
-          emittedAt: emittedAt1,
-          type: signal1.type,
-          confidence: signal1.confidence,
-          volatilityFlag: signal1.volatilityFlag,
-          gateReason: signal1.gateReason,
-          rulesFired: signal1.rulesFired,
-          perTimeframe: signal1.perTimeframe,
-          weightsUsed: signal1.weightsUsed,
-          asOf: signal1.asOf,
-          emittingTimeframe: signal1.emittingTimeframe,
-        },
-        {
-          pair: signal2.pair,
-          emittedAtSignalId: `${emittedAt2}#id-2`,
-          signalId: "id-2",
-          emittedAt: emittedAt2,
-          type: signal2.type,
-          confidence: signal2.confidence,
-          volatilityFlag: signal2.volatilityFlag,
-          gateReason: signal2.gateReason,
-          rulesFired: signal2.rulesFired,
-          perTimeframe: signal2.perTimeframe,
-          weightsUsed: signal2.weightsUsed,
-          asOf: signal2.asOf,
-          emittingTimeframe: signal2.emittingTimeframe,
-        },
-      ],
+    send.mockImplementation((cmd: any) => {
+      const tfPrefix = cmd.input.ExpressionAttributeValues?.[":tfPrefix"];
+      if (tfPrefix === "15m#") {
+        return Promise.resolve({
+          Items: [
+            {
+              pair: signal1.pair,
+              sk: `15m#${signal1.asOf}`,
+              signalId: "id-1",
+              emittedAt: emittedAt1,
+              type: signal1.type,
+              confidence: signal1.confidence,
+              volatilityFlag: signal1.volatilityFlag,
+              gateReason: signal1.gateReason,
+              rulesFired: signal1.rulesFired,
+              perTimeframe: signal1.perTimeframe,
+              weightsUsed: signal1.weightsUsed,
+              asOf: signal1.asOf,
+              emittingTimeframe: signal1.emittingTimeframe,
+            },
+          ],
+        });
+      }
+      if (tfPrefix === "1h#") {
+        return Promise.resolve({
+          Items: [
+            {
+              pair: signal2.pair,
+              sk: `1h#${signal2.asOf}`,
+              signalId: "id-2",
+              emittedAt: emittedAt2,
+              type: signal2.type,
+              confidence: signal2.confidence,
+              volatilityFlag: signal2.volatilityFlag,
+              gateReason: signal2.gateReason,
+              rulesFired: signal2.rulesFired,
+              perTimeframe: signal2.perTimeframe,
+              weightsUsed: signal2.weightsUsed,
+              asOf: signal2.asOf,
+              emittingTimeframe: signal2.emittingTimeframe,
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ Items: [] });
     });
     const { getRecentSignals } = await import("./signal-store.js");
     const results = await getRecentSignals("BTC/USDT", 2);
     expect(results).toHaveLength(2);
+    // signal1.asOf (1700000060000) > signal2.asOf (1700000000000), so buy (15m) comes first.
     expect(results[0].type).toBe("buy");
     expect(results[1].type).toBe("sell");
   });
@@ -296,36 +317,42 @@ describe("getRecentSignals", () => {
 describe("findActiveSignalsForPair", () => {
   it("returns only signals whose TTL is in the future and not yet invalidated", async () => {
     const nowSec = Math.floor(Date.now() / 1000);
-    send.mockResolvedValue({
-      Items: [
-        // active, not invalidated
-        {
-          pair: "ETH",
-          emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-1",
-          signalId: "sig-1",
-          emittedAt: "2024-01-01T00:00:00.000Z",
-          ttl: nowSec + 86400,
-          invalidatedAt: null,
-        },
-        // expired TTL — should be filtered out
-        {
-          pair: "ETH",
-          emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-2",
-          signalId: "sig-2",
-          emittedAt: "2024-01-01T00:00:00.000Z",
-          ttl: nowSec - 1,
-          invalidatedAt: null,
-        },
-        // already invalidated — should be filtered out
-        {
-          pair: "ETH",
-          emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-3",
-          signalId: "sig-3",
-          emittedAt: "2024-01-01T00:00:00.000Z",
-          ttl: nowSec + 86400,
-          invalidatedAt: "2024-01-02T00:00:00.000Z",
-        },
-      ],
+    // findActiveSignalsForPair queries each blended TF (15m/1h/4h/1d) separately;
+    // return the test fixtures only on the 1h branch and empty on others.
+    send.mockImplementation((cmd: any) => {
+      const tfPrefix = cmd.input.ExpressionAttributeValues?.[":tfPrefix"];
+      if (tfPrefix !== "1h#") return Promise.resolve({ Items: [] });
+      return Promise.resolve({
+        Items: [
+          // active, not invalidated
+          {
+            pair: "ETH",
+            sk: "1h#17040672000001",
+            signalId: "sig-1",
+            emittedAt: "2024-01-01T00:00:00.000Z",
+            ttl: nowSec + 86400,
+            invalidatedAt: null,
+          },
+          // expired TTL — should be filtered out
+          {
+            pair: "ETH",
+            sk: "1h#17040672000002",
+            signalId: "sig-2",
+            emittedAt: "2024-01-01T00:00:00.000Z",
+            ttl: nowSec - 1,
+            invalidatedAt: null,
+          },
+          // already invalidated — should be filtered out
+          {
+            pair: "ETH",
+            sk: "1h#17040672000003",
+            signalId: "sig-3",
+            emittedAt: "2024-01-01T00:00:00.000Z",
+            ttl: nowSec + 86400,
+            invalidatedAt: "2024-01-02T00:00:00.000Z",
+          },
+        ],
+      });
     });
 
     const { findActiveSignalsForPair } = await import("./signal-store.js");
@@ -357,11 +384,7 @@ describe("markSignalInvalidated", () => {
   it("sends an UpdateCommand with condition expression to the correct key", async () => {
     send.mockResolvedValue({});
     const { markSignalInvalidated } = await import("./signal-store.js");
-    await markSignalInvalidated(
-      "ETH",
-      "2024-01-01T00:00:00.000Z#sig-x",
-      "Breaking news: test headline",
-    );
+    await markSignalInvalidated("ETH", "1h#1704067200000", "Breaking news: test headline");
 
     expect(send).toHaveBeenCalledOnce();
     const cmd = send.mock.calls[0][0];
@@ -369,7 +392,7 @@ describe("markSignalInvalidated", () => {
     expect(cmd.input.TableName).toBe("test-signals-v2");
     expect(cmd.input.Key).toEqual({
       pair: "ETH",
-      emittedAtSignalId: "2024-01-01T00:00:00.000Z#sig-x",
+      sk: "1h#1704067200000",
     });
     expect(cmd.input.UpdateExpression).toContain("invalidatedAt");
     expect(cmd.input.UpdateExpression).toContain("invalidationReason");
@@ -381,7 +404,7 @@ describe("markSignalInvalidated", () => {
     send.mockResolvedValue({});
     const { markSignalInvalidated } = await import("./signal-store.js");
     const fixedIso = "2024-06-01T12:00:00.000Z";
-    await markSignalInvalidated("ETH", "2024-01-01T00:00:00.000Z#sig-x", "reason", fixedIso);
+    await markSignalInvalidated("ETH", "1h#1704067200000", "reason", fixedIso);
     const cmd = send.mock.calls[0][0];
     expect(cmd.input.ExpressionAttributeValues[":ts"]).toBe(fixedIso);
   });
@@ -394,7 +417,7 @@ describe("markSignalInvalidated", () => {
     const { markSignalInvalidated } = await import("./signal-store.js");
     // Must not throw
     await expect(
-      markSignalInvalidated("ETH", "2024-01-01T00:00:00.000Z#sig-x", "Breaking news: test"),
+      markSignalInvalidated("ETH", "1h#1704067200000", "Breaking news: test"),
     ).resolves.toBeUndefined();
   });
 
@@ -403,7 +426,7 @@ describe("markSignalInvalidated", () => {
     send.mockRejectedValueOnce(networkError);
     const { markSignalInvalidated } = await import("./signal-store.js");
     await expect(
-      markSignalInvalidated("ETH", "2024-01-01T00:00:00.000Z#sig-x", "Breaking news: test"),
+      markSignalInvalidated("ETH", "1h#1704067200000", "Breaking news: test"),
     ).rejects.toThrow("network failure");
   });
 });

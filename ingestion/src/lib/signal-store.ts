@@ -7,7 +7,7 @@ import {
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import type { BlendedSignal } from "@quantara/shared";
+import type { BlendedSignal, Timeframe } from "@quantara/shared";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -18,38 +18,46 @@ const SIGNALS_V2_TABLE =
 const TTL_SECONDS = 86400 * 90;
 
 /**
- * Generate a time-sortable signal ID without a new npm dependency.
- * Format: "<unix-ms-hex-padded>-<uuid>" ensures lexicographic order = emission order.
- * e.g. "000001947a1b2c3d-550e8400-e29b-41d4-a716-446655440000"
+ * v6 schema: signals-v2 PK = `pair`, SK = `tf#closeTime` (deterministic).
+ * Concurrent handlers on the same close-boundary write the same SK, so
+ * a conditional Put with `attribute_not_exists(pair)` is the dedup mechanism.
+ */
+const BLEND_TIMEFRAMES: readonly Timeframe[] = ["15m", "1h", "4h", "1d"];
+
+function buildSignalSk(timeframe: Timeframe, closeTimeMs: number): string {
+  return `${timeframe}#${closeTimeMs}`;
+}
+
+/**
+ * Generate a time-sortable signal ID kept for back-compat in returned metadata.
+ * The SK no longer embeds it; signalId is purely informational on read.
  */
 function makeSignalId(nowMs: number): string {
   const tsPart = nowMs.toString(16).padStart(14, "0");
   return `${tsPart}-${randomUUID()}`;
 }
 
-/**
- * Build the sort key that encodes both timestamp and ID so DDB scans descend
- * by emission time when ScanIndexForward=false.
- * Format: "<emittedAt>#<signalId>"
- */
-function buildSortKey(emittedAt: string, signalId: string): string {
-  return `${emittedAt}#${signalId}`;
-}
-
 export interface SignalRecord {
   signalId: string;
   emittedAt: string;
+  /** v6: deterministic SK = `tf#closeTime` so callers can address the row. */
+  sk: string;
 }
 
 /**
  * Persist a BlendedSignal to the signals-v2 table.
- * Returns the generated signalId and emittedAt ISO8601 string.
- * Does not mutate the input signal.
+ *
+ * v6: writes use deterministic PK=pair, SK=`tf#closeTime`. Two concurrent
+ * writers for the same (pair, tf, closeTime) target the same DDB item;
+ * the conditional Put guarantees only one wins.
+ *
+ * Returns the generated signalId, emittedAt, and the SK so callers can
+ * later reference this row (e.g. for invalidation).
  */
 export async function putSignal(signal: BlendedSignal): Promise<SignalRecord> {
   const emittedAt = new Date(signal.asOf).toISOString();
   const signalId = makeSignalId(signal.asOf);
-  const emittedAtSignalId = buildSortKey(emittedAt, signalId);
+  const sk = buildSignalSk(signal.emittingTimeframe, signal.asOf);
   const ttl = Math.floor(Date.now() / 1000) + TTL_SECONDS;
 
   await client.send(
@@ -57,7 +65,7 @@ export async function putSignal(signal: BlendedSignal): Promise<SignalRecord> {
       TableName: SIGNALS_V2_TABLE,
       Item: {
         pair: signal.pair,
-        emittedAtSignalId,
+        sk,
         signalId,
         emittedAt,
         type: signal.type,
@@ -80,7 +88,7 @@ export async function putSignal(signal: BlendedSignal): Promise<SignalRecord> {
     }),
   );
 
-  return { signalId, emittedAt };
+  return { signalId, emittedAt, sk };
 }
 
 /**
@@ -96,23 +104,35 @@ export async function getLatestSignal(
 
 /**
  * Retrieve the N most recently emitted signals for a pair, newest first.
+ *
+ * v6: signals-v2 SK is `tf#closeTime`, so reverse-scan returns
+ * the alphabetically-last TF, not chronologically-newest. Issue one Query per
+ * blended TF and merge by `asOf` descending.
  */
 export async function getRecentSignals(
   pair: string,
   limit = 10,
 ): Promise<Array<BlendedSignal & SignalRecord>> {
-  const result = await client.send(
-    new QueryCommand({
-      TableName: SIGNALS_V2_TABLE,
-      KeyConditionExpression: "#pair = :pair",
-      ExpressionAttributeNames: { "#pair": "pair" },
-      ExpressionAttributeValues: { ":pair": pair },
-      ScanIndexForward: false,
-      Limit: limit,
+  const perTfResults = await Promise.all(
+    BLEND_TIMEFRAMES.map(async (tf) => {
+      const result = await client.send(
+        new QueryCommand({
+          TableName: SIGNALS_V2_TABLE,
+          KeyConditionExpression: "#pair = :pair AND begins_with(sk, :tfPrefix)",
+          ExpressionAttributeNames: { "#pair": "pair" },
+          ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${tf}#` },
+          ScanIndexForward: false,
+          Limit: limit,
+        }),
+      );
+      return result?.Items ?? [];
     }),
   );
 
-  return (result.Items ?? []).map((item) => ({
+  const merged = perTfResults.flat();
+  merged.sort((a, b) => Number(b["asOf"] ?? 0) - Number(a["asOf"] ?? 0));
+
+  return merged.slice(0, limit).map((item) => ({
     pair: item.pair as string,
     type: item.type as BlendedSignal["type"],
     confidence: item.confidence as number,
@@ -128,6 +148,9 @@ export async function getRecentSignals(
     invalidationReason: (item.invalidationReason ?? null) as string | null,
     signalId: item.signalId as string,
     emittedAt: item.emittedAt as string,
+    sk:
+      (item.sk as string) ??
+      buildSignalSk(item.emittingTimeframe as Timeframe, item.asOf as number),
   }));
 }
 
@@ -138,8 +161,8 @@ export async function getRecentSignals(
 export interface ActiveSignalRef {
   /** DDB PK */
   pair: string;
-  /** DDB SK */
-  emittedAtSignalId: string;
+  /** v6 DDB SK = `tf#closeTime`. */
+  sk: string;
   signalId: string;
   emittedAt: string;
   /** DDB TTL epoch-seconds — used as a proxy for expiresAt. */
@@ -150,26 +173,34 @@ export interface ActiveSignalRef {
  * Find all active, non-invalidated signals for a given pair.
  *
  * "Active" = DDB TTL has not expired (ttl > now in epoch seconds).
- * Queries the most recent 100 signals and filters client-side; in practice
- * a pair will never accumulate more than a handful of live signals.
+ *
+ * v6: signals-v2 SK is `tf#closeTime` — query each blended TF separately
+ * and merge. Per-pair active signal count is bounded by # of live close
+ * boundaries (handful at any moment), so the per-TF Limit=100 is generous.
  */
 export async function findActiveSignalsForPair(pair: string): Promise<ActiveSignalRef[]> {
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const result = await client.send(
-    new QueryCommand({
-      TableName: SIGNALS_V2_TABLE,
-      KeyConditionExpression: "#pair = :pair",
-      ExpressionAttributeNames: { "#pair": "pair", "#ttl": "ttl" },
-      ExpressionAttributeValues: { ":pair": pair },
-      // Project only the key fields + ttl + invalidatedAt for efficiency
-      ProjectionExpression: "#pair, emittedAtSignalId, signalId, emittedAt, #ttl, invalidatedAt",
-      ScanIndexForward: false,
-      Limit: 100,
+  const perTf = await Promise.all(
+    BLEND_TIMEFRAMES.map(async (tf) => {
+      const result = await client.send(
+        new QueryCommand({
+          TableName: SIGNALS_V2_TABLE,
+          KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :tfPrefix)",
+          ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk", "#ttl": "ttl" },
+          ExpressionAttributeValues: { ":pair": pair, ":tfPrefix": `${tf}#` },
+          // Project only the key fields + ttl + invalidatedAt for efficiency.
+          ProjectionExpression: "#pair, #sk, signalId, emittedAt, #ttl, invalidatedAt",
+          ScanIndexForward: false,
+          Limit: 100,
+        }),
+      );
+      return result?.Items ?? [];
     }),
   );
 
-  return (result.Items ?? [])
+  return perTf
+    .flat()
     .filter((item) => {
       const ttl = item.ttl as number | undefined;
       const invalidatedAt = item.invalidatedAt as string | undefined | null;
@@ -180,7 +211,7 @@ export async function findActiveSignalsForPair(pair: string): Promise<ActiveSign
     })
     .map((item) => ({
       pair: item.pair as string,
-      emittedAtSignalId: item.emittedAtSignalId as string,
+      sk: item.sk as string,
       signalId: item.signalId as string,
       emittedAt: item.emittedAt as string,
       ttl: item.ttl as number,
@@ -193,14 +224,14 @@ export async function findActiveSignalsForPair(pair: string): Promise<ActiveSign
  * Idempotent: if `invalidatedAt` is already set on the record the update is
  * skipped via a condition expression so the original stamp is preserved.
  *
- * @param pair             DDB partition key
- * @param emittedAtSignalId DDB sort key
- * @param reason           User-facing reason string, e.g. "Breaking news: Coinbase delists ETH"
- * @param nowIso           ISO-8601 timestamp to stamp (injectable for tests)
+ * @param pair    DDB partition key
+ * @param sk      v6 DDB sort key = `tf#closeTime`
+ * @param reason  User-facing reason string, e.g. "Breaking news: Coinbase delists ETH"
+ * @param nowIso  ISO-8601 timestamp to stamp (injectable for tests)
  */
 export async function markSignalInvalidated(
   pair: string,
-  emittedAtSignalId: string,
+  sk: string,
   reason: string,
   nowIso = new Date().toISOString(),
 ): Promise<void> {
@@ -208,7 +239,7 @@ export async function markSignalInvalidated(
     await client.send(
       new UpdateCommand({
         TableName: SIGNALS_V2_TABLE,
-        Key: { pair, emittedAtSignalId },
+        Key: { pair, sk },
         UpdateExpression: "SET invalidatedAt = :ts, invalidationReason = :reason",
         // Idempotency guard: only write if the attribute does not yet exist
         ConditionExpression: "attribute_not_exists(invalidatedAt)",

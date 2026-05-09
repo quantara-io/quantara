@@ -120,7 +120,7 @@ export async function processNewsEventForInvalidation(
     if (activeSignals.length === 0) continue;
 
     for (const sig of activeSignals) {
-      await markSignalInvalidated(sig.pair, sig.emittedAtSignalId, reason, nowIso);
+      await markSignalInvalidated(sig.pair, sig.sk, reason, nowIso);
       signalsInvalidated++;
     }
 

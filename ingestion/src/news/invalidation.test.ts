@@ -40,7 +40,7 @@ function makeActiveSignal(pair: string, suffix = "a") {
   const nowSec = Math.floor(Date.now() / 1000);
   return {
     pair,
-    emittedAtSignalId: `2024-01-01T00:00:00.000Z#sig-${suffix}`,
+    sk: `1h#${1704067200000 + Number.parseInt(suffix.replace(/\D/g, "0") || "0", 10)}`,
     signalId: `sig-${suffix}`,
     emittedAt: "2024-01-01T00:00:00.000Z",
     ttl: nowSec + 86400, // 1 day from now → active
@@ -161,7 +161,8 @@ describe("processNewsEventForInvalidation — triggered", () => {
     expect(findActiveSignalsForPairMock).toHaveBeenCalledWith("ETH");
     expect(markSignalInvalidatedMock).toHaveBeenCalledWith(
       "ETH",
-      "2024-01-01T00:00:00.000Z#sig-a",
+      // makeActiveSignal('ETH', 'a') uses suffix 'a' → digits '0' → SK suffix 0 → 1704067200000.
+      expect.stringMatching(/^1h#\d+$/),
       expect.stringContaining("Coinbase delists ETH staking"),
       expect.any(String), // nowIso
     );

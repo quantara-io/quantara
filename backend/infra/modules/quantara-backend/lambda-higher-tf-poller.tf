@@ -40,6 +40,10 @@ resource "aws_iam_role_policy" "higher_tf_poller_dynamodb" {
         Action = [
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
+          # storeCandles uses BatchWriteCommand for multi-row inserts.
+          # Without BatchWriteItem, every higher-TF candle write fails AccessDenied
+          # and the indicator stream gets nothing.
+          "dynamodb:BatchWriteItem",
         ]
         Resource = aws_dynamodb_table.candles.arn
       },
@@ -67,6 +71,18 @@ resource "aws_lambda_function" "higher_tf_poller" {
       TABLE_CANDLES = aws_dynamodb_table.candles.name
       ENVIRONMENT   = var.environment
     }
+  }
+
+  # Match the dependency pattern of other ingestion-zip consumers — without
+  # this, terraform plan/apply on a clean checkout can race to deploy before
+  # the zip is built, causing missing-file failures or stale artifacts.
+  depends_on = [
+    aws_iam_role_policy_attachment.higher_tf_poller_logs,
+    terraform_data.ingestion_build,
+  ]
+
+  lifecycle {
+    replace_triggered_by = [terraform_data.ingestion_build]
   }
 }
 

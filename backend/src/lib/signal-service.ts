@@ -208,6 +208,19 @@ const BLEND_TIMEFRAMES: readonly Timeframe[] = ["15m", "1h", "4h", "1d"];
  * then merge-by-time is the correct latest-overall pattern.
  */
 async function fetchLatestSignalRow(pair: TradingPair): Promise<Record<string, unknown> | null> {
+  // Tie-break authority: at hour/4h/day boundaries multiple TFs share the same
+  // closeTime. The higher TF carries more weight in §5.2 (1d > 4h > 1h > 15m),
+  // so on equal closeTime, prefer the higher TF rather than letting "first scanned"
+  // (15m, alphabetical) win.
+  const TF_AUTHORITY: Record<Timeframe, number> = {
+    "1m": 0,
+    "5m": 1,
+    "15m": 2,
+    "1h": 3,
+    "4h": 4,
+    "1d": 5,
+  };
+
   const perTf = await Promise.all(
     BLEND_TIMEFRAMES.map(async (tf) => {
       const r = await client.send(
@@ -222,21 +235,28 @@ async function fetchLatestSignalRow(pair: TradingPair): Promise<Record<string, u
       );
       // Defensive: a missing response (test mock not set, network blip)
       // should yield "no signal for this TF" rather than blow up the whole call.
-      return r?.Items?.[0];
+      const item = r?.Items?.[0];
+      return item ? { tf, item } : undefined;
     }),
   );
 
-  let best: Record<string, unknown> | undefined;
-  let bestCloseTime = -1;
-  for (const item of perTf) {
-    if (!item) continue;
-    const closeTime = Number(item["asOf"] ?? 0);
-    if (closeTime > bestCloseTime) {
-      best = item;
-      bestCloseTime = closeTime;
+  let best: { tf: Timeframe; item: Record<string, unknown> } | undefined;
+  for (const candidate of perTf) {
+    if (!candidate) continue;
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    const candidateAsOf = Number(candidate.item["asOf"] ?? 0);
+    const bestAsOf = Number(best.item["asOf"] ?? 0);
+    if (candidateAsOf > bestAsOf) {
+      best = candidate;
+    } else if (candidateAsOf === bestAsOf && TF_AUTHORITY[candidate.tf] > TF_AUTHORITY[best.tf]) {
+      // Same close boundary across TFs: prefer the more authoritative TF.
+      best = candidate;
     }
   }
-  return best ?? null;
+  return best?.item ?? null;
 }
 
 /**
