@@ -53,6 +53,12 @@ resource "aws_dynamodb_table" "signals" {
     attribute_name = "expiresAt"
     enabled        = true
   }
+
+  # DDB Streams — consumed by signals-fanout Lambda (WebSocket push, §16).
+  # NEW_IMAGE only: fanout needs the signal payload but not the before-image.
+  # NOTE: subscribe to THIS table (ratified signals), NOT signals-v2 (pre-ratification).
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
 }
 
 resource "aws_dynamodb_table" "signal_history" {
