@@ -8,24 +8,24 @@ terraform {
     }
   }
 
+  # Per-account state — bucket + lock table colocated with the dev workload
+  # they describe. See infra issue #1.
   backend "s3" {
-    bucket         = "quantara-tf-state"
+    bucket         = "quantara-tf-state-dev"
     key            = "backend/dev/terraform.tfstate"
     region         = "us-west-2"
-    profile        = "quantara-management"
-    dynamodb_table = "quantara-tf-locks"
+    profile        = "quantara-dev"
+    dynamodb_table = "quantara-tf-locks-dev"
     encrypt        = true
   }
 }
 
+# Provider uses the dev profile directly per infra issue #1 (per-account
+# state). No cross-account assume-role needed; the SSO session for
+# `quantara-dev` resolves to a role in the dev account.
 provider "aws" {
   region  = "us-west-2"
-  profile = "quantara-management"
-
-  assume_role {
-    role_arn     = "arn:aws:iam::${var.dev_account_id}:role/OrganizationAccountAccessRole"
-    session_name = "terraform-quantara-backend-dev"
-  }
+  profile = var.aws_profile
 
   default_tags {
     tags = {
@@ -91,6 +91,12 @@ output "admin_bucket_name" {
 
 output "admin_distribution_id" {
   value = module.admin.cloudfront_distribution_id
+}
+
+variable "aws_profile" {
+  description = "AWS CLI profile that resolves directly to a role in the dev account (per-account state per infra issue #1)."
+  type        = string
+  default     = "quantara-dev"
 }
 
 variable "dev_account_id" {
