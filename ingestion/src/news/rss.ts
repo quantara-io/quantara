@@ -85,14 +85,28 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
       for (const item of items.slice(0, 20)) {
         const currencies = detectCurrencies(item.title);
 
+        // Derive a stable publishedAt.  Prefer the item's pubDate; fall back
+        // to a deterministic sentinel derived from the item's URL so the same
+        // article never gets a different key on subsequent polls.
+        // Using new Date().toISOString() as a fallback would produce a fresh
+        // key on every poll cycle, writing duplicate rows for every article
+        // whose feed omits a pubDate.
+        let publishedAt: string;
+        if (item.pubDate) {
+          const parsed = new Date(item.pubDate);
+          publishedAt = isNaN(parsed.getTime())
+            ? stableFallbackDate(item.guid || item.link)
+            : parsed.toISOString();
+        } else {
+          publishedAt = stableFallbackDate(item.guid || item.link);
+        }
+
         records.push({
           newsId: `rss-${hashString(item.guid)}`,
           source: feed.name,
           title: item.title,
           url: item.link,
-          publishedAt: item.pubDate
-            ? new Date(item.pubDate).toISOString()
-            : new Date().toISOString(),
+          publishedAt,
           currencies,
           rawSentiment: "neutral",
           status: "raw",
@@ -116,4 +130,21 @@ function hashString(str: string): string {
     hash = ((hash << 5) - hash + char) | 0;
   }
   return Math.abs(hash).toString(36);
+}
+
+/**
+ * Produce a deterministic ISO timestamp for articles that have no parseable
+ * pubDate.  The epoch is pinned to 1970-01-01 plus a hash-derived offset in
+ * seconds so that two different articles without pubDates do NOT collide on
+ * the same (newsId, publishedAt) DynamoDB key.
+ *
+ * Using new Date().toISOString() as the fallback would assign a different
+ * publishedAt on every poll cycle, causing the same article to be written
+ * repeatedly (one new row per poll).
+ */
+function stableFallbackDate(seed: string): string {
+  // Map the 32-bit hash to a non-negative offset in the range 0..3600 seconds
+  // so the resulting timestamp stays in early 1970 and is clearly "synthetic".
+  const offset = Math.abs(hashString(seed).split("").reduce((n, c) => n + c.charCodeAt(0), 0)) % 3600;
+  return new Date(offset * 1000).toISOString();
 }

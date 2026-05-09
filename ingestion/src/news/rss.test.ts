@@ -60,10 +60,14 @@ describe("fetchRssNews", () => {
 
     const sol = records.find((r) => r.title.includes("SOL and DOGE"));
     expect(sol?.currencies.sort()).toEqual(["DOGE", "SOL"]);
-    // Empty pubDate falls back to "now" (ISO at fetch time).
+    // Empty pubDate falls back to a stable synthetic date derived from the
+    // item's link (stableFallbackDate).  The result is deterministic across
+    // polls (always the same ISO string for the same link), NOT the current
+    // wall-clock time.  Verify the property that matters for dedup: calling
+    // fetchRssNews twice with the same feed produces the same publishedAt for
+    // this item.
     const solTs = Date.parse(sol!.publishedAt);
-    expect(solTs).toBeGreaterThanOrEqual(before);
-    expect(solTs).toBeLessThanOrEqual(after + 1000);
+    expect(Number.isNaN(solTs)).toBe(false); // must be a valid ISO date
   });
 
   it("returns [] when every feed errors out", async () => {
@@ -83,5 +87,23 @@ describe("fetchRssNews", () => {
     for (const r of second) {
       expect(firstByTitle.get(r.title)).toBe(r.newsId);
     }
+  });
+
+  it("produces a stable publishedAt for items without a pubDate across two polls", async () => {
+    // This is the dedup-correctness property: an article with no pubDate must
+    // get the same (newsId, publishedAt) key on every poll, so storeNewsRecords
+    // can deduplicate it correctly without re-writing a duplicate row.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => SAMPLE_FEED });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await fetchRssNews();
+    const second = await fetchRssNews();
+
+    // The SOL item has an empty pubDate in SAMPLE_FEED.
+    const firstSol = first.find((r) => r.title.includes("SOL and DOGE"))!;
+    const secondSol = second.find((r) => r.title.includes("SOL and DOGE"))!;
+
+    expect(firstSol.publishedAt).toBe(secondSol.publishedAt);
+    expect(firstSol.newsId).toBe(secondSol.newsId);
   });
 });

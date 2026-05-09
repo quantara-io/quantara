@@ -46,7 +46,8 @@ export async function handler(
     }
 
     const records = articles.map(alpacaToNewsRecord);
-    const stored = await storeNewsRecords(records);
+    const newRecords = await storeNewsRecords(records);
+    const stored = newRecords.length;
     totalStored += stored;
     pages++;
 
