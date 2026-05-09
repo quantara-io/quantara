@@ -13,6 +13,16 @@ const WATCHDOG_INTERVAL_MS = 60_000;
 const STALE_THRESHOLD_MS = 5 * 60_000;
 const COINBASE_BACKFILL_INTERVAL_MS = 30_000;
 
+/**
+ * Shape of a single OHLCV row returned by ccxt's `fetchOHLCV` / `watchOHLCV`.
+ * ts (open-timestamp ms) is reliably a number across adapters; the numeric
+ * slots (open/high/low/close/volume) are typed as `string | number | null`
+ * because adapters disagree — Kraken returns strings, Binance returns
+ * numbers, both can return null for missing fields. We coerce internally
+ * via `Number(... ?? 0)`.
+ */
+export type OhlcvRow = [number, ...(string | number | null)[]];
+
 interface StreamState {
   exchange: ExchangeId;
   pair: TradingPair;
@@ -230,28 +240,23 @@ export class MarketStreamManager {
     const run = async () => {
       while (!this.abortController.signal.aborted) {
         try {
-          const ohlcv: (number | null)[][] = await exchange.fetchOHLCV(
-            symbol,
-            timeframe,
-            undefined,
-            2,
-          );
+          const ohlcv: OhlcvRow[] = await exchange.fetchOHLCV(symbol, timeframe, undefined, 2);
 
           // Walk newest → oldest and pick the first fully-closed bar.
           // A bar is closed if its open-timestamp + 60_000 <= now.
           const closedBar = pickClosedBar(ohlcv, Date.now());
           if (!closedBar) {
-            await sleep(COINBASE_BACKFILL_INTERVAL_MS);
+            await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, this.abortController.signal);
             continue;
           }
 
           const [ts, open, high, low, close, volume] = closedBar;
-          const closeTime = (ts as number) + 60_000;
+          const closeTime = ts + 60_000;
 
           // Idempotent skip: if we already wrote this bar, do nothing.
           const lastCloseTime = this.coinbaseLastCloseTime.get(pair);
           if (lastCloseTime === closeTime) {
-            await sleep(COINBASE_BACKFILL_INTERVAL_MS);
+            await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, this.abortController.signal);
             continue;
           }
 
@@ -260,7 +265,7 @@ export class MarketStreamManager {
             symbol,
             pair,
             timeframe,
-            openTime: ts as number,
+            openTime: ts,
             closeTime,
             open: Number(open ?? 0),
             high: Number(high ?? 0),
@@ -286,7 +291,7 @@ export class MarketStreamManager {
           // Do not rethrow — one pair's failure must not kill other pairs.
         }
 
-        await sleep(COINBASE_BACKFILL_INTERVAL_MS);
+        await abortableSleep(COINBASE_BACKFILL_INTERVAL_MS, this.abortController.signal);
       }
     };
 
@@ -345,6 +350,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Abort-aware sleep — wakes immediately if the signal aborts so loops can
+ * exit promptly when `stop()` runs (otherwise shutdown waits up to 30s for
+ * each pending Coinbase backfill timer to fire).
+ */
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
  * Pick the most-recently-closed 1m bar from a chronological (oldest→newest)
  * OHLCV array. Walks from the newest bar backwards and returns the first one
  * whose `openTime + 60_000 <= now`. Returns null if no closed bar is present
@@ -353,11 +378,11 @@ function sleep(ms: number): Promise<void> {
  * Defensive against ccxt variations: some adapters include the still-open
  * current bar at the end of the array; others return only closed bars.
  */
-export function pickClosedBar(ohlcv: (number | null)[][], now: number): (number | null)[] | null {
+export function pickClosedBar(ohlcv: OhlcvRow[], now: number): OhlcvRow | null {
   for (let i = ohlcv.length - 1; i >= 0; i--) {
     const ts = ohlcv[i]?.[0];
     if (ts == null) continue;
-    if ((ts as number) + 60_000 <= now) return ohlcv[i];
+    if (ts + 60_000 <= now) return ohlcv[i];
   }
   return null;
 }

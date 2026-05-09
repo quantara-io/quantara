@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Candle } from "@quantara/shared";
 
+import { PAIRS } from "./config.js";
+
 // Mock I/O dependencies before importing the SUT.
 const storeCandelsMock = vi.fn().mockResolvedValue(undefined);
 const storePriceSnapshotsMock = vi.fn().mockResolvedValue(undefined);
@@ -164,18 +166,22 @@ describe("MarketStreamManager — OHLCV numeric coercion", () => {
 // startCoinbaseBackfillLoop
 // ---------------------------------------------------------------------------
 
-const COINBASE_PAIR_COUNT = 5; // BTC/USDT, ETH/USDT, SOL/USDT, XRP/USDT, DOGE/USDT
+// Derived from the production constant so the test stays aligned if PAIRS changes.
+const COINBASE_PAIR_COUNT = PAIRS.length;
 
 /**
- * Helper: start the manager with the given fetchOHLCV behaviour, let the
- * backfill loop run for a single cycle (no further fetches because the loop
- * sleeps 30s and the test wait is short), then stop. Returns candles stored.
+ * Helper: start the manager with the given fetchOHLCV behaviour and wait
+ * (real-timer poll via `vi.waitFor`) until either the expected number of
+ * stores have happened, or `expectNoStores` is true and a short window
+ * passes with no stores. Stops the manager and returns candles.
  *
- * `mockResolvedValue` (not `Once`) is used so all 5 per-pair loops get the
- * same response on their first poll.
+ * `mockResolvedValue` (not `Once`) is used so every pair's first poll gets
+ * the same response. The 30s `abortableSleep` between cycles wakes
+ * immediately when `stop()` aborts the signal, so shutdown is prompt.
  */
 async function driveCoinbaseBackfillSingleCycle(
   fetchResponse: unknown[][] | (() => unknown[][] | Promise<unknown[][]>),
+  options: { expectedStores?: number } = {},
 ): Promise<Candle[]> {
   watchOHLCVMock.mockReturnValue(new Promise(() => {}));
   watchTickerMock.mockReturnValue(new Promise(() => {}));
@@ -189,9 +195,29 @@ async function driveCoinbaseBackfillSingleCycle(
   const manager = new MarketStreamManager();
   await manager.start();
 
-  // One event-loop tick: each pair's first fetchOHLCV resolves, then the loop
-  // enters the 30s sleep — no further fetches happen during this test window.
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  const expected = options.expectedStores ?? COINBASE_PAIR_COUNT;
+  if (expected === 0) {
+    // Wait for all pair loops to have polled at least once, then assert no
+    // stores happened.
+    await vi.waitFor(
+      () => {
+        expect(fetchOHLCVMock.mock.calls.length).toBeGreaterThanOrEqual(COINBASE_PAIR_COUNT);
+      },
+      { timeout: 1000 },
+    );
+    expect(storeCandelsMock.mock.calls.length).toBe(0);
+  } else {
+    // Wait until the expected number of stores have happened. Also waits
+    // for all pair loops to have polled (catches "wrote less than expected"
+    // by ensuring fetches all completed).
+    await vi.waitFor(
+      () => {
+        expect(fetchOHLCVMock.mock.calls.length).toBeGreaterThanOrEqual(COINBASE_PAIR_COUNT);
+        expect(storeCandelsMock.mock.calls.length).toBeGreaterThanOrEqual(expected);
+      },
+      { timeout: 1000 },
+    );
+  }
 
   await manager.stop();
 
@@ -252,7 +278,9 @@ describe("MarketStreamManager — Coinbase REST backfill loop", () => {
     const bar1 = [now - 45_000, 50000, 50100, 49900, 50050, 1.5];
     const bar2 = [now - 15_000, 50060, 50080, 50010, 50070, 0.8];
 
-    const candles = await driveCoinbaseBackfillSingleCycle([bar1, bar2]);
+    const candles = await driveCoinbaseBackfillSingleCycle([bar1, bar2], {
+      expectedStores: 0,
+    });
     const coinbaseCandles = candles.filter((c) => c.exchange === "coinbase");
 
     expect(coinbaseCandles).toHaveLength(0);
@@ -289,16 +317,19 @@ describe("MarketStreamManager — Coinbase REST backfill loop", () => {
 
     // First fetch throws (simulates one pair failing); the rest succeed.
     let firstCall = true;
-    const candles = await driveCoinbaseBackfillSingleCycle(() => {
-      if (firstCall) {
-        firstCall = false;
-        return Promise.reject(new Error("REST timeout"));
-      }
-      return Promise.resolve([closedBar, openBar]);
-    });
+    const candles = await driveCoinbaseBackfillSingleCycle(
+      () => {
+        if (firstCall) {
+          firstCall = false;
+          return Promise.reject(new Error("REST timeout"));
+        }
+        return Promise.resolve([closedBar, openBar]);
+      },
+      { expectedStores: COINBASE_PAIR_COUNT - 1 },
+    );
 
     const coinbaseCandles = candles.filter((c) => c.exchange === "coinbase");
-    // 4 of 5 pairs wrote; one failed silently.
+    // N-1 of N pairs wrote; one failed silently.
     expect(coinbaseCandles).toHaveLength(COINBASE_PAIR_COUNT - 1);
   });
 });
@@ -311,8 +342,8 @@ describe("pickClosedBar", () => {
   it("returns the newest closed bar when an open bar is present at the end", async () => {
     const { pickClosedBar } = await import("./stream.js");
     const now = 1_700_000_000_000;
-    const closedBar = [now - 120_000, 1, 2, 3, 4, 5];
-    const openBar = [now - 30_000, 6, 7, 8, 9, 10];
+    const closedBar: [number, ...number[]] = [now - 120_000, 1, 2, 3, 4, 5];
+    const openBar: [number, ...number[]] = [now - 30_000, 6, 7, 8, 9, 10];
 
     expect(pickClosedBar([closedBar, openBar], now)).toBe(closedBar);
   });
@@ -320,8 +351,8 @@ describe("pickClosedBar", () => {
   it("returns the newest closed bar when no open bar is present", async () => {
     const { pickClosedBar } = await import("./stream.js");
     const now = 1_700_000_000_000;
-    const olderBar = [now - 180_000, 1, 2, 3, 4, 5];
-    const newerBar = [now - 120_000, 6, 7, 8, 9, 10];
+    const olderBar: [number, ...number[]] = [now - 180_000, 1, 2, 3, 4, 5];
+    const newerBar: [number, ...number[]] = [now - 120_000, 6, 7, 8, 9, 10];
 
     expect(pickClosedBar([olderBar, newerBar], now)).toBe(newerBar);
   });
@@ -329,8 +360,8 @@ describe("pickClosedBar", () => {
   it("returns null when every bar is still open", async () => {
     const { pickClosedBar } = await import("./stream.js");
     const now = 1_700_000_000_000;
-    const bar1 = [now - 45_000, 1, 2, 3, 4, 5];
-    const bar2 = [now - 15_000, 6, 7, 8, 9, 10];
+    const bar1: [number, ...number[]] = [now - 45_000, 1, 2, 3, 4, 5];
+    const bar2: [number, ...number[]] = [now - 15_000, 6, 7, 8, 9, 10];
 
     expect(pickClosedBar([bar1, bar2], now)).toBeNull();
   });
@@ -343,51 +374,61 @@ describe("pickClosedBar", () => {
   it("skips bars with null timestamps", async () => {
     const { pickClosedBar } = await import("./stream.js");
     const now = 1_700_000_000_000;
-    const goodBar = [now - 120_000, 1, 2, 3, 4, 5];
-    const badBar = [null, 6, 7, 8, 9, 10];
+    const goodBar = [now - 120_000, 1, 2, 3, 4, 5] as [number, ...number[]];
+    // Defensive: ccxt typing says ts is a number, but test the runtime guard
+    // anyway in case an adapter returns a malformed row.
+    const badBar = [null, 6, 7, 8, 9, 10] as unknown as [number, ...number[]];
 
     expect(pickClosedBar([goodBar, badBar], now)).toBe(goodBar);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Idempotency: same closeTime seen twice in a row should not double-write.
-// We exercise this at the unit level via a fake `coinbaseLastCloseTime` map
-// rather than driving two real 30s polling cycles, which would either need
-// fake-timer plumbing through the manager or a 30s test runtime.
+// Idempotency: when the same closeTime is seen twice in a row, the loop's
+// in-memory `coinbaseLastCloseTime` map should short-circuit the second
+// write. We exercise this with fake timers so two polling cycles fire
+// deterministically without a real 30s wall-clock wait.
 // ---------------------------------------------------------------------------
 
-describe("MarketStreamManager — Coinbase backfill idempotency (in-memory)", () => {
-  it("does not re-write a closed bar already present in coinbaseLastCloseTime", async () => {
-    const now = Date.now();
-    const closedOpenTime = now - 120_000;
-    const closedBar = [closedOpenTime, 50000, 50100, 49900, 50050, 1.5];
-    const openBar = [now - 30_000, 50060, 50080, 50010, 50070, 0.8];
+describe("MarketStreamManager — Coinbase backfill idempotency", () => {
+  it("does not re-write the same closed bar across two polling cycles", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      // Two already-closed bars (well past the open-window). Using bars far
+      // enough in the past that the 30s fake-time advance below doesn't
+      // change which bar `pickClosedBar` selects — it should return the
+      // newer one in both cycles.
+      const olderBar = [now - 600_000, 50000, 50100, 49900, 50050, 1.5];
+      const newerBar = [now - 540_000, 50050, 50200, 49950, 50100, 1.8];
 
-    watchOHLCVMock.mockReturnValue(new Promise(() => {}));
-    watchTickerMock.mockReturnValue(new Promise(() => {}));
-    fetchOHLCVMock.mockResolvedValue([closedBar, openBar]);
+      watchOHLCVMock.mockReturnValue(new Promise(() => {}));
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockResolvedValue([olderBar, newerBar]);
 
-    const { MarketStreamManager } = await import("./stream.js");
-    const manager = new MarketStreamManager();
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
 
-    // First start: each pair writes once.
-    await manager.start();
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    const firstCallCount = storeCandelsMock.mock.calls.length;
-    expect(firstCallCount).toBe(COINBASE_PAIR_COUNT);
+      // Cycle 1: flush microtasks so each pair's first fetchOHLCV resolves
+      // and runs through to storeCandles + the closeTime-map update.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchOHLCVMock.mock.calls.length).toBe(COINBASE_PAIR_COUNT);
+      expect(storeCandelsMock.mock.calls.length).toBe(COINBASE_PAIR_COUNT);
 
-    // Stop without resetting state — the in-memory closeTime map persists.
-    await manager.stop();
+      // Cycle 2: advance past the 30s sleep so each pair's loop fires its
+      // second fetchOHLCV. The response is identical, `pickClosedBar` returns
+      // the same newerBar, and closeTime matches the stored lastCloseTime —
+      // the idempotent-skip branch must fire so storeCandles is NOT called
+      // again.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fetchOHLCVMock.mock.calls.length).toBe(COINBASE_PAIR_COUNT * 2);
+      expect(storeCandelsMock.mock.calls.length).toBe(COINBASE_PAIR_COUNT); // unchanged
 
-    // Now reach into the manager's private state and confirm the map is set
-    // for every pair (this is what guards against double-writes inside one
-    // process lifetime).
-    const stateMap = (manager as unknown as { coinbaseLastCloseTime: Map<string, number> })
-      .coinbaseLastCloseTime;
-    expect(stateMap.size).toBe(COINBASE_PAIR_COUNT);
-    for (const closeTime of stateMap.values()) {
-      expect(closeTime).toBe(closedOpenTime + 60_000);
+      // Stop wakes abortableSleep immediately so shutdown is prompt.
+      await manager.stop();
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
