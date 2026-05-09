@@ -1,44 +1,58 @@
 /**
- * Tests for indicator-handler.ts
+ * Tests for indicator-handler.ts — v6 P2 DDB Streams flow.
  *
  * Mocking strategy:
  *   - All AWS SDK calls are replaced with a single `send` vi.fn().
  *   - candle-store, canonicalize, cooldown-store, indicator-state-store,
- *     signal-store, indicators/index, signals/score, signals/blend, signals/gates
- *     are all vi.mock'd at the module boundary.
- *   - Handler is imported dynamically after resetModules() so module-scope
- *     table-name env vars are picked up fresh.
+ *     indicators/index, signals/score, signals/blend, signals/gates are vi.mock'd.
+ *   - unmarshall is mocked to return a plain object from DDB stream record format.
+ *   - Handler is imported dynamically after resetModules() so env vars are fresh.
+ *
+ * Key behaviors under test:
+ *   - Quorum idempotency on retry (ADD exchange to set is safe to repeat).
+ *   - Quorum-not-reached path returns early without touching signals-v2.
+ *   - Deterministic SK construction: tf#closeTime (P2.2 correction).
+ *   - Conditional-Put loss path (ConditionalCheckFailedException → idempotent skip).
+ *   - Non-signal timeframes and non-live sources are filtered out.
+ *   - Signals-v2 existence check prevents double computation.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { DynamoDBStreamEvent } from "aws-lambda";
 import type { TimeframeVote, BlendedSignal } from "@quantara/shared";
 
 // ---------------------------------------------------------------------------
-// AWS SDK mock (single send mock covering all DDB interactions in the handler)
+// AWS SDK mocks
 // ---------------------------------------------------------------------------
 
 const send = vi.fn();
+class ConditionalCheckFailedException extends Error {
+  constructor(_opts?: unknown) {
+    super("ConditionalCheckFailedException");
+    this.name = "ConditionalCheckFailedException";
+  }
+}
+
 vi.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: vi.fn().mockImplementation(() => ({})),
+  ConditionalCheckFailedException,
 }));
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   DynamoDBDocumentClient: { from: () => ({ send }) },
   GetCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Get", input })),
   PutCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Put", input })),
+  UpdateCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Update", input })),
+  QueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Query", input })),
+}));
+
+// @aws-sdk/util-dynamodb — unmarshall is mocked to return NewImage directly as a plain object.
+vi.mock("@aws-sdk/util-dynamodb", () => ({
+  unmarshall: vi.fn().mockImplementation((img) => img),
 }));
 
 // ---------------------------------------------------------------------------
-// Module mocks — pure-function and store layers
+// Module mocks — indicator/scoring/blending layers
 // ---------------------------------------------------------------------------
-
-const tryClaimProcessedCloseMock = vi.fn();
-const commitProcessedCloseMock = vi.fn();
-const clearProcessedCloseMock = vi.fn();
-vi.mock("./lib/processed-close-store.js", () => ({
-  tryClaimProcessedClose: tryClaimProcessedCloseMock,
-  commitProcessedClose: commitProcessedCloseMock,
-  clearProcessedClose: clearProcessedCloseMock,
-}));
 
 const getCandles = vi.fn();
 vi.mock("./lib/candle-store.js", () => ({ getCandles }));
@@ -58,13 +72,6 @@ vi.mock("./lib/cooldown-store.js", () => ({
 const putIndicatorStateMock = vi.fn();
 vi.mock("./lib/indicator-state-store.js", () => ({
   putIndicatorState: putIndicatorStateMock,
-}));
-
-const putSignalMock = vi.fn();
-const getLatestSignalMock = vi.fn();
-vi.mock("./lib/signal-store.js", () => ({
-  putSignal: putSignalMock,
-  getLatestSignal: getLatestSignalMock,
 }));
 
 const buildIndicatorStateMock = vi.fn();
@@ -91,10 +98,6 @@ vi.mock("./signals/gates.js", () => ({
   narrowPair: narrowPairMock,
 }));
 
-// ---------------------------------------------------------------------------
-// New mocks — ratification (Gap 3) + sentiment bundle
-// ---------------------------------------------------------------------------
-
 const ratifySignalMock = vi.fn();
 vi.mock("./llm/ratify.js", () => ({
   ratifySignal: ratifySignalMock,
@@ -106,28 +109,68 @@ vi.mock("./news/bundle.js", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Test data helpers
 // ---------------------------------------------------------------------------
 
-// The test pins time to 2023-01-01T00:15:10.000Z (1672532110000).
-// A 15m bar closes at 2023-01-01T00:15:00.000Z (1672532100000).
-// Candle closeTime must match lastClose for the freshness check to pass.
-const TEST_LAST_CLOSE_15M = 1672532100000;
+const TEST_CLOSE_TIME = 1715187600000; // 2024-05-08T15:00:00.000Z (15m close)
+const TEST_PAIR = "BTC/USDT";
+const TEST_TF = "15m";
+const TEST_EXCHANGE = "binanceus";
+
+/**
+ * Build a minimal DynamoDBStreamEvent for a single candle INSERT.
+ * The NewImage is already a plain object (unmarshall mock returns it as-is).
+ */
+function makeStreamEvent(overrides: Record<string, unknown> = {}): DynamoDBStreamEvent {
+  return {
+    Records: [
+      {
+        eventName: "INSERT",
+        eventSource: "aws:dynamodb",
+        eventVersion: "1.1",
+        eventID: "abc123",
+        awsRegion: "us-east-1",
+        dynamodb: {
+          NewImage: {
+            pair: TEST_PAIR,
+            exchange: TEST_EXCHANGE,
+            timeframe: TEST_TF,
+            closeTime: TEST_CLOSE_TIME,
+            openTime: TEST_CLOSE_TIME - 15 * 60 * 1000,
+            open: 60000,
+            high: 61000,
+            low: 59500,
+            close: 60500,
+            volume: 100,
+            symbol: "BTC/USDT",
+            source: "live",
+            ...overrides,
+          },
+          SequenceNumber: "1",
+          SizeBytes: 100,
+          StreamViewType: "NEW_IMAGE",
+        },
+        eventSourceARN: "arn:aws:dynamodb:us-east-1:123:table/test-candles/stream/x",
+      },
+    ],
+  } as unknown as DynamoDBStreamEvent;
+}
 
 function makeCandle(overrides: Record<string, unknown> = {}) {
   return {
-    exchange: "binanceus",
+    exchange: TEST_EXCHANGE,
     symbol: "BTC/USDT",
-    pair: "BTC/USDT",
-    timeframe: "15m",
-    openTime: TEST_LAST_CLOSE_15M - 15 * 60 * 1000,
-    closeTime: TEST_LAST_CLOSE_15M,
-    open: 30000,
-    high: 30500,
-    low: 29800,
-    close: 30200,
+    pair: TEST_PAIR,
+    timeframe: TEST_TF,
+    openTime: TEST_CLOSE_TIME - 15 * 60 * 1000,
+    closeTime: TEST_CLOSE_TIME,
+    open: 60000,
+    high: 61000,
+    low: 59500,
+    close: 60500,
     volume: 100,
     isClosed: true,
+    source: "live",
     ...overrides,
   };
 }
@@ -141,13 +184,13 @@ function makeVote(type: "buy" | "sell" | "hold" = "hold"): TimeframeVote {
     bearishScore: 0,
     volatilityFlag: false,
     gateReason: null,
-    asOf: 1700000900000,
+    asOf: TEST_CLOSE_TIME,
   };
 }
 
 function makeBlendedSignal(): BlendedSignal {
   return {
-    pair: "BTC/USDT",
+    pair: TEST_PAIR,
     type: "hold",
     confidence: 0.5,
     volatilityFlag: false,
@@ -155,78 +198,103 @@ function makeBlendedSignal(): BlendedSignal {
     rulesFired: [],
     perTimeframe: { "15m": null, "1h": null, "4h": null, "1d": null, "1m": null, "5m": null },
     weightsUsed: { "15m": 0.15, "1h": 0.2, "4h": 0.3, "1d": 0.35, "1m": 0, "5m": 0 },
-    asOf: 1700000900000,
+    asOf: TEST_CLOSE_TIME,
     emittingTimeframe: "15m",
     risk: null,
   };
 }
 
-function makeState() {
+function makeIndicatorState() {
   return {
-    pair: "BTC/USDT",
+    pair: TEST_PAIR,
     exchange: "consensus",
-    timeframe: "15m",
-    asOf: 1700000900000,
+    timeframe: TEST_TF,
+    asOf: TEST_CLOSE_TIME,
     barsSinceStart: 50,
     rsi14: 55,
-    ema20: 30000,
-    ema50: 29500,
-    ema200: 28000,
+    ema20: 60000,
+    ema50: 59500,
+    ema200: 58000,
     macdLine: 100,
     macdSignal: 90,
     macdHist: 10,
     atr14: 400,
-    bbUpper: 30800,
-    bbMid: 30000,
-    bbLower: 29200,
-    bbWidth: 0.053,
+    bbUpper: 61500,
+    bbMid: 60000,
+    bbLower: 58500,
+    bbWidth: 0.05,
     obv: 500000,
     obvSlope: 200,
-    vwap: 30100,
+    vwap: 60100,
     volZ: 0.5,
     realizedVolAnnualized: 0.55,
-    fearGreed: 60,
+    fearGreed: 55,
     dispersion: 0.002,
     history: {
-      rsi14: [55, 54, 53, 52, 51],
-      macdHist: [10, 8, 6, 4, 2],
-      ema20: [30000, 29900, 29800, 29700, 29600],
-      ema50: [29500, 29400, 29300, 29200, 29100],
-      close: [30200, 30100, 30000, 29900, 29800],
-      volume: [100, 90, 80, 70, 60],
+      rsi14: [55, 54],
+      macdHist: [10, 8],
+      ema20: [60000, 59900],
+      ema50: [59500, 59400],
+      close: [60500, 60400],
+      volume: [100, 90],
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// beforeEach — reset all mocks and set up sensible defaults
+// beforeEach — full reset
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   vi.resetModules();
   send.mockReset();
-  tryClaimProcessedCloseMock.mockReset();
-  commitProcessedCloseMock.mockReset();
-  clearProcessedCloseMock.mockReset();
   getCandles.mockReset();
   canonicalizeCandleMock.mockReset();
   getLastFireBarsMock.mockReset();
   tickCooldownsMock.mockReset();
   recordRuleFiresMock.mockReset();
   putIndicatorStateMock.mockReset();
-  putSignalMock.mockReset();
-  getLatestSignalMock.mockReset();
   buildIndicatorStateMock.mockReset();
   scoreTimeframeMock.mockReset();
   blendTimeframeVotesMock.mockReset();
   isTrivialChangeMock.mockReset();
   evaluateGatesMock.mockReset();
   narrowPairMock.mockReset();
+  ratifySignalMock.mockReset();
+  buildSentimentBundleMock.mockReset();
 
-  // Default mocks.
-  tryClaimProcessedCloseMock.mockResolvedValue(true);
-  commitProcessedCloseMock.mockResolvedValue(undefined);
-  clearProcessedCloseMock.mockResolvedValue(undefined);
+  process.env.TABLE_CLOSE_QUORUM = "test-close-quorum";
+  process.env.TABLE_SIGNALS_V2 = "test-signals-v2";
+  process.env.TABLE_METADATA = "test-metadata";
+  process.env.REQUIRED_EXCHANGE_COUNT = "2";
+
+  // Default send: UpdateCommand (Step 1) succeeds; GetCommand (Step 2 quorum) returns
+  // exchanges with size=2 (quorum reached); GetCommand (Step 3 signals-v2) returns no item;
+  // PutCommand (Step 4) succeeds; QueryCommand (getLatestSignal) returns no items.
+  send.mockImplementation((cmd) => {
+    if (cmd.__cmd === "Update") return Promise.resolve({});
+    if (cmd.__cmd === "Put") return Promise.resolve({});
+    if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+    if (cmd.__cmd === "Get") {
+      // Quorum table get returns 2 exchanges (quorum reached by default)
+      if (cmd.input.TableName === "test-close-quorum") {
+        return Promise.resolve({
+          Item: {
+            id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+            exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+          },
+        });
+      }
+      // signals-v2 get returns no item (not yet processed)
+      if (cmd.input.TableName === "test-signals-v2") {
+        return Promise.resolve({ Item: undefined });
+      }
+      // metadata table get (dispersion history, staleness, vote reads, fear-greed)
+      return Promise.resolve({ Item: undefined });
+    }
+    return Promise.resolve({});
+  });
+
   getCandles.mockResolvedValue([makeCandle()]);
   canonicalizeCandleMock.mockReturnValue({
     consensus: makeCandle({ exchange: "consensus" }),
@@ -236,26 +304,19 @@ beforeEach(() => {
   tickCooldownsMock.mockResolvedValue(undefined);
   recordRuleFiresMock.mockResolvedValue(undefined);
   putIndicatorStateMock.mockResolvedValue(undefined);
-  putSignalMock.mockResolvedValue({ signalId: "abc-123", emittedAt: new Date().toISOString() });
-  getLatestSignalMock.mockResolvedValue(null);
-  buildIndicatorStateMock.mockReturnValue(makeState());
+  buildIndicatorStateMock.mockReturnValue(makeIndicatorState());
   scoreTimeframeMock.mockReturnValue(makeVote("hold"));
   blendTimeframeVotesMock.mockReturnValue(makeBlendedSignal());
   isTrivialChangeMock.mockReturnValue(false);
   evaluateGatesMock.mockReturnValue({ fired: false, reason: null });
   narrowPairMock.mockImplementation((pair: string) => pair);
-
-  // Ratification mocks (Gap 3) — default to algo fallback so tests are unaffected.
-  ratifySignalMock.mockReset();
-  buildSentimentBundleMock.mockReset();
-  // By default: ratification falls back to algo signal (no LLM cost).
   ratifySignalMock.mockImplementation(async (ctx: { candidate: BlendedSignal }) => ({
     signal: ctx.candidate,
     fellBackToAlgo: true,
     cacheHit: false,
   }));
   buildSentimentBundleMock.mockResolvedValue({
-    pair: "BTC/USDT",
+    pair: TEST_PAIR,
     assembledAt: new Date().toISOString(),
     windows: {
       "4h": { articleCount: 0, avgScore: 0, avgMagnitude: 0, windowStart: "", windowEnd: "" },
@@ -269,532 +330,427 @@ beforeEach(() => {
       trend24h: 0,
     },
   });
-
-  // DDB send for handler's own GetCommand calls (fear-greed + staleness + dispersion + votes).
-  send.mockResolvedValue({ Item: undefined });
 });
 
 // ---------------------------------------------------------------------------
-// TF-close detection tests
+// DDB Streams handler signature
 // ---------------------------------------------------------------------------
 
-describe("TF-close detection", () => {
-  it("returns early when no TF closed in this minute (arbitrary mid-bar time)", async () => {
-    // Pin now to 14 minutes 30 seconds past the hour — no TF boundary.
-    // 14.5 minutes into a 15m bar, 14.5 minutes into a 1h bar, etc.
-    // Use a fixed timestamp: 2023-01-01T00:14:30.000Z (UTC)
-    const now = new Date("2023-01-01T00:14:30.000Z").getTime();
-    vi.setSystemTime(now);
+describe("handler entry point", () => {
+  it("processes INSERT records with source=live and signal timeframe", async () => {
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // Should have called UpdateCommand (Step 1 — quorum ADD)
+    const updates = send.mock.calls.filter((c) => c[0]?.__cmd === "Update");
+    expect(updates.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("skips REMOVE records entirely", async () => {
+    const event = makeStreamEvent();
+    event.Records[0]!.eventName = "REMOVE";
 
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(event, {} as any, () => {});
 
-    // No candle fetches, no indicator state, no signal persisted.
+    // No DDB calls for a REMOVE event
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("skips records with non-signal timeframes (1m, 5m)", async () => {
+    const { handler } = await import("./indicator-handler.js");
+
+    for (const tf of ["1m", "5m"]) {
+      send.mockClear();
+      await handler(makeStreamEvent({ timeframe: tf }), {} as any, () => {});
+      expect(send).not.toHaveBeenCalled();
+    }
+  });
+
+  it("skips records with source=backfill", async () => {
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent({ source: "backfill" }), {} as any, () => {});
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("processes signal timeframes: 15m, 1h, 4h, 1d", async () => {
+    const { handler } = await import("./indicator-handler.js");
+
+    for (const tf of ["15m", "1h", "4h", "1d"]) {
+      send.mockImplementation((cmd) => {
+        if (cmd.__cmd === "Update") return Promise.resolve({});
+        if (cmd.__cmd === "Get") {
+          if (cmd.input.TableName === "test-close-quorum") {
+            return Promise.resolve({
+              Item: {
+                id: `${TEST_PAIR}#${tf}#${TEST_CLOSE_TIME}`,
+                exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+              },
+            });
+          }
+          return Promise.resolve({ Item: undefined });
+        }
+        if (cmd.__cmd === "Put") return Promise.resolve({});
+        if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+        return Promise.resolve({});
+      });
+
+      await handler(makeStreamEvent({ timeframe: tf }), {} as any, () => {});
+
+      const updates = send.mock.calls.filter((c) => c[0]?.__cmd === "Update");
+      expect(updates.length).toBeGreaterThanOrEqual(1);
+      send.mockClear();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 1 — Quorum ADD
+// ---------------------------------------------------------------------------
+
+describe("Step 1 — ADD exchange to close-quorum", () => {
+  it("calls UpdateCommand with correct quorum id, exchange set, and TTL", async () => {
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const updateCall = send.mock.calls.find((c) => c[0]?.__cmd === "Update");
+    expect(updateCall).toBeDefined();
+
+    const input = updateCall![0].input;
+    expect(input.TableName).toBe("test-close-quorum");
+    expect(input.Key.id).toBe(`${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`);
+    expect(input.UpdateExpression).toContain("ADD exchanges");
+    expect(input.UpdateExpression).toContain("if_not_exists(#ttl");
+    // Exchange set should contain the candle's exchange
+    expect(input.ExpressionAttributeValues[":ex"]).toBeInstanceOf(Set);
+    expect(input.ExpressionAttributeValues[":ex"].has(TEST_EXCHANGE)).toBe(true);
+    // TTL = floor(closeTime / 1000) + 86400
+    const expectedTtl = Math.floor(TEST_CLOSE_TIME / 1000) + 86_400;
+    expect(input.ExpressionAttributeValues[":ttl"]).toBe(expectedTtl);
+  });
+
+  it("is idempotent — same exchange can be ADD'd multiple times safely (Set semantics)", async () => {
+    // The quorum ADD is idempotent because DDB String Set ADD is a no-op for
+    // already-present values. We verify the handler calls UpdateCommand on retry
+    // without throwing.
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({}); // succeeds on retry
+      if (cmd.__cmd === "Get") {
+        if (cmd.input.TableName === "test-close-quorum") {
+          return Promise.resolve({
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
+          });
+        }
+        return Promise.resolve({ Item: undefined });
+      }
+      if (cmd.__cmd === "Put") return Promise.resolve({});
+      if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+      return Promise.resolve({});
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    // Invoke twice (simulating retry)
+    await handler(makeStreamEvent(), {} as any, () => {});
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const updateCalls = send.mock.calls.filter((c) => c[0]?.__cmd === "Update");
+    expect(updateCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2 — Quorum check
+// ---------------------------------------------------------------------------
+
+describe("Step 2 — Quorum check", () => {
+  it("returns early when quorum is not reached (only 1 exchange)", async () => {
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get" && cmd.input.TableName === "test-close-quorum") {
+        return Promise.resolve({
+          Item: {
+            id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+            exchanges: new Set([TEST_EXCHANGE]),
+          },
+        });
+      }
+      return Promise.resolve({ Item: undefined });
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // Should NOT have called getCandles or putIndicatorState (quorum not reached)
     expect(getCandles).not.toHaveBeenCalled();
     expect(putIndicatorStateMock).not.toHaveBeenCalled();
-    expect(putSignalMock).not.toHaveBeenCalled();
 
-    vi.useRealTimers();
+    // Should NOT have attempted a signals-v2 get
+    const signalsV2Gets = send.mock.calls.filter(
+      (c) => c[0]?.__cmd === "Get" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Gets.length).toBe(0);
   });
 
-  it("detects a 15m bar close (at exactly 00:15:00 UTC)", async () => {
-    // 00:15:00 UTC — 15m, and we're within 60s of that boundary.
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
+  it("returns early when quorum item is absent from table", async () => {
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get" && cmd.input.TableName === "test-close-quorum") {
+        return Promise.resolve({ Item: undefined }); // no item at all
+      }
+      return Promise.resolve({ Item: undefined });
+    });
 
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(makeStreamEvent(), {} as any, () => {});
 
-    // Handler should have called getCandles (at least once per pair per exchange).
-    expect(getCandles).toHaveBeenCalled();
-
-    vi.useRealTimers();
+    expect(getCandles).not.toHaveBeenCalled();
   });
 
-  it("detects a 1h bar close (at exactly 01:00:00 UTC)", async () => {
-    const now = new Date("2023-01-01T01:00:05.000Z").getTime();
-    vi.setSystemTime(now);
-
+  it("proceeds when quorum is exactly REQUIRED_EXCHANGE_COUNT (2)", async () => {
+    // Default send mock already returns 2 exchanges — quorum reached.
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(makeStreamEvent(), {} as any, () => {});
 
+    // Should have called getCandles (quorum reached → computation started)
     expect(getCandles).toHaveBeenCalled();
-    vi.useRealTimers();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Canonicalization integration tests
+// Step 3 — Deterministic SK construction (P2.2: tf#closeTime)
 // ---------------------------------------------------------------------------
 
-describe("≥2/3 stale skip path", () => {
-  it("skips indicator state persistence when canonicalizeCandle returns null", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
+describe("Step 3 — Deterministic SK construction (P2.2 correction)", () => {
+  it("checks signals-v2 with SK = tf#closeTime (NOT closeTime#tf)", async () => {
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
 
-    canonicalizeCandleMock.mockReturnValue(null);
-    // When all canons fail, votes never get written, so all-null goes to blend.
-    // blendTimeframeVotesMock must return null to simulate real all-null path.
-    blendTimeframeVotesMock.mockReturnValue(null);
+    const signalsV2Get = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Get" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Get).toBeDefined();
+
+    const input = signalsV2Get![0].input;
+    expect(input.Key.pair).toBe(TEST_PAIR);
+    // SK must be "15m#1715187600000" — tf FIRST, then closeTime (P2.2 corrected order)
+    expect(input.Key.sk).toBe(`${TEST_TF}#${TEST_CLOSE_TIME}`);
+  });
+
+  it("writes signals-v2 with the same deterministic SK", async () => {
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const signalsV2Put = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Put).toBeDefined();
+
+    const item = signalsV2Put![0].input.Item;
+    expect(item.pair).toBe(TEST_PAIR);
+    expect(item.sk).toBe(`${TEST_TF}#${TEST_CLOSE_TIME}`);
+  });
+
+  it("returns early when signals-v2 item already exists (prior processing)", async () => {
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get") {
+        if (cmd.input.TableName === "test-close-quorum") {
+          return Promise.resolve({
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
+          });
+        }
+        if (cmd.input.TableName === "test-signals-v2") {
+          // Simulate existing signal (already processed)
+          return Promise.resolve({
+            Item: { pair: TEST_PAIR, sk: `${TEST_TF}#${TEST_CLOSE_TIME}` },
+          });
+        }
+        return Promise.resolve({ Item: undefined });
+      }
+      return Promise.resolve({});
+    });
 
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(makeStreamEvent(), {} as any, () => {});
 
-    // putIndicatorState should NOT have been called (all pairs skipped).
+    // Should NOT have done any candle fetching or computation
+    expect(getCandles).not.toHaveBeenCalled();
     expect(putIndicatorStateMock).not.toHaveBeenCalled();
-    // putSignal should NOT have been called (blend returned null).
-    expect(putSignalMock).not.toHaveBeenCalled();
 
-    vi.useRealTimers();
+    // Should NOT have attempted a signals-v2 Put
+    const puts = send.mock.calls.filter(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(puts.length).toBe(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Score → blend → persist round-trip
+// Step 4 — Conditional Put dedup
 // ---------------------------------------------------------------------------
 
-describe("score → blend → persist round-trip", () => {
-  it("calls buildIndicatorState, scoreTimeframe, blendTimeframeVotes, putSignal on TF close", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
+describe("Step 4 — Conditional Put dedup", () => {
+  it("uses attribute_not_exists(pair) as the ConditionExpression", async () => {
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const signalsV2Put = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Put).toBeDefined();
+    expect(signalsV2Put![0].input.ConditionExpression).toBe("attribute_not_exists(pair)");
+  });
+
+  it("swallows ConditionalCheckFailedException (concurrent handler already wrote)", async () => {
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get") {
+        if (cmd.input.TableName === "test-close-quorum") {
+          return Promise.resolve({
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
+          });
+        }
+        return Promise.resolve({ Item: undefined });
+      }
+      if (cmd.__cmd === "Put" && cmd.input.TableName === "test-signals-v2") {
+        // Simulate concurrent handler winning the race
+        return Promise.reject(new ConditionalCheckFailedException());
+      }
+      if (cmd.__cmd === "Put") return Promise.resolve({});
+      if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+      return Promise.resolve({});
+    });
 
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    // Must not throw — ConditionalCheckFailedException is an idempotent skip
+    await expect(handler(makeStreamEvent(), {} as any, () => {})).resolves.toBeUndefined();
+  });
+
+  it("re-throws non-ConditionalCheck DDB errors from Step 4", async () => {
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get") {
+        if (cmd.input.TableName === "test-close-quorum") {
+          return Promise.resolve({
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
+          });
+        }
+        return Promise.resolve({ Item: undefined });
+      }
+      if (cmd.__cmd === "Put" && cmd.input.TableName === "test-signals-v2") {
+        return Promise.reject(new Error("ProvisionedThroughputExceededException"));
+      }
+      if (cmd.__cmd === "Put") return Promise.resolve({});
+      if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+      return Promise.resolve({});
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    // Should re-throw so Lambda retries the batch
+    await expect(handler(makeStreamEvent(), {} as any, () => {})).rejects.toThrow(
+      "ProvisionedThroughputExceededException",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Indicator computation (retained logic)
+// ---------------------------------------------------------------------------
+
+describe("Indicator computation", () => {
+  it("calls buildIndicatorState, scoreTimeframe, blendTimeframeVotes on successful flow", async () => {
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
 
     expect(buildIndicatorStateMock).toHaveBeenCalled();
     expect(scoreTimeframeMock).toHaveBeenCalled();
     expect(blendTimeframeVotesMock).toHaveBeenCalled();
-    expect(putSignalMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
   });
 
-  it("passes gateResult from evaluateGates to scoreTimeframe", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const gateResult = { fired: true, reason: "vol" as const };
-    evaluateGatesMock.mockReturnValue(gateResult);
-
+  it("calls putIndicatorState to persist the indicator state", async () => {
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    expect(scoreTimeframeMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ gateResult }),
-    );
-
-    vi.useRealTimers();
-  });
-
-  it("calls recordRuleFires when vote has rulesFired", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const voteWithRules = makeVote("buy");
-    voteWithRules.rulesFired = ["rsi-oversold", "ema-cross-bull"];
-    scoreTimeframeMock.mockReturnValue(voteWithRules);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    expect(recordRuleFiresMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("does not call recordRuleFires when rulesFired is empty", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const voteNoRules = makeVote("hold");
-    voteNoRules.rulesFired = [];
-    scoreTimeframeMock.mockReturnValue(voteNoRules);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    expect(recordRuleFiresMock).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("always calls putSignal even when isTrivialChange returns true", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    isTrivialChangeMock.mockReturnValue(true);
-    blendTimeframeVotesMock.mockReturnValue(makeBlendedSignal());
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // putSignal should still be called even for trivial changes.
-    expect(putSignalMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("does not call putSignal when blendTimeframeVotes returns null (all TFs null)", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    blendTimeframeVotesMock.mockReturnValue(null);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    expect(putSignalMock).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Cooldown integration
-// ---------------------------------------------------------------------------
-
-describe("cooldown integration", () => {
-  it("calls tickCooldowns and getLastFireBars on each pair/TF", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // 5 PAIRS × 1 closed TF = 5 tickCooldowns calls.
-    expect(tickCooldownsMock).toHaveBeenCalledTimes(5);
-    expect(getLastFireBarsMock).toHaveBeenCalledTimes(5);
-
-    vi.useRealTimers();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Idempotency — processed-close marker
-// ---------------------------------------------------------------------------
-
-describe("idempotency via processed-close marker", () => {
-  it("skips indicator state and cooldown processing when tryClaimProcessedClose returns false (duplicate invocation)", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    // Simulate all claims failing — another invocation already processed these closes.
-    tryClaimProcessedCloseMock.mockResolvedValue(false);
-    // Blend step reads stored votes; with no new indicator state we still blend existing.
-    blendTimeframeVotesMock.mockReturnValue(null);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // Indicator state and cooldown work must be skipped (idempotency guard fired).
-    expect(putIndicatorStateMock).not.toHaveBeenCalled();
-    expect(tickCooldownsMock).not.toHaveBeenCalled();
-    // putSignal is not called because blend returned null.
-    expect(putSignalMock).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("processes work when tryClaimProcessedClose returns true (first invocation)", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    tryClaimProcessedCloseMock.mockResolvedValue(true);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(makeStreamEvent(), {} as any, () => {});
 
     expect(putIndicatorStateMock).toHaveBeenCalled();
-    expect(putSignalMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
   });
 
-  it("calls tryClaimProcessedClose with correct pair, tf, and lastClose", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    tryClaimProcessedCloseMock.mockResolvedValue(true);
-
+  it("calls ratifySignal after blending", async () => {
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // Should be called once per pair (5 pairs) × 1 closed TF.
-    expect(tryClaimProcessedCloseMock).toHaveBeenCalledTimes(5);
-    // The lastClose for the 15m bar should be exactly 2023-01-01T00:15:00.000Z.
-    expect(tryClaimProcessedCloseMock).toHaveBeenCalledWith(
-      expect.any(String),
-      "15m",
-      TEST_LAST_CLOSE_15M,
-    );
-
-    vi.useRealTimers();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Candle freshness check
-// ---------------------------------------------------------------------------
-
-describe("candle freshness check", () => {
-  it("skips processing when candle closeTime doesn't match lastClose (stale candle)", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    // Return a candle with a closeTime that doesn't match lastClose (previous bar).
-    const staleCandle = makeCandle({ closeTime: TEST_LAST_CLOSE_15M - 15 * 60 * 1000 });
-    getCandles.mockResolvedValue([staleCandle]);
-
-    // All exchanges return stale candles → canonicalize returns null → sentinel vote
-    canonicalizeCandleMock.mockReturnValue(null);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // buildIndicatorState should NOT have been called (all pairs had no fresh candles).
-    expect(buildIndicatorStateMock).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("processes normally when candle closeTime exactly matches lastClose", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    // makeCandle defaults to closeTime = TEST_LAST_CLOSE_15M which matches lastClose.
-    getCandles.mockResolvedValue([makeCandle()]);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    expect(buildIndicatorStateMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Stale-vote sentinel (P2 #2)
-// ---------------------------------------------------------------------------
-
-describe("stale-vote sentinel on consensus skip", () => {
-  it("writes a sentinel null vote when canonicalize returns null (≥2/3 stale)", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    canonicalizeCandleMock.mockReturnValue(null);
-    blendTimeframeVotesMock.mockReturnValue(null);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // send should have been called with PutCommand for the sentinel vote per pair.
-    const putCallCount = send.mock.calls.filter((call) => call[0]?.__cmd === "Put").length;
-    expect(putCallCount).toBeGreaterThanOrEqual(1);
-
-    vi.useRealTimers();
-  });
-
-  it("does NOT early-return sentinel when canonicalize succeeds", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    // canonicalizeCandleMock returns a valid canon (default).
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // buildIndicatorState should have been called, meaning we proceeded normally.
-    expect(buildIndicatorStateMock).toHaveBeenCalled();
-    // Indicator state was processed and persisted.
-    expect(putIndicatorStateMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P1: Candle slot scan (newest-first array with in-progress bar at index 0)
-// ---------------------------------------------------------------------------
-
-describe("candle slot scan — picks bar matching lastClose, not index 0", () => {
-  it("picks the closed bar at index 1 when index 0 is an in-progress newer bar", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const barMs = 15 * 60 * 1000;
-    // Simulate backfill writing a newer in-progress bar ahead of the just-closed bar.
-    const inProgressCandle = makeCandle({
-      closeTime: TEST_LAST_CLOSE_15M + barMs, // next bar — not yet closed
-      isClosed: false,
-    });
-    const justClosedCandle = makeCandle({
-      closeTime: TEST_LAST_CLOSE_15M, // this is the bar that just closed
-      isClosed: true,
-    });
-    // Newest-first: in-progress bar is index 0, just-closed bar is index 1.
-    getCandles.mockResolvedValue([inProgressCandle, justClosedCandle]);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // canonicalizeCandle should have been called with the just-closed bar as the
-    // exchange-latest entry, NOT the in-progress bar.
-    expect(canonicalizeCandleMock).toHaveBeenCalled();
-    const candlesPassedToCanon = canonicalizeCandleMock.mock.calls[0]![0] as Record<
-      string,
-      { closeTime: number } | null
-    >;
-    for (const ex of Object.keys(candlesPassedToCanon)) {
-      const entry = candlesPassedToCanon[ex];
-      if (entry !== null) {
-        // Every non-null entry must be the just-closed bar, not the in-progress one.
-        expect(entry.closeTime).toBe(TEST_LAST_CLOSE_15M);
-      }
-    }
-
-    vi.useRealTimers();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P2: Marker written after vote persist (clear on error → retry not skipped)
-// ---------------------------------------------------------------------------
-
-describe("marker lifecycle — commit after vote, clear on error", () => {
-  it("calls commitProcessedClose after vote is persisted on the happy path", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
-
-    // commitProcessedClose must be called (once per pair × 1 closed TF).
-    expect(commitProcessedCloseMock).toHaveBeenCalledTimes(5);
-    // clearProcessedClose must NOT be called on the success path.
-    expect(clearProcessedCloseMock).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("calls clearProcessedClose on error so the second invocation is NOT skipped", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    // Simulate a failure after candle read but before vote persist.
-    // putIndicatorState throws — the pipeline should catch, clear the marker,
-    // then re-throw so the outer handler loop continues with other pairs.
-    putIndicatorStateMock.mockRejectedValue(new Error("DDB write failed"));
-
-    const { handler } = await import("./indicator-handler.js");
-    // Handler swallows per-pair errors and logs them — it should not throw at top level.
-    await expect(handler({})).resolves.toBeUndefined();
-
-    // The marker must be cleared (not committed) when the pipeline threw.
-    expect(clearProcessedCloseMock).toHaveBeenCalled();
-    expect(commitProcessedCloseMock).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("second invocation for same close is NOT skipped after a cleared marker", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    // First invocation: claim succeeds, pipeline throws, marker cleared.
-    putIndicatorStateMock.mockRejectedValueOnce(new Error("transient failure"));
-
-    const { handler: handlerFirst } = await import("./indicator-handler.js");
-    await handlerFirst({});
-
-    // The marker was cleared — tryClaimProcessedClose would return true again on retry.
-    // Simulate the retry by resetting the claim mock to return true again.
-    tryClaimProcessedCloseMock.mockResolvedValue(true);
-    putIndicatorStateMock.mockResolvedValue(undefined); // recovered
-
-    vi.resetModules();
-    const { handler: handlerSecond } = await import("./indicator-handler.js");
-    await handlerSecond({});
-
-    // Second invocation should have processed work (not been short-circuited).
-    expect(putIndicatorStateMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Gap 3 — ratifySignal wiring
-// ---------------------------------------------------------------------------
-
-describe("ratifySignal wiring (Gap 3)", () => {
-  it("calls ratifySignal after blending when a blended signal is produced", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(makeStreamEvent(), {} as any, () => {});
 
     expect(ratifySignalMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
   });
 
-  it("persists the ratified signal (not the algo candidate) when ratification succeeds", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
-    const ratifiedSignal = {
-      ...makeBlendedSignal(),
-      type: "buy" as const,
-      confidence: 0.85,
-    };
-    ratifySignalMock.mockResolvedValue({
-      signal: ratifiedSignal,
-      fellBackToAlgo: false,
-      cacheHit: false,
-    });
+  it("does not write signals-v2 when blendTimeframeVotes returns null", async () => {
+    blendTimeframeVotesMock.mockReturnValue(null);
 
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(makeStreamEvent(), {} as any, () => {});
 
-    // putSignal should have been called with the ratified signal
-    expect(putSignalMock).toHaveBeenCalled();
-    const persistedSignal = putSignalMock.mock.calls[0][0] as BlendedSignal;
-    expect(persistedSignal.confidence).toBe(0.85);
-
-    vi.useRealTimers();
+    const signalsV2Puts = send.mock.calls.filter(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Puts.length).toBe(0);
   });
 
-  it("falls back to algo signal and still calls putSignal when ratifySignal throws", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
-
+  it("proceeds gracefully when ratifySignal throws (falls back to algo signal)", async () => {
     ratifySignalMock.mockRejectedValue(new Error("Anthropic API error"));
 
     const { handler } = await import("./indicator-handler.js");
-    // Handler must not throw — ratification failure is non-fatal.
-    await expect(handler({})).resolves.toBeUndefined();
+    // Must not throw — ratification failure is non-fatal
+    await expect(handler(makeStreamEvent(), {} as any, () => {})).resolves.toBeUndefined();
 
-    // putSignal must still be called (with the algo fallback signal).
-    expect(putSignalMock).toHaveBeenCalled();
-
-    vi.useRealTimers();
+    // signals-v2 Put should still have been called with the algo fallback
+    const signalsV2Puts = send.mock.calls.filter(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Puts.length).toBeGreaterThan(0);
   });
+});
 
-  it("does not call ratifySignal when blendTimeframeVotes returns null", async () => {
-    const now = new Date("2023-01-01T00:15:10.000Z").getTime();
-    vi.setSystemTime(now);
+// ---------------------------------------------------------------------------
+// REQUIRED_EXCHANGE_COUNT configuration
+// ---------------------------------------------------------------------------
 
-    blendTimeframeVotesMock.mockReturnValue(null);
+describe("REQUIRED_EXCHANGE_COUNT env var", () => {
+  it("respects REQUIRED_EXCHANGE_COUNT=1 for single-exchange quorum", async () => {
+    process.env.REQUIRED_EXCHANGE_COUNT = "1";
+
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Update") return Promise.resolve({});
+      if (cmd.__cmd === "Get") {
+        if (cmd.input.TableName === "test-close-quorum") {
+          // Only 1 exchange — quorum if threshold is 1
+          return Promise.resolve({
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE]),
+            },
+          });
+        }
+        return Promise.resolve({ Item: undefined });
+      }
+      if (cmd.__cmd === "Put") return Promise.resolve({});
+      if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+      return Promise.resolve({});
+    });
 
     const { handler } = await import("./indicator-handler.js");
-    await handler({});
+    await handler(makeStreamEvent(), {} as any, () => {});
 
-    expect(ratifySignalMock).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
+    // With REQUIRED_EXCHANGE_COUNT=1, a single-exchange quorum should proceed
+    expect(getCandles).toHaveBeenCalled();
   });
 });

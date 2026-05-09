@@ -254,6 +254,10 @@ resource "aws_dynamodb_table" "candles" {
     enabled        = true
   }
 
+  # v6 P2: DDB Streams feeds the IndicatorLambda (NEW_IMAGE only — no need for OldImage).
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
+
   point_in_time_recovery { enabled = true }
 }
 
@@ -408,9 +412,17 @@ resource "aws_dynamodb_table" "embedding_cache" {
   point_in_time_recovery { enabled = true }
 }
 
-# Phase 4a: signals storage
-# PK: pair  SK: emittedAt#signalId (timestamp-prefixed UUID, newest-first with ScanIndexForward=false)
-# GSI by-pair-active: PK=pair SK=emittedAt (ALL projection, same access pattern)
+# v6 P2 / P2.2 correction: signals-v2 schema migrated from emittedAt#signalId SK to
+# deterministic tf#closeTime SK. This enables:
+#   - Atomic idempotent dedup via conditional Put (attribute_not_exists(pair))
+#   - "Latest signal for pair X on timeframe 15m" via begins_with(SK, "15m#") +
+#     ScanIndexForward=false + Limit=1 (filter applied DURING index walk, not after).
+#
+# Migration approach: Option A (drop+recreate). Acceptable in dev (pre-prod).
+# Coordinate with team before deploying to prod — a separate migration task will
+# backfill or drain the old table before destroying it.
+#
+# PK: pair  SK: tf#closeTime  (e.g. "15m#1715187600000")
 # TTL: 90 days
 resource "aws_dynamodb_table" "signals_v2" {
   name         = "${local.prefix}-signals-v2"
@@ -421,7 +433,7 @@ resource "aws_dynamodb_table" "signals_v2" {
   }
 
   hash_key  = "pair"
-  range_key = "emittedAtSignalId"
+  range_key = "sk" # composite: "{tf}#{closeTime}"
 
   attribute {
     name = "pair"
@@ -429,20 +441,8 @@ resource "aws_dynamodb_table" "signals_v2" {
   }
 
   attribute {
-    name = "emittedAtSignalId"
+    name = "sk"
     type = "S"
-  }
-
-  attribute {
-    name = "emittedAt"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "by-pair-active"
-    hash_key        = "pair"
-    range_key       = "emittedAt"
-    projection_type = "ALL"
   }
 
   ttl {

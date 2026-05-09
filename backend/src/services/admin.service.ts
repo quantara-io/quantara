@@ -367,19 +367,46 @@ export async function getSignals(
   limit: number,
 ): Promise<Array<BlendedSignal & { signalId: string; emittedAt: string }>> {
   try {
-    const sinceIso = since.toISOString();
-    const sinceSk = `${sinceIso}#`;
-    const result = await dynamo.send(
-      new QueryCommand({
-        TableName: SIGNALS_V2_TABLE,
-        KeyConditionExpression: "#pair = :pair AND #sk >= :sinceSk",
-        ExpressionAttributeNames: { "#pair": "pair", "#sk": "emittedAtSignalId" },
-        ExpressionAttributeValues: { ":pair": pair, ":sinceSk": sinceSk },
-        ScanIndexForward: false,
-        Limit: limit,
+    // v6 signals-v2 schema: SK = `tf#closeTime` (epoch ms as string).
+    // For "since this time" across all blended TFs, query each TF separately
+    // with begins_with(sk, "tf#") and a closeTime lower bound, then merge.
+    const sinceMs = since.getTime();
+    const blendTfs = ["15m", "1h", "4h", "1d"] as const;
+
+    const perTf = await Promise.all(
+      blendTfs.map(async (tf) => {
+        const tfPrefix = `${tf}#`;
+        // Lower bound is `${tf}#${sinceMs}` so begins_with constrains TF and
+        // SK ≥ ensures closeTime ≥ sinceMs (same lexical/numeric order since
+        // closeTime is fixed-width epoch ms within a TF prefix).
+        const result = await dynamo.send(
+          new QueryCommand({
+            TableName: SIGNALS_V2_TABLE,
+            KeyConditionExpression: "#pair = :pair AND #sk BETWEEN :lo AND :hi",
+            ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+            ExpressionAttributeValues: {
+              ":pair": pair,
+              ":lo": `${tfPrefix}${sinceMs}`,
+              // upper bound is just past the prefix range — any closeTime
+              ":hi": `${tfPrefix}￿`,
+            },
+            ScanIndexForward: false,
+            Limit: limit,
+          }),
+        );
+        return result.Items ?? [];
       }),
     );
-    return (result.Items ?? []).map((item) => ({
+
+    // Merge per-TF results, sort by emittedAt (or asOf as fallback) descending, slice to limit.
+    const merged = perTf.flat();
+    merged.sort((a, b) => {
+      const aT = (a.emittedAt as string) ?? new Date(Number(a.asOf ?? 0)).toISOString();
+      const bT = (b.emittedAt as string) ?? new Date(Number(b.asOf ?? 0)).toISOString();
+      return bT.localeCompare(aT);
+    });
+
+    return merged.slice(0, limit).map((item) => ({
       pair: item.pair as string,
       type: item.type as BlendedSignal["type"],
       confidence: item.confidence as number,

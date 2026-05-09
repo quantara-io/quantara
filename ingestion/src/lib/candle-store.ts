@@ -22,6 +22,16 @@ function buildSortKey(exchange: string, timeframe: string, timestamp: string): s
 }
 
 export async function storeCandles(candles: Candle[]): Promise<void> {
+  // v6: source is mandatory — fail loudly rather than silently omitting the field
+  // which would cause DDB Streams FilterCriteria to miss the candle.
+  for (const c of candles) {
+    if (!c.source) {
+      throw new Error(
+        `[CandleStore] candle.source is required (pair=${c.pair} tf=${c.timeframe} openTime=${c.openTime}). Set "live" or "backfill".`,
+      );
+    }
+  }
+
   const batches: Candle[][] = [];
   for (let i = 0; i < candles.length; i += 25) {
     batches.push(candles.slice(i, i + 25));
@@ -47,6 +57,7 @@ export async function storeCandles(candles: Candle[]): Promise<void> {
                 close: c.close,
                 volume: c.volume,
                 isClosed: c.isClosed,
+                source: c.source,
                 ttl: Math.floor(Date.now() / 1000) + TTL_SECONDS[c.timeframe as Timeframe],
               },
             },

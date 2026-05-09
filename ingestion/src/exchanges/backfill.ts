@@ -67,6 +67,7 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
         close: Number(close ?? 0),
         volume: Number(volume ?? 0),
         isClosed: ts! + timeframeToMs(timeframe) < now,
+        source: "backfill" as const,
       }));
 
     await storeCandles(candles);

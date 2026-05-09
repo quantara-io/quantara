@@ -1010,6 +1010,7 @@ describe("end-to-end: buildIndicatorState + macd-cross-bull (P1 fix validation)"
         close: price,
         volume: 1000,
         isClosed: true,
+        source: "live" as const,
       });
     }
 
@@ -1031,6 +1032,7 @@ describe("end-to-end: buildIndicatorState + macd-cross-bull (P1 fix validation)"
         close: price,
         volume: 1000,
         isClosed: true,
+        source: "live" as const,
       });
     }
 

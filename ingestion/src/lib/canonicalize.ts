@@ -90,6 +90,10 @@ export function canonicalizeCandle(
     close: medianClose,
     volume: medianVolume,
     isClosed: reference.isClosed,
+    // Consensus candle inherits source from the reference exchange candle.
+    // All eligible candles passed through FilterCriteria (source=live) so this
+    // will always be "live" in production; preserved here for type correctness.
+    source: reference.source,
   };
 
   return { consensus, dispersion };
