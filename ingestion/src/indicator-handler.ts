@@ -35,6 +35,7 @@ import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
 import { putIndicatorState } from "./lib/indicator-state-store.js";
+import { makeSignalId } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
 import { blendTimeframeVotes, isTrivialChange } from "./signals/blend.js";
@@ -199,6 +200,11 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     return;
   }
 
+  // Use the same signalId/emittedAt shape as signal-store.putSignal so admin.service
+  // and outcomes tooling see consistent rows regardless of which writer produced them.
+  const signalId = makeSignalId(closeTime);
+  const emittedAt = new Date(closeTime).toISOString();
+
   try {
     await client.send(
       new PutCommand({
@@ -206,6 +212,8 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
         Item: {
           pair,
           sk,
+          signalId,
+          emittedAt,
           closeTime,
           timeframe,
           type: blended.type,
@@ -220,7 +228,6 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
           risk: blended.risk ?? null,
           invalidatedAt: blended.invalidatedAt ?? null,
           invalidationReason: blended.invalidationReason ?? null,
-          emittedAt: new Date().toISOString(),
           // 90-day TTL
           ttl: Math.floor(Date.now() / 1000) + 86_400 * 90,
         },

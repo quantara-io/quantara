@@ -49,7 +49,10 @@ export interface SignalRecord {
  *
  * v6: writes use deterministic PK=pair, SK=`tf#closeTime`. Two concurrent
  * writers for the same (pair, tf, closeTime) target the same DDB item;
- * the conditional Put guarantees only one wins.
+ * the conditional Put (`attribute_not_exists(pair)`) guarantees only one
+ * wins. Losers receive ConditionalCheckFailedException, which is treated
+ * as an idempotent skip — the SignalRecord still reflects the slot's
+ * deterministic keys so callers can address the winning row.
  *
  * Returns the generated signalId, emittedAt, and the SK so callers can
  * later reference this row (e.g. for invalidation).
@@ -60,36 +63,56 @@ export async function putSignal(signal: BlendedSignal): Promise<SignalRecord> {
   const sk = buildSignalSk(signal.emittingTimeframe, signal.asOf);
   const ttl = Math.floor(Date.now() / 1000) + TTL_SECONDS;
 
-  await client.send(
-    new PutCommand({
-      TableName: SIGNALS_V2_TABLE,
-      Item: {
-        pair: signal.pair,
-        sk,
-        signalId,
-        emittedAt,
-        type: signal.type,
-        confidence: signal.confidence,
-        volatilityFlag: signal.volatilityFlag,
-        gateReason: signal.gateReason,
-        rulesFired: signal.rulesFired,
-        perTimeframe: signal.perTimeframe,
-        weightsUsed: signal.weightsUsed,
-        asOf: signal.asOf,
-        emittingTimeframe: signal.emittingTimeframe,
-        // risk: null is persisted explicitly so reads can distinguish "no risk" from "old record"
-        risk: signal.risk ?? null,
-        // Phase 6b: new signals always start with no invalidation; explicit null
-        // lets the read path distinguish "freshly emitted" from "old record without the field".
-        invalidatedAt: signal.invalidatedAt ?? null,
-        invalidationReason: signal.invalidationReason ?? null,
-        ttl,
-      },
-    }),
-  );
+  try {
+    await client.send(
+      new PutCommand({
+        TableName: SIGNALS_V2_TABLE,
+        Item: {
+          pair: signal.pair,
+          sk,
+          signalId,
+          emittedAt,
+          type: signal.type,
+          confidence: signal.confidence,
+          volatilityFlag: signal.volatilityFlag,
+          gateReason: signal.gateReason,
+          rulesFired: signal.rulesFired,
+          perTimeframe: signal.perTimeframe,
+          weightsUsed: signal.weightsUsed,
+          asOf: signal.asOf,
+          emittingTimeframe: signal.emittingTimeframe,
+          // risk: null is persisted explicitly so reads can distinguish "no risk" from "old record"
+          risk: signal.risk ?? null,
+          // Phase 6b: new signals always start with no invalidation; explicit null
+          // lets the read path distinguish "freshly emitted" from "old record without the field".
+          invalidatedAt: signal.invalidatedAt ?? null,
+          invalidationReason: signal.invalidationReason ?? null,
+          ttl,
+        },
+        // v6 dedup guarantee: only one writer wins per (pair, sk).
+        ConditionExpression: "attribute_not_exists(pair)",
+      }),
+    );
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      (err.name === "ConditionalCheckFailedException" ||
+        (err as { __type?: string }).__type ===
+          "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException")
+    ) {
+      // Another concurrent writer (or a retry) already wrote this slot — idempotent.
+      return { signalId, emittedAt, sk };
+    }
+    throw err;
+  }
 
   return { signalId, emittedAt, sk };
 }
+
+// Exported for indicator-handler so both writers produce identically-shaped
+// signals-v2 rows (admin.service.getSignals and outcomes tooling expect
+// `signalId` to be present on every row).
+export { makeSignalId };
 
 /**
  * Retrieve the most recently emitted signal for a pair.
