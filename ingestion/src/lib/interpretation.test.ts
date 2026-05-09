@@ -136,7 +136,11 @@ describe("buildInterpretation — llm-downgraded", () => {
     });
   });
 
-  it("omits originalAlgo when algoVerdict is null", () => {
+  it("degrades to algo-only when downgraded but algoVerdict is missing (#172 Copilot review)", () => {
+    // The `llm-downgraded` source contract requires `originalAlgo`. If we
+    // cannot honour that contract, fall back to algo-only rather than emit
+    // a malformed interpretation that the UI cannot render the transition
+    // line for.
     const result = buildInterpretation(
       base({
         ratificationStatus: "downgraded",
@@ -148,6 +152,65 @@ describe("buildInterpretation — llm-downgraded", () => {
         algoVerdict: null,
       }),
     );
+    expect(result.source).toBe("algo-only");
     expect(result.originalAlgo).toBeUndefined();
+  });
+});
+
+describe("buildInterpretation — algo-fallback detection (#172 codex finding)", () => {
+  // When the LLM stream / API / validation fails, `invokeStage2Fallback` writes
+  // `ratificationStatus: "ratified"` with `ratificationVerdict.source = "algo-fallback"`
+  // so the signal leaves "pending". buildInterpretation must surface this as
+  // algo-only — labelling it "LLM ratified" would be misleading.
+
+  it("returns algo-only when verdict.source is 'algo-fallback' (graceful LLM failure)", () => {
+    const result = buildInterpretation(
+      base({
+        ratificationStatus: "ratified",
+        ratificationVerdict: {
+          type: "buy",
+          confidence: 0.65,
+          reasoning: "ema_cross_bullish, rsi_oversold",
+          source: "algo-fallback",
+        },
+      }),
+    );
+    expect(result.source).toBe("algo-only");
+    // Falls back to the standard rulesFired summary, NOT the verdict.reasoning,
+    // because the verdict text is just the algo rules already.
+    expect(result.text).toBe("BTC/USDT: ema_cross_bullish + rsi_oversold");
+  });
+
+  it("returns llm-ratified when verdict.source is 'llm' (real LLM verdict)", () => {
+    const result = buildInterpretation(
+      base({
+        ratificationStatus: "ratified",
+        ratificationVerdict: {
+          type: "buy",
+          confidence: 0.78,
+          reasoning: "Confirmed by macro and on-chain signals.",
+          source: "llm",
+        },
+      }),
+    );
+    expect(result.source).toBe("llm-ratified");
+    expect(result.text).toBe("Confirmed by macro and on-chain signals.");
+  });
+
+  it("treats absent source as 'llm' for back-compat with pre-B2 rows", () => {
+    // Legacy ratified rows have no `source` field. Default to llm-ratified
+    // so existing data continues to render correctly.
+    const result = buildInterpretation(
+      base({
+        ratificationStatus: "ratified",
+        ratificationVerdict: {
+          type: "buy",
+          confidence: 0.7,
+          reasoning: "Legacy LLM verdict without a source tag.",
+        },
+      }),
+    );
+    expect(result.source).toBe("llm-ratified");
+    expect(result.text).toBe("Legacy LLM verdict without a source tag.");
   });
 });

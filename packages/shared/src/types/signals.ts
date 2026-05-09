@@ -126,10 +126,15 @@ export interface BlendedSignal {
   //   - row predates Phase B1 (#132)
   // Consumers that need the verdict's reasoning specifically should fall
   // back to rulesFired when ratificationVerdict is null.
+  //
+  // `source` distinguishes a real LLM verdict from the graceful fallback
+  // path that copies the algo verdict when the LLM call fails. Absent on
+  // pre-B2 rows; treated as "llm" by readers for back-compat.
   ratificationVerdict?: {
     type: "buy" | "sell" | "hold";
     confidence: number;
     reasoning: string;
+    source?: "llm" | "algo-fallback";
   } | null;
 
   // Populated when status is "downgraded". Preserves the original algo signal so the UI

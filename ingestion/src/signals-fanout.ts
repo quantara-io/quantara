@@ -179,7 +179,7 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     interpretation: buildInterpretation({
       pair: signal["pair"] as string,
       type: signal["type"] as "buy" | "sell" | "hold",
-      rulesFired: (signal["rulesFired"] as string[]) ?? [],
+      rulesFired: Array.isArray(signal["rulesFired"]) ? (signal["rulesFired"] as string[]) : [],
       ratificationStatus: (signal["ratificationStatus"] ?? null) as
         | "pending"
         | "ratified"

@@ -163,7 +163,7 @@ export async function getRecentSignals(
     > = {
       pair: item.pair as string,
       type: item.type as BlendedSignal["type"],
-      rulesFired: (item.rulesFired as string[]) ?? [],
+      rulesFired: Array.isArray(item.rulesFired) ? (item.rulesFired as string[]) : [],
       ratificationStatus: (item.ratificationStatus ?? null) as BlendedSignal["ratificationStatus"],
       ratificationVerdict: (item.ratificationVerdict ??
         null) as BlendedSignal["ratificationVerdict"],
@@ -175,7 +175,7 @@ export async function getRecentSignals(
       confidence: item.confidence as number,
       volatilityFlag: item.volatilityFlag as boolean,
       gateReason: item.gateReason as BlendedSignal["gateReason"],
-      rulesFired: (item.rulesFired as string[]) ?? [],
+      rulesFired: Array.isArray(item.rulesFired) ? (item.rulesFired as string[]) : [],
       perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
       weightsUsed: item.weightsUsed as BlendedSignal["weightsUsed"],
       asOf: item.asOf as number,
@@ -316,6 +316,15 @@ export interface RatificationVerdictRecord {
   type: "buy" | "sell" | "hold";
   confidence: number;
   reasoning: string;
+  /**
+   * "llm" — verdict came from the actual LLM stream (or cache).
+   * "algo-fallback" — graceful fallback wrote the algo verdict because the
+   *   LLM call failed; consumers (e.g. `buildInterpretation`) should treat
+   *   this as algo-only narrative even though `ratificationStatus` is
+   *   "ratified" (so the row leaves the "pending" state).
+   * Absent on pre-B2 rows; readers default to "llm" for back-compat.
+   */
+  source?: "llm" | "algo-fallback";
 }
 
 export interface UpdateSignalRatificationParams {

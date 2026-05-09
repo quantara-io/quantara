@@ -162,6 +162,9 @@ export const BlendedSignalSchema = z
         type: z.enum(["buy", "sell", "hold"]),
         confidence: z.number(),
         reasoning: z.string(),
+        // "algo-fallback" → graceful fallback wrote the algo verdict because
+        // the LLM call failed. Readers treat this as algo-only narrative.
+        source: z.enum(["llm", "algo-fallback"]).optional(),
       })
       .nullable()
       .optional(),

@@ -209,7 +209,11 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
           either the LLM ratification reasoning or the algo rulesFired summary.
           When source === "llm-downgraded", also show the algo → LLM transition. */}
       {signal.interpretation ? (
-        <InterpretationBlock interpretation={signal.interpretation} />
+        <InterpretationBlock
+          interpretation={signal.interpretation}
+          finalType={signal.type}
+          finalConfidence={signal.confidence}
+        />
       ) : (
         /* Pre-B2 fallback: render rulesFired list as before */
         <div className="text-sm text-slate-300">
@@ -234,7 +238,17 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
   );
 }
 
-function InterpretationBlock({ interpretation }: { interpretation: SignalInterpretation }) {
+function InterpretationBlock({
+  interpretation,
+  finalType,
+  finalConfidence,
+}: {
+  interpretation: SignalInterpretation;
+  /** Final signal type after ratification — used to render the "→ LLM: hold 50%" tail on downgraded transitions. */
+  finalType: "buy" | "sell" | "hold";
+  /** Final signal confidence after ratification. */
+  finalConfidence: number;
+}) {
   const sourceLabel =
     interpretation.source === "llm-ratified"
       ? "LLM ratified"
@@ -264,7 +278,10 @@ function InterpretationBlock({ interpretation }: { interpretation: SignalInterpr
             {interpretation.originalAlgo.type}{" "}
             {Math.round(interpretation.originalAlgo.confidence * 100)}%
           </span>{" "}
-          &rarr; LLM: <span className="font-mono text-amber-400">downgraded</span>
+          &rarr; LLM:{" "}
+          <span className="font-mono text-amber-400">
+            {finalType} {Math.round(finalConfidence * 100)}%
+          </span>
         </p>
       )}
     </div>
