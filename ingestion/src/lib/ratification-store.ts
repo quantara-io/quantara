@@ -25,7 +25,30 @@ const TTL_SECONDS = 86400 * 30;
 // Types
 // ---------------------------------------------------------------------------
 
-export type InvokedReason = "news" | "vol" | "fng-shift" | "all";
+/**
+ * Why ratification was either invoked or skipped on this slot.
+ *
+ * Trigger reasons (LLM was actually called):
+ *   - "news"     — news event triggered the gate
+ *   - "vol"      — volatility regime change triggered the gate
+ *   - "fng-shift"— Fear/Greed shift triggered the gate
+ *   - "all"      — multiple trigger conditions fired together
+ *
+ * Skip reasons (gate returned shouldInvoke=false; LLM was not called):
+ *   - "skip-low-confidence"  — candidate confidence below the floor
+ *   - "skip-rate-limited"    — per-(pair, TF) rate limit hit
+ *   - "skip-daily-cap"       — per-pair daily cap exceeded
+ *   - "skip-no-trigger"      — no trigger condition matched (the common case)
+ */
+export type InvokedReason =
+  | "news"
+  | "vol"
+  | "fng-shift"
+  | "all"
+  | "skip-low-confidence"
+  | "skip-rate-limited"
+  | "skip-daily-cap"
+  | "skip-no-trigger";
 
 export interface RatificationRecord {
   pair: string;

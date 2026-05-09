@@ -519,7 +519,38 @@ async function invokeStage2Fallback(params: {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Derive an InvokedReason from `gating.shouldInvokeRatification`'s reason string.
+ *
+ * Two flavors of reason can arrive here:
+ *
+ *   1. Trigger reasons (gate.shouldInvoke=true, LLM was called):
+ *        - "news"-related strings → "news"
+ *        - "vol"-related strings  → "vol"
+ *        - "fng"-related strings  → "fng-shift"
+ *        - all three concurrently → "all"
+ *
+ *   2. Skip reasons (gate.shouldInvoke=false, LLM was NOT called). The exact
+ *      strings are produced by gating.ts:
+ *        - "candidate confidence < 0.6"          → "skip-low-confidence"
+ *        - "per-(pair, TF) rate limit"           → "skip-rate-limited"
+ *        - "per-pair daily cap exceeded; ..."    → "skip-daily-cap"
+ *        - "no trigger condition"                → "skip-no-trigger"
+ *
+ * Without specific skip-reason mappings the records would all default to
+ * "news", conflating distinct skip causes in the metric output.
+ */
 function gateReasonToInvokedReason(gateReason: string): InvokedReason {
+  // Skip reasons (most common path — match these first since they're the
+  // dominant case in production).
+  if (gateReason.includes("candidate confidence")) return "skip-low-confidence";
+  if (gateReason.includes("rate limit")) return "skip-rate-limited";
+  if (gateReason.includes("daily cap")) return "skip-daily-cap";
+  if (gateReason.includes("no trigger")) return "skip-no-trigger";
+
+  // Trigger reasons (gate.shouldInvoke=true). The triggerReason() helper
+  // composes these with explicit "news"/"vol"/"fng" tokens, so substring
+  // checks are reliable here.
   if (gateReason.includes("news") && gateReason.includes("vol") && gateReason.includes("fng")) {
     return "all";
   }

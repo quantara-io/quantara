@@ -794,26 +794,48 @@ describe("Indicator computation", () => {
   });
 
   it("does not invoke kickoffRatification when ratifySignal returns no callback (gated/cache hit)", async () => {
+    // Track whether kickoffRatification was ever called. We deliberately omit
+    // it from the ratifySignal mock return — the assertion is that the handler
+    // does not synthesize/invoke a kickoff when ratifySignal returns undefined.
     const kickoffMock = vi.fn().mockResolvedValue(undefined);
     ratifySignalMock.mockImplementation(
       async (ctx: { candidate: BlendedSignal }, _onStage2: unknown) => ({
         signal: { ...ctx.candidate, ratificationStatus: "not-required" as const },
         fellBackToAlgo: true,
         cacheHit: false,
-        // No kickoffRatification — gated path.
+        // kickoffRatification intentionally omitted — gated path.
       }),
     );
 
     const { handler } = await import("./indicator-handler.js");
     await handler(makeStreamEvent(), {} as any, () => {});
 
-    // kickoff was never called because it wasn't returned.
+    // kickoff was never called because the mock didn't return a callback.
     expect(kickoffMock).not.toHaveBeenCalled();
     // Stage-1 still wrote.
     const signalsV2Puts = send.mock.calls.filter(
       (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
     );
     expect(signalsV2Puts.length).toBeGreaterThan(0);
+  });
+
+  it("invokes kickoffRatification exactly once when ratifySignal returns the callback (pending path)", async () => {
+    // Counterpart to the prior test — verifies the affirmative case so the
+    // assertion isn't trivially passing via "kickoffMock was never wired up".
+    const kickoffMock = vi.fn().mockResolvedValue(undefined);
+    ratifySignalMock.mockImplementation(
+      async (ctx: { candidate: BlendedSignal }, _onStage2: unknown) => ({
+        signal: { ...ctx.candidate, ratificationStatus: "pending" as const },
+        fellBackToAlgo: false,
+        cacheHit: false,
+        kickoffRatification: kickoffMock,
+      }),
+    );
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    expect(kickoffMock).toHaveBeenCalledTimes(1);
   });
 });
 

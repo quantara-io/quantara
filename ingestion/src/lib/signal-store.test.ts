@@ -494,13 +494,20 @@ describe("updateSignalRatification", () => {
     });
   });
 
-  it("idempotently swallows ConditionalCheckFailedException (row missing OR already final)", async () => {
+  it("returns false on ConditionalCheckFailedException (row missing OR already final — idempotent skip)", async () => {
     const conditionalError = Object.assign(new Error("ConditionalCheckFailedException"), {
       name: "ConditionalCheckFailedException",
     });
     send.mockRejectedValueOnce(conditionalError);
     const { updateSignalRatification } = await import("./signal-store.js");
-    await expect(updateSignalRatification(baseParams)).resolves.toBeUndefined();
+    // Returns false (skipped) so callers can log accurately.
+    await expect(updateSignalRatification(baseParams)).resolves.toBe(false);
+  });
+
+  it("returns true on successful UPDATE so callers can log accurately", async () => {
+    send.mockResolvedValueOnce({});
+    const { updateSignalRatification } = await import("./signal-store.js");
+    await expect(updateSignalRatification(baseParams)).resolves.toBe(true);
   });
 
   it("re-throws unexpected DDB errors so the caller can retry", async () => {

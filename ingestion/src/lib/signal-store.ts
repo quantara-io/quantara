@@ -321,10 +321,16 @@ export interface UpdateSignalRatificationParams {
  *
  * Idempotent: skips (silently) if ratificationStatus is already final
  * (i.e., the row was concurrently updated — e.g., a retry race).
+ *
+ * Returns `true` when the UPDATE actually wrote (the row existed and was
+ * still in "pending" state). Returns `false` on idempotent skip — either
+ * the row didn't exist (race-lost stage-1) or it was already in a final
+ * state. Callers can use this to log accurate "written vs skipped" status
+ * instead of unconditional "written".
  */
 export async function updateSignalRatification(
   params: UpdateSignalRatificationParams,
-): Promise<void> {
+): Promise<boolean> {
   const { pair, sk, ratificationStatus, ratificationVerdict, algoVerdict } = params;
 
   try {
@@ -355,6 +361,7 @@ export async function updateSignalRatification(
         ConditionExpression: "attribute_exists(#signalType) AND ratificationStatus = :pending",
       }),
     );
+    return true;
   } catch (err: unknown) {
     // ConditionalCheckFailedException: row doesn't exist OR already in final state — idempotent.
     if (
@@ -363,7 +370,7 @@ export async function updateSignalRatification(
         (err as { __type?: string }).__type ===
           "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException")
     ) {
-      return;
+      return false;
     }
     throw err;
   }

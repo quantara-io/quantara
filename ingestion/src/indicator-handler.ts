@@ -260,16 +260,25 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
         const MAX_ATTEMPTS = 3;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           try {
-            await updateSignalRatification({
+            const updated = await updateSignalRatification({
               pair,
               sk,
               ratificationStatus: stage2Payload.ratificationStatus,
               ratificationVerdict: stage2Payload.ratificationVerdict,
               algoVerdict: stage2Payload.algoVerdict,
             });
-            console.log(
-              `[IndicatorHandler] ${pair}/${timeframe}: stage-2 ratification UPDATE written (status=${stage2Payload.ratificationStatus}, attempt=${attempt}).`,
-            );
+            if (updated) {
+              console.log(
+                `[IndicatorHandler] ${pair}/${timeframe}: stage-2 ratification UPDATE written (status=${stage2Payload.ratificationStatus}, attempt=${attempt}).`,
+              );
+            } else {
+              // Conditional check failed — row missing (race-lost stage-1)
+              // or already in a final state. Either is benign; log distinctly
+              // so operators can tell this from a successful UPDATE.
+              console.log(
+                `[IndicatorHandler] ${pair}/${timeframe}: stage-2 UPDATE skipped (row missing or already final, status=${stage2Payload.ratificationStatus}, attempt=${attempt}).`,
+              );
+            }
             return;
           } catch (updateErr) {
             const isLastAttempt = attempt === MAX_ATTEMPTS;
