@@ -7,6 +7,7 @@ import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Market } from "./pages/Market";
 import { News } from "./pages/News";
+import { Pipeline } from "./pages/Pipeline";
 import { Whitelist } from "./pages/Whitelist";
 
 export function App() {
@@ -60,6 +61,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Genie />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/pipeline"
+          element={
+            <AuthGate>
+              <Layout>
+                <Pipeline />
               </Layout>
             </AuthGate>
           }
