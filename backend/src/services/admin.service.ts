@@ -427,6 +427,22 @@ export async function getSignals(
   }
 }
 
+const METADATA_TABLE =
+  process.env.TABLE_INGESTION_METADATA ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
+
+// Hard-coded Haiku 4.5 prices (2026-Q1) mirroring enrich.ts constants.
+const HAIKU_INPUT_PRICE_PER_M = 0.80;
+const HAIKU_OUTPUT_PRICE_PER_M = 4.00;
+
+export interface NewsUsage {
+  articlesEnriched: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  estimatedCostUsd: number;
+  byModel: Record<string, { calls: number; inputTokens: number; outputTokens: number; costUsd: number }>;
+}
+
 export async function getNews(limit = 50) {
   try {
     const [scan, fearGreed] = await Promise.all([
@@ -440,6 +456,69 @@ export async function getNews(limit = 50) {
   } catch (err) {
     console.error("[admin.service] getNews failed:", err);
     return { news: [], fearGreed: null };
+  }
+}
+
+/**
+ * Aggregate LLM token usage from ingestion-metadata keys of the form
+ * `llm_usage#YYYY-MM-DD` written by enrich.ts on each Bedrock invocation.
+ * Sums all date-keys that fall within the requested window.
+ */
+export async function getNewsUsage(since: Date): Promise<NewsUsage> {
+  try {
+    // Scan for all llm_usage# keys — the table is small (~1 key/day).
+    const scan = await dynamo.send(
+      new ScanCommand({
+        TableName: METADATA_TABLE,
+        FilterExpression: "begins_with(metaKey, :prefix)",
+        ExpressionAttributeValues: { ":prefix": "llm_usage#" },
+      }),
+    );
+
+    const sinceIso = since.toISOString().slice(0, 10); // YYYY-MM-DD
+    let articlesEnriched = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    const byModel: NewsUsage["byModel"] = {};
+
+    for (const item of scan.Items ?? []) {
+      const key = item.metaKey as string; // llm_usage#YYYY-MM-DD
+      const dateStr = key.slice("llm_usage#".length);
+      if (dateStr < sinceIso) continue; // outside window
+
+      const inputTok = (item.totalInputTokens as number) ?? 0;
+      const outputTok = (item.totalOutputTokens as number) ?? 0;
+      const articles = (item.articlesEnriched as number) ?? 0;
+      const model: string = (item.modelTag as string) ?? "anthropic.claude-haiku-4-5";
+
+      articlesEnriched += articles;
+      totalInputTokens += inputTok;
+      totalOutputTokens += outputTok;
+
+      if (!byModel[model]) {
+        byModel[model] = { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
+      }
+      // Each day-key accumulates 2 Haiku calls per article (pair-tag + sentiment).
+      byModel[model].calls += articles * 2;
+      byModel[model].inputTokens += inputTok;
+      byModel[model].outputTokens += outputTok;
+    }
+
+    // Compute cost for each model bucket
+    for (const m of Object.values(byModel)) {
+      m.costUsd =
+        (m.inputTokens / 1_000_000) * HAIKU_INPUT_PRICE_PER_M +
+        (m.outputTokens / 1_000_000) * HAIKU_OUTPUT_PRICE_PER_M;
+    }
+
+    const estimatedCostUsd =
+      (totalInputTokens / 1_000_000) * HAIKU_INPUT_PRICE_PER_M +
+      (totalOutputTokens / 1_000_000) * HAIKU_OUTPUT_PRICE_PER_M;
+
+    return { articlesEnriched, totalInputTokens, totalOutputTokens, estimatedCostUsd, byModel };
+  } catch (err) {
+    console.error("[admin.service] getNewsUsage failed:", err);
+    return { articlesEnriched: 0, totalInputTokens: 0, totalOutputTokens: 0, estimatedCostUsd: 0, byModel: {} };
   }
 }
 

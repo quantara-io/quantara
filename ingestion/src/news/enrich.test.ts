@@ -33,6 +33,7 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
   GetCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Get", input })),
   PutCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Put", input })),
   ScanCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Scan", input })),
+  UpdateCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Update", input })),
 }));
 
 // ---------------------------------------------------------------------------

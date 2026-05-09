@@ -7,6 +7,7 @@ import {
   getStatus,
   getMarket,
   getNews,
+  getNewsUsage,
   getWhitelist,
   setWhitelist,
   getSignals,
@@ -79,6 +80,23 @@ admin.get("/signals", async (c) => {
 admin.get("/news", async (c) => {
   const limit = parseInt(c.req.query("limit") ?? "50", 10);
   return c.json({ success: true, data: await getNews(limit) });
+});
+
+admin.get("/news/usage", async (c) => {
+  const sinceRaw = c.req.query("since");
+  let since: Date;
+  if (sinceRaw !== undefined) {
+    since = new Date(sinceRaw);
+    if (isNaN(since.getTime())) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" } },
+        400,
+      );
+    }
+  } else {
+    since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  }
+  return c.json({ success: true, data: await getNewsUsage(since) });
 });
 
 admin.get("/whitelist", async (c) => c.json({ success: true, data: await getWhitelist() }));

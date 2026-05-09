@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const getStatusMock = vi.fn();
 const getMarketMock = vi.fn();
 const getNewsMock = vi.fn();
+const getNewsUsageMock = vi.fn();
 const getWhitelistMock = vi.fn();
 const setWhitelistMock = vi.fn();
 const getSignalsMock = vi.fn();
@@ -11,6 +12,7 @@ vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
   getMarket: getMarketMock,
   getNews: getNewsMock,
+  getNewsUsage: getNewsUsageMock,
   getWhitelist: getWhitelistMock,
   setWhitelist: setWhitelistMock,
   getSignals: getSignalsMock,
@@ -37,6 +39,7 @@ beforeEach(() => {
   getStatusMock.mockReset();
   getMarketMock.mockReset();
   getNewsMock.mockReset();
+  getNewsUsageMock.mockReset();
   getWhitelistMock.mockReset();
   setWhitelistMock.mockReset();
   getSignalsMock.mockReset();
@@ -241,6 +244,68 @@ describe("GET /signals", () => {
     expect(body.success).toBe(true);
     expect(body.data.signals).toHaveLength(1);
     expect(body.data.signals[0]).toEqual(mockSignal);
+  });
+});
+
+describe("GET /news/usage", () => {
+  const mockUsage = {
+    articlesEnriched: 42,
+    totalInputTokens: 100_000,
+    totalOutputTokens: 20_000,
+    estimatedCostUsd: 0.16,
+    byModel: {
+      "anthropic.claude-haiku-4-5": {
+        calls: 84,
+        inputTokens: 100_000,
+        outputTokens: 20_000,
+        costUsd: 0.16,
+      },
+    },
+  };
+
+  it("returns usage data with default since (24h ago) when no query param given", async () => {
+    getNewsUsageMock.mockResolvedValue(mockUsage);
+    const app = await loadApp();
+    const res = await app.request("/news/usage");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockUsage };
+    expect(body.success).toBe(true);
+    expect(body.data.articlesEnriched).toBe(42);
+    expect(body.data.totalInputTokens).toBe(100_000);
+    expect(body.data.estimatedCostUsd).toBe(0.16);
+    expect(getNewsUsageMock).toHaveBeenCalledOnce();
+    const calledWith = getNewsUsageMock.mock.calls[0][0] as Date;
+    // Should default to ~24h ago — accept a 5-second tolerance
+    expect(Date.now() - calledWith.getTime()).toBeLessThan(24 * 60 * 60 * 1000 + 5_000);
+  });
+
+  it("forwards the since query param as a Date", async () => {
+    getNewsUsageMock.mockResolvedValue(mockUsage);
+    const app = await loadApp();
+    const since = "2026-05-07T00:00:00.000Z";
+    const res = await app.request(`/news/usage?since=${encodeURIComponent(since)}`);
+    expect(res.status).toBe(200);
+    const calledWith = getNewsUsageMock.mock.calls[0][0] as Date;
+    expect(calledWith.toISOString()).toBe(since);
+  });
+
+  it("returns 400 when since is not a valid ISO date", async () => {
+    const app = await loadApp();
+    const res = await app.request("/news/usage?since=not-a-date");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getNewsUsageMock).not.toHaveBeenCalled();
+  });
+
+  it("returns byModel breakdown in the response", async () => {
+    getNewsUsageMock.mockResolvedValue(mockUsage);
+    const app = await loadApp();
+    const res = await app.request("/news/usage");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: typeof mockUsage };
+    expect(Object.keys(body.data.byModel)).toContain("anthropic.claude-haiku-4-5");
+    expect(body.data.byModel["anthropic.claude-haiku-4-5"].calls).toBe(84);
   });
 });
 

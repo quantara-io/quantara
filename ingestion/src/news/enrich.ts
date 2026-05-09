@@ -12,7 +12,7 @@
 
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,6 +60,45 @@ const EMBEDDING_CACHE_TABLE =
   process.env.TABLE_EMBEDDING_CACHE ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}embedding-cache`;
 
+const METADATA_TABLE =
+  process.env.TABLE_INGESTION_METADATA ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
+
+// ---------------------------------------------------------------------------
+// LLM usage tracking (Haiku 4.5 prices as of 2026-Q1)
+// ---------------------------------------------------------------------------
+
+export const HAIKU_INPUT_PRICE_PER_M = 0.80; // USD per 1M input tokens
+export const HAIKU_OUTPUT_PRICE_PER_M = 4.00; // USD per 1M output tokens
+
+/**
+ * Atomically accumulate token counts for a single Haiku call into the
+ * ingestion-metadata table under pk=`llm_usage#YYYY-MM-DD`, sk=`haiku`.
+ * Uses DynamoDB ADD so concurrent Fargate tasks don't race-condition the totals.
+ */
+async function recordHaikuUsage(inputTokens: number, outputTokens: number): Promise<void> {
+  const dateKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: METADATA_TABLE,
+        Key: { metaKey: `llm_usage#${dateKey}` },
+        UpdateExpression:
+          "SET modelTag = :model ADD articlesEnriched :one, totalInputTokens :inp, totalOutputTokens :out",
+        ExpressionAttributeValues: {
+          ":one": 1,
+          ":inp": inputTokens,
+          ":out": outputTokens,
+          ":model": HAIKU_MODEL_TAG,
+        },
+      }),
+    );
+  } catch (err) {
+    // Best-effort — never let usage tracking break enrichment
+    console.error(`[enrich] Failed to record LLM usage: ${(err as Error).message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -94,6 +133,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 /**
  * Invoke Bedrock Haiku (claude-haiku-4-5) in JSON mode and return parsed object.
+ * Fires-and-forgets a token-usage record to ingestion-metadata after each call.
  */
 async function invokeHaiku<T>(systemPrompt: string, userContent: string): Promise<T> {
   const response = await bedrock.send(
@@ -109,7 +149,16 @@ async function invokeHaiku<T>(systemPrompt: string, userContent: string): Promis
       }),
     }),
   );
-  const body = JSON.parse(new TextDecoder().decode(response.body));
+  const body = JSON.parse(new TextDecoder().decode(response.body)) as {
+    content?: Array<{ text: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+
+  // Log token counts — best-effort, never blocks enrichment
+  const inputTokens = body.usage?.input_tokens ?? 0;
+  const outputTokens = body.usage?.output_tokens ?? 0;
+  void recordHaikuUsage(inputTokens, outputTokens);
+
   const text: string = body.content?.[0]?.text ?? "{}";
   return JSON.parse(extractJson(text)) as T;
 }
