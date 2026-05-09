@@ -132,7 +132,12 @@ export const BlendedSignalSchema = z
       .nullable()
       .optional(),
 
-    // Populated by stage-2 write when ratificationStatus is "ratified" or "downgraded".
+    // Populated by stage-2 write when status is "downgraded" or the LLM emitted
+    // a fresh "ratified" verdict. May be null/absent when:
+    //   - status is "pending" (stage-2 hasn't fired)
+    //   - status is "not-required" (gated)
+    //   - status is "ratified" via cache hit (top-level type/confidence carry the verdict)
+    //   - row predates Phase B1 (#132)
     ratificationVerdict: z
       .object({
         type: z.enum(["buy", "sell", "hold"]),

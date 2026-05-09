@@ -1,17 +1,22 @@
 /**
  * ratify.ts — LLM ratification entry point (Phase 6a / Phase B1).
  *
- * Phase B1 changes:
+ * Phase B1 (#132) two-stage ratification:
  *   - Uses Anthropic streaming API (messages.stream) instead of create.
- *   - Returns the ratified signal synchronously (algo-first) for stage-1 write,
- *     plus a promise (`ratificationComplete`) that resolves when the LLM stream
- *     finishes and the stage-2 DDB UPDATE is done.
- *   - Callers must `await ratificationComplete` (or fire-and-forget if stage-1
- *     write already happened and stage-2 can be async).
+ *   - `ratifySignal()` returns the **stage-1 algo signal** synchronously
+ *     (with `ratificationStatus = "pending" | "not-required" | "ratified"`)
+ *     plus a deferred `kickoffRatification()` callback. The caller writes
+ *     the stage-1 row first, then invokes `kickoffRatification()` so the
+ *     LLM stream cannot fire its onStage2 UPDATE before the row exists
+ *     (race-free ordering — see PR #142 reviewer findings).
+ *   - `kickoffRatification` is undefined on gated and cache-hit paths
+ *     (no LLM call needed; stage-1 IS the final state).
  *
  * Single entry point for consumers. Takes a BlendedSignal + context, gates
  * cost per §7.5, checks cache per §7.6, calls Sonnet 4.6 (streaming), validates
- * per §7.7, and persists a RatificationRecord per §7.9.
+ * per §7.7, and persists a RatificationRecord per §7.9. The stage-2 onStage2
+ * callback is invoked from inside the kickoffRatification promise — never
+ * before the caller has written stage-1.
  *
  * Model: claude-sonnet-4-6 (pinned per issue spec)
  *

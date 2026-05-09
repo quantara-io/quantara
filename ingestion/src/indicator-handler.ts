@@ -368,8 +368,27 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
 
   // Now that stage-1 is durable, kick off the LLM stream. kickoffRatification
   // is undefined for gated/cache-hit paths — those have no stage-2.
+  //
+  // Wrap in try/catch defensively: runLlmStream is designed to swallow its own
+  // errors (LLM API errors invoke the fallback path; persistence errors are
+  // logged but don't propagate). But cache lookup or putRatificationRecord
+  // could in principle throw an unexpected error (DDB throttle on cache, schema
+  // mismatch). We do NOT want such errors to fail the Lambda invocation here:
+  // stage-1 is already committed. Failing the invocation would trigger a stream
+  // retry, the retried handler would see signals-v2 has the row already, return
+  // early — and stage-2 never fires. Result: row stuck on "pending" forever.
+  //
+  // Better to log and move on. The signal still has a usable algo verdict;
+  // the next signal supersedes it on the next close-boundary.
   if (kickoffRatification) {
-    await kickoffRatification();
+    try {
+      await kickoffRatification();
+    } catch (kickoffErr) {
+      console.error(
+        `[IndicatorHandler] ${pair}/${timeframe}: kickoffRatification threw — stage-1 row may remain on "pending":`,
+        kickoffErr,
+      );
+    }
   }
 }
 

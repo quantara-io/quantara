@@ -76,8 +76,16 @@ export interface BlendedSignal {
   // "ratified" = LLM confirmed the algo signal (or graceful fallback); "downgraded" = LLM changed the signal.
   ratificationStatus?: "pending" | "ratified" | "downgraded" | "not-required" | null;
 
-  // Populated by stage-2 write when status is "ratified" or "downgraded".
-  // null / absent when ratificationStatus is "pending", "not-required", or pre-B1.
+  // Populated by stage-2 write when status is "downgraded" or when the LLM
+  // produced a fresh "ratified" verdict on this slot.
+  // May be null / absent when:
+  //   - ratificationStatus is "pending" (stage-2 hasn't fired yet)
+  //   - ratificationStatus is "not-required" (gated, no LLM call)
+  //   - ratificationStatus is "ratified" via cache hit (the cached signal IS
+  //     the verdict; the top-level type/confidence on this row carries it)
+  //   - row predates Phase B1 (#132)
+  // Consumers that need the verdict's reasoning specifically should fall
+  // back to rulesFired when ratificationVerdict is null.
   ratificationVerdict?: {
     type: "buy" | "sell" | "hold";
     confidence: number;
