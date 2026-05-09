@@ -313,7 +313,21 @@ export function News() {
 
               {isExpanded && hasEnrichment && (
                 <pre className="mt-2 p-2 rounded bg-slate-950 text-[10px] text-slate-400 overflow-x-auto whitespace-pre-wrap break-words">
-                  {JSON.stringify(n.enrichment, null, 2)}
+                  {JSON.stringify(
+                    {
+                      // Stringify a combined view so Phase 5a-only rows (which
+                      // have `sentiment` / `mentionedPairs` but no `enrichment`)
+                      // don't render as blank when expanded — `JSON.stringify`
+                      // on an object containing `undefined` keys silently drops
+                      // them, so each field appears only when populated.
+                      enrichment: n.enrichment,
+                      sentiment: n.sentiment,
+                      mentionedPairs: n.mentionedPairs,
+                      enrichedAt: n.enrichedAt,
+                    },
+                    null,
+                    2,
+                  )}
                 </pre>
               )}
             </div>

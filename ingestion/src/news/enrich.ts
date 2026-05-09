@@ -14,6 +14,8 @@ import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedroc
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
+import { HAIKU_MODEL_TAG } from "@quantara/shared";
+
 import { recordLlmUsage } from "../lib/metadata-store.js";
 
 // ---------------------------------------------------------------------------
@@ -40,16 +42,13 @@ const DEDUP_WINDOW_HOURS = 24;
 // isn't supported." The org SCP permits `bedrock:InvokeModel*` cross-region.
 const HAIKU_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
-// Stable model tag stamped on the `model` field of `SentimentResult`.
-// Decoupled from the invocation ID so AWS-side rotations (different inference
-// profile, regional change, etc.) don't change what callers see. The
-// pre-existing test "model tag is always claude-haiku-4-5" enforces this
-// stability contract. Bump only when the underlying *model* changes in a way
-// that makes prior sentiment outputs incompatible (e.g. Haiku 4.5 → 5.x).
-//
-// Note: this is unrelated to the embedding cache, which keys on
+// `HAIKU_MODEL_TAG` is the stable identifier stamped on `SentimentResult.model`
+// and on the LLM-usage records this file writes via `recordLlmUsage`. It's
+// imported from `@quantara/shared` so the backend's cost-calc reads the same
+// constant rather than maintaining a parallel hard-coded copy. Bump only when
+// the underlying model changes in a way that makes prior outputs incompatible
+// (e.g. Haiku 4.5 → 5.x). Unrelated to the embedding cache, which keys on
 // `EMBEDDING_MODEL` (Amazon Titan Text Embeddings v2) and never reads this tag.
-const HAIKU_MODEL_TAG = "anthropic.claude-haiku-4-5";
 
 // ---------------------------------------------------------------------------
 // AWS clients (module-scope singletons)
@@ -61,13 +60,6 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const EMBEDDING_CACHE_TABLE =
   process.env.TABLE_EMBEDDING_CACHE ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}embedding-cache`;
-
-// ---------------------------------------------------------------------------
-// LLM usage pricing constants (used by the admin dashboard for cost calc)
-// ---------------------------------------------------------------------------
-
-export const HAIKU_INPUT_PRICE_PER_M = 0.8; // USD per 1M input tokens (Haiku 4.5, 2026-Q1)
-export const HAIKU_OUTPUT_PRICE_PER_M = 4.0; // USD per 1M output tokens
 
 // ---------------------------------------------------------------------------
 // Helpers

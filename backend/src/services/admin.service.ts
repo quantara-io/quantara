@@ -4,8 +4,10 @@ import {
   ScanCommand,
   GetCommand,
   QueryCommand,
+  BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal, IndicatorState } from "@quantara/shared";
+import { HAIKU_INPUT_PRICE_PER_M, HAIKU_OUTPUT_PRICE_PER_M } from "@quantara/shared";
 import { ECSClient, DescribeServicesCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
 import {
@@ -428,12 +430,7 @@ export async function getSignals(
 }
 
 const METADATA_TABLE =
-  process.env.TABLE_INGESTION_METADATA ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
-
-// Hard-coded Haiku 4.5 prices (2026-Q1) mirroring enrich.ts constants.
-const HAIKU_INPUT_PRICE_PER_M = 0.8;
-const HAIKU_OUTPUT_PRICE_PER_M = 4.0;
+  process.env.TABLE_METADATA ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
 
 export interface NewsUsage {
   articlesEnriched: number;
@@ -481,38 +478,54 @@ export async function getNews(limit = 50) {
  *     incremented only on the call that completes the article — see
  *     `recordLlmUsage(countAsArticle)` for the contract)
  */
+/** Build the deterministic list of `llm_usage#YYYY-MM-DD` keys from `since` (truncated to date) through today. */
+function dailyUsageKeys(since: Date): string[] {
+  const startMs = Date.UTC(since.getUTCFullYear(), since.getUTCMonth(), since.getUTCDate());
+  const todayMs = (() => {
+    const t = new Date();
+    return Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
+  })();
+  const keys: string[] = [];
+  for (let ms = startMs; ms <= todayMs; ms += 24 * 60 * 60 * 1000) {
+    keys.push(`llm_usage#${new Date(ms).toISOString().slice(0, 10)}`);
+  }
+  return keys;
+}
+
 export async function getNewsUsage(since: Date): Promise<NewsUsage> {
   try {
-    // Paginate the scan via LastEvaluatedKey so a metadata table that grows
-    // past the 1MB single-page cap doesn't silently drop usage rows. The
-    // table is one key per day today, so this rarely loops in practice —
-    // the loop is correctness insurance, not a perf hot path.
+    // Generate the deterministic list of day-keys from `since` to today and
+    // BatchGet them. Previously we Scanned the whole metadata table on every
+    // 60-second poll, which scales linearly with unrelated keys (cooldowns,
+    // close-quorum markers, fear-greed cache, etc.). Day-keys are deterministic
+    // — no reason to scan.
+    //
+    // BatchGet has a 100-key cap per request; a single request covers ~3 months
+    // of usage history, which is far beyond any reasonable dashboard window.
+    // For a hypothetical >100-day request the loop below chunks accordingly.
+    const wantedKeys = dailyUsageKeys(since);
     const items: Record<string, unknown>[] = [];
-    let lastKey: Record<string, unknown> | undefined;
-    do {
-      const page = await dynamo.send(
-        new ScanCommand({
-          TableName: METADATA_TABLE,
-          FilterExpression: "begins_with(metaKey, :prefix)",
-          ExpressionAttributeValues: { ":prefix": "llm_usage#" },
-          ExclusiveStartKey: lastKey,
+    for (let i = 0; i < wantedKeys.length; i += 100) {
+      const chunk = wantedKeys.slice(i, i + 100);
+      const result = await dynamo.send(
+        new BatchGetCommand({
+          RequestItems: {
+            [METADATA_TABLE]: {
+              Keys: chunk.map((metaKey) => ({ metaKey })),
+            },
+          },
         }),
       );
-      items.push(...((page.Items ?? []) as Record<string, unknown>[]));
-      lastKey = page.LastEvaluatedKey;
-    } while (lastKey !== undefined);
+      const responseItems = (result.Responses?.[METADATA_TABLE] ?? []) as Record<string, unknown>[];
+      items.push(...responseItems);
+    }
 
-    const sinceIso = since.toISOString().slice(0, 10); // YYYY-MM-DD
     let articlesEnriched = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     const byModel: NewsUsage["byModel"] = {};
 
     for (const item of items) {
-      const key = item.metaKey as string; // llm_usage#YYYY-MM-DD
-      const dateStr = key.slice("llm_usage#".length);
-      if (dateStr < sinceIso) continue; // outside window
-
       const inputTok = (item.totalInputTokens as number) ?? 0;
       const outputTok = (item.totalOutputTokens as number) ?? 0;
       const articles = (item.articlesEnriched as number) ?? 0;
