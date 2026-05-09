@@ -793,6 +793,8 @@ for each new article:
 
 Provider: Bedrock **Amazon Titan Text Embeddings v2** (`amazon.titan-embed-text-v2:0`), 1024-dim, normalized. Direct foundation model invocation (no inference profile needed). Cost ~$0.0001/article × 50/day ≈ ~$0.15/mo. Authenticated via the Lambda's IAM role — no external API keys, no outbound to non-AWS endpoints.
 
+> **Migration note (2026-05):** embedding provider migrated from OpenAI `text-embedding-3-small` (1536 dim) to Bedrock Titan v2 (1024 dim) in PR #173. The embedding cache was empty at migration time, so no historical vectors needed re-embedding. See PR #173 and issue #175 for full audit trail.
+
 **Caveat — backtest determinism:** embedding models version (e.g. `titan-embed-text-v2` ≠ `v1` ≠ Cohere ≠ OpenAI). Backtests against historical news will produce different dedup decisions if rerun on a different embedding model version. **Mitigation:**
 
 - Pin the embedding model version in code (e.g. `amazon.titan-embed-text-v2:0` exactly), and require a deliberate migration when bumping
