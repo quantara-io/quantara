@@ -34,7 +34,7 @@ import type { TimeframeVote } from "@quantara/shared";
 import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
-import { putIndicatorState, getLatestIndicatorState } from "./lib/indicator-state-store.js";
+import { putIndicatorState } from "./lib/indicator-state-store.js";
 import { makeSignalId, updateSignalRatification } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
@@ -59,27 +59,6 @@ const SIGNALS_V2_TABLE =
 
 const METADATA_TABLE =
   process.env.TABLE_METADATA ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
-
-// ---------------------------------------------------------------------------
-// Bootstrap constants
-// ---------------------------------------------------------------------------
-
-/**
- * Number of historical candles to pull during bootstrap.
- *
- * 200 (EMA200) + 50-bar buffer = 250.  Configurable via env var so integration
- * tests can override to a small number without waiting for 250 candles.
- */
-const BOOTSTRAP_TARGET = (() => {
-  const parsed = parseInt(process.env.INDICATOR_BOOTSTRAP_BARS ?? "250", 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    console.warn(
-      `[IndicatorHandler] INDICATOR_BOOTSTRAP_BARS env var malformed (got "${process.env.INDICATOR_BOOTSTRAP_BARS}"); falling back to 250`,
-    );
-    return 250;
-  }
-  return parsed;
-})();
 
 /**
  * Minimum number of exchanges that must have reported a close before the
@@ -212,24 +191,6 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
       `[IndicatorHandler] Quorum not reached for ${quorumId}: ${exchangeCount}/${REQUIRED_EXCHANGE_COUNT} exchanges. Waiting.`,
     );
     return;
-  }
-
-  // Bootstrap guard — runs after quorum is confirmed but before signal computation.
-  //
-  // If the indicator state for this pair × timeframe is absent or shallow
-  // (barsSinceStart < BOOTSTRAP_TARGET), pull historical candles now and warm
-  // up the state before the regular live-increment path runs.  This amortises
-  // the EMA200 200-bar warm-up into a single catch-up rather than making each
-  // live close wait until enough bars have accumulated organically.
-  //
-  // Bootstrap is best-effort: it accepts any single exchange's history (no
-  // quorum required for historical reconstruction).  The live path continues to
-  // require quorum for all subsequent closes.
-  const existingState = await getLatestIndicatorState(pair, "consensus", timeframe as Timeframe);
-  if (!existingState || existingState.barsSinceStart < BOOTSTRAP_TARGET) {
-    // Fetch Fear/Greed now so bootstrap can pass the right value to buildIndicatorState.
-    const fearGreedForBootstrap = await getFearGreedCached();
-    await bootstrapIndicatorState(pair, timeframe, fearGreedForBootstrap);
   }
 
   // Step 3 — Check signals-v2 for prior processing (deterministic SK: tf#closeTime per P2.2).
@@ -438,76 +399,6 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
       );
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Bootstrap: warm up indicator state from historical candles on cold start
-// ---------------------------------------------------------------------------
-
-/**
- * Bootstrap the indicator state for a pair × timeframe from historical candles.
- *
- * This is a best-effort historical reconstruction.  Unlike the live path, which
- * requires ≥2 of 3 exchanges to report a close (quorum), bootstrap accepts
- * any single exchange's candles as a valid source for reconstructing history.
- * The live path remains quorum-protected; bootstrap only back-fills state so
- * that warm-up latency (e.g. EMA200 = 200 bars) is amortised across a one-time
- * catch-up rather than accrued bar-by-bar from a cold start.
- *
- * Algorithm:
- *   1. For each exchange, pull the most-recent BOOTSTRAP_TARGET closed candles.
- *   2. Pick the exchange with the most candles ("longest history exchange").
- *   3. Run buildIndicatorState over those candles (oldest-to-newest).
- *   4. Persist the resulting IndicatorState via putIndicatorState.
- *   5. Log the result.
- */
-async function bootstrapIndicatorState(
-  pair: string,
-  tf: SignalTimeframe,
-  fearGreed: number | null,
-): Promise<void> {
-  // Pull historical candles from all exchanges, pick the longest history.
-  const perExchangeCandles: Record<string, import("@quantara/shared").Candle[]> = {};
-  await Promise.all(
-    EXCHANGES.map(async (ex) => {
-      const candles = await getCandles(pair, ex, tf, BOOTSTRAP_TARGET);
-      perExchangeCandles[ex] = candles;
-    }),
-  );
-
-  const longestExchange = EXCHANGES.reduce((best, ex) => {
-    return (perExchangeCandles[ex]?.length ?? 0) > (perExchangeCandles[best]?.length ?? 0)
-      ? ex
-      : best;
-  }, EXCHANGES[0]!);
-
-  const rawCandles = perExchangeCandles[longestExchange] ?? [];
-  if (rawCandles.length === 0) {
-    console.log(
-      `[IndicatorHandler] bootstrapIndicatorState: no historical candles for ${pair}/${tf} — skipping.`,
-    );
-    return;
-  }
-
-  // Candles from getCandles come back newest-first (ScanIndexForward=false);
-  // buildIndicatorState expects oldest-first chronological order.
-  const candlesOldestFirst = [...rawCandles].reverse();
-
-  const state = buildIndicatorState(candlesOldestFirst, {
-    pair,
-    exchange: "consensus",
-    timeframe: tf,
-    fearGreed,
-    dispersion: null,
-  });
-
-  await putIndicatorState(state);
-
-  console.log(
-    `[IndicatorHandler] bootstrapped ${pair}/${tf} with ${state.barsSinceStart} bars` +
-      ` (rsi14=${state.rsi14 !== null ? state.rsi14.toFixed(2) : "null"}` +
-      `, ema200=${state.ema200 !== null ? state.ema200.toFixed(2) : "null"})`,
-  );
 }
 
 // ---------------------------------------------------------------------------
