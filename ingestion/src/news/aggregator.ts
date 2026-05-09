@@ -45,16 +45,42 @@ export interface SentimentAggregate {
   fearGreedLatest: number | null;
 }
 
+export interface RecomputeResult {
+  /** The freshly-computed aggregate (just written to DDB). */
+  aggregate: SentimentAggregate;
+  /**
+   * The previous aggregate that was in DDB before this write, or null if this
+   * is the first-ever computation for this (pair, window).
+   *
+   * Exposed so callers can hand it to the sentiment-shock detector for a
+   * prev/next comparison without a second DDB read.
+   */
+  previousAggregate: SentimentAggregate | null;
+}
+
 /**
  * Compute and persist a sentiment aggregate for the given pair and window.
  * Idempotent: overwrites any existing row for the same (pair, window).
+ *
+ * Returns both the new aggregate and the prior aggregate so callers can detect
+ * sentiment shocks without an extra DDB read.
  */
 export async function recomputeSentimentAggregate(
   pair: string,
   window: AggregationWindow,
-): Promise<SentimentAggregate> {
+): Promise<RecomputeResult> {
   const now = Date.now();
   const sinceISO = new Date(now - WINDOW_MS[window]).toISOString();
+
+  // Read the current (previous) aggregate before overwriting it, so callers
+  // can do a prev/next shock comparison in a single pass.
+  const prevResult = await client.send(
+    new GetCommand({
+      TableName: SENTIMENT_AGGREGATES_TABLE,
+      Key: { pair, window },
+    }),
+  );
+  const previousAggregate = (prevResult.Item as SentimentAggregate | undefined) ?? null;
 
   // Query all fan-out rows for this pair published within the window.
   const articles = await queryNewsByPair(pair, sinceISO);
@@ -95,7 +121,7 @@ export async function recomputeSentimentAggregate(
     `[Aggregator] ${pair}/${window}: articles=${articleCount}, meanScore=${meanScore?.toFixed(3) ?? "null"}`,
   );
 
-  return aggregate;
+  return { aggregate, previousAggregate };
 }
 
 interface FearGreedContext {

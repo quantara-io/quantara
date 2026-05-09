@@ -44,7 +44,7 @@ export interface SentimentBundle {
  * can read directly from the sentiment-aggregates table instead.
  */
 export async function buildSentimentBundle(pair: string): Promise<SentimentBundle> {
-  const [agg4h, agg24h, fg] = await Promise.all([
+  const [result4h, result24h, fg] = await Promise.all([
     recomputeSentimentAggregate(pair, "4h"),
     recomputeSentimentAggregate(pair, "24h"),
     getFearGreed(),
@@ -54,8 +54,8 @@ export async function buildSentimentBundle(pair: string): Promise<SentimentBundl
     pair,
     assembledAt: new Date().toISOString(),
     windows: {
-      "4h": agg4h,
-      "24h": agg24h,
+      "4h": result4h.aggregate,
+      "24h": result24h.aggregate,
     },
     fearGreed: fg,
   };

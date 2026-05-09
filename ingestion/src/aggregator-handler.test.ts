@@ -18,10 +18,19 @@ vi.mock("./news/aggregator.js", () => ({
   recomputeSentimentAggregate: recomputeMock,
 }));
 
+// ---- Mock sentiment-shock so no DDB/LLM calls in handler tests ----
+const maybeFireShockMock = vi.fn();
+vi.mock("./news/sentiment-shock.js", () => ({
+  maybeFireSentimentShockRatification: maybeFireShockMock,
+}));
+
 beforeEach(() => {
   vi.resetModules();
   recomputeMock.mockReset();
-  recomputeMock.mockResolvedValue({}); // default: succeed silently
+  maybeFireShockMock.mockReset();
+  // Return the shape the handler expects: { aggregate, previousAggregate }
+  recomputeMock.mockResolvedValue({ aggregate: {}, previousAggregate: null });
+  maybeFireShockMock.mockResolvedValue(undefined);
 });
 
 function makeSqsEvent(
