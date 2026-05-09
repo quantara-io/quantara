@@ -599,12 +599,15 @@ export interface GenieMetrics {
     gatedCount: number;
     fallbackCount: number;
   };
-  // Outcome counts keyed by the production resolver's enum
-  // (`OutcomeRecord.outcome` ∈ "correct" | "incorrect" | "neutral"; "pending"
-  // is synthesized for outcomes whose corresponding signal hasn't resolved yet).
+  // Outcome counts using domain-standard names (tp = take-profit hit,
+  // sl = stop-loss hit) from the issue spec. The persisted resolver enum
+  // is `OutcomeRecord.outcome ∈ "correct" | "incorrect" | "neutral"`; we
+  // map correct → tp, incorrect → sl at the API boundary. "pending" is
+  // synthesized for signals whose corresponding outcome row hasn't been
+  // resolved yet.
   outcomes: {
-    correct: number;
-    incorrect: number;
+    tp: number;
+    sl: number;
     neutral: number;
     pending: number;
   };
@@ -617,7 +620,7 @@ export interface GenieMetrics {
   cost: {
     totalUsd: number;
     avgPerSignalUsd: number;
-    avgPerCorrectUsd: number | null;
+    avgPerTpUsd: number | null;
     cacheHitRate: number | null;
   };
   gating: {
@@ -634,6 +637,10 @@ interface RatificationRow {
   invokedAtRecordId: string;
   invokedAt: string;
   invokedReason: string;
+  // The (15m / 1h / 4h / 1d) the bar that triggered this ratification was
+  // emitted on. Persisted by `ingestion/src/lib/ratification-store.ts` and
+  // used here to scope cost/gating metrics to a requested timeframe.
+  timeframe: string | null;
   fellBackToAlgo: boolean;
   cacheHit: boolean;
   costUsd: number;
@@ -704,9 +711,12 @@ async function queryRatificationsForWindow(
 }
 
 /**
- * Query signals-v2 for a set of pairs over a time window across all blended TFs.
+ * Query signals-v2 for a set of pairs over a time window across blended TFs.
  * signals-v2 PK=pair, SK=`tf#closeTimeMs`. closeTime is fixed-width epoch ms
  * within a TF prefix so SK BETWEEN comparisons are correct ordered ranges.
+ *
+ * When `timeframe` is provided, only that TF's partition is queried (saves
+ * 3 of 4 DDB queries per pair). Otherwise all four blended TFs are queried.
  *
  * Used as the source-of-truth for `signalCount` and ratification-status
  * partitioning. The ratifications table is NOT a 1:1 with signals — every
@@ -717,10 +727,11 @@ async function querySignalsForWindow(
   pairs: readonly string[],
   sinceIso: string,
   untilIso: string,
+  timeframe?: string,
 ): Promise<SignalRow[]> {
   const sinceMs = new Date(sinceIso).getTime();
   const untilMs = new Date(untilIso).getTime();
-  const blendTfs = ["15m", "1h", "4h", "1d"] as const;
+  const blendTfs = timeframe ? [timeframe] : (["15m", "1h", "4h", "1d"] as const);
   const rows: SignalRow[] = [];
 
   await Promise.all(
@@ -747,7 +758,7 @@ async function querySignalsForWindow(
               signalId: (item.signalId as string) ?? "",
               ratificationStatus:
                 (item.ratificationStatus as SignalRow["ratificationStatus"]) ?? null,
-              emittingTimeframe: tf,
+              emittingTimeframe: tf as string,
               closeTime: typeof item.closeTime === "number" ? item.closeTime : 0,
             });
           }
@@ -761,11 +772,16 @@ async function querySignalsForWindow(
 }
 
 /**
- * Query signal-outcome records for a set of pairs where resolvedAt is in
- * `[sinceIso, untilIso]`. signal-outcomes table PK=pair, SK=signalId, so
- * the time range is enforced via FilterExpression — DynamoDB still scans
- * the partition before filtering. Acceptable today (small partitions per
- * pair); if cost becomes an issue, add a GSI keyed on resolvedAt.
+ * Query signal-outcome records for a set of pairs where the originating
+ * signal's emit time (`createdAt`) falls in `[sinceIso, untilIso]`. We
+ * filter on emit time (not `resolvedAt`) so the outcomes window aligns
+ * with `signals_v2.closeTime` — otherwise pre-window signals that resolve
+ * during the window distort the per-signal win-rate.
+ *
+ * signal-outcomes table PK=pair, SK=signalId; the time range is enforced
+ * via FilterExpression on `createdAt` (DynamoDB scans the partition before
+ * filtering). Acceptable today (small partitions per pair); if cost
+ * becomes an issue, add a GSI keyed on createdAt.
  */
 async function queryOutcomesForWindow(
   pairs: readonly string[],
@@ -782,8 +798,8 @@ async function queryOutcomesForWindow(
           new QueryCommand({
             TableName: SIGNAL_OUTCOMES_TABLE,
             KeyConditionExpression: "#pair = :pair",
-            FilterExpression: "#resolvedAt BETWEEN :since AND :until",
-            ExpressionAttributeNames: { "#pair": "pair", "#resolvedAt": "resolvedAt" },
+            FilterExpression: "#createdAt BETWEEN :since AND :until",
+            ExpressionAttributeNames: { "#pair": "pair", "#createdAt": "createdAt" },
             ExpressionAttributeValues: {
               ":pair": pair,
               ":since": sinceIso,
@@ -806,9 +822,17 @@ async function queryOutcomesForWindow(
 /**
  * Compute the Genie performance metrics for a given time window.
  *
- * @param since      ISO-8601 lower bound (default: 7 days ago)
+ * @param since      ISO-8601 lower bound (default: 7 days ago). Caller is
+ *                   responsible for canonicalising format — admin.ts does
+ *                   `new Date(sinceRaw).toISOString()` before passing here
+ *                   so DDB string range comparisons are consistent.
  * @param pair       Optional pair filter (default: all monitored pairs)
- * @param timeframe  Optional timeframe filter applied to signal-outcomes only
+ * @param timeframe  Optional timeframe filter applied to ALL three sources:
+ *                   signals_v2 (Query is scoped to that tf's sk prefix),
+ *                   ratifications (filtered post-Query on row.timeframe),
+ *                   signal-outcomes (filtered post-Query on emittingTimeframe).
+ *                   With a filter active, every metric in the response
+ *                   describes the same (pair × tf) slice of the data.
  */
 export async function getGenieMetrics(
   since?: string,
@@ -823,20 +847,32 @@ export async function getGenieMetrics(
   // signals_v2 is the source of truth for `signalCount` and ratification-
   // pathway partitioning. ratifications is the source for cost + gating
   // breakdown. signal-outcomes is the source for win-rate.
+  // Pass `timeframe` through to querySignalsForWindow so we only Query the
+  // requested tf's sk prefix instead of all four.
   const [signalRows, ratRows, outcomeRows] = await Promise.all([
-    querySignalsForWindow(pairs, windowStart, windowEnd),
+    querySignalsForWindow(pairs, windowStart, windowEnd, timeframe),
     queryRatificationsForWindow(pairs, windowStart, windowEnd),
     queryOutcomesForWindow(pairs, windowStart, windowEnd),
   ]);
 
-  // Apply timeframe filter consistently across signals and outcomes so all
-  // counts and partitions describe the same slice of the data.
-  const filteredSignals = timeframe
-    ? signalRows.filter((s) => s.emittingTimeframe === timeframe)
-    : signalRows;
-  const filteredOutcomes = timeframe
-    ? outcomeRows.filter((o) => o.emittingTimeframe === timeframe)
-    : outcomeRows;
+  // Apply timeframe filter consistently across all three sources so every
+  // metric in the response describes the same slice of the data.
+  // - signalRows: already scoped via querySignalsForWindow's sk prefix
+  // - ratRows: filtered post-Query on the persisted `timeframe` field
+  // - outcomeRows: filtered post-Query on `emittingTimeframe`
+  // Without filtering ratRows, cost.* and gating.* would reflect ALL TFs
+  // while signalCount/win-rate reflect only the requested TF — inconsistent.
+  const filteredSignals = signalRows;
+  const filteredRats = timeframe ? ratRows.filter((r) => r.timeframe === timeframe) : ratRows;
+  // Restrict outcomes to those whose signalId is in filteredSignals — this
+  // aligns the outcomes window with the signals window (was filtering on
+  // resolvedAt, which let pre-window signals resolved during the window
+  // skew win-rate vs signalCount). Restored timeframe filter as a belt-
+  // and-suspenders check in case of unexpected outcome rows.
+  const signalIdSet = new Set(filteredSignals.map((s) => s.signalId).filter(Boolean));
+  const filteredOutcomes = outcomeRows.filter(
+    (o) => signalIdSet.has(o.signalId) && (timeframe ? o.emittingTimeframe === timeframe : true),
+  );
 
   // Map signalId → ratificationStatus for joining outcomes to their pathway.
   const statusBySignalId = new Map<string, SignalRow["ratificationStatus"]>();
@@ -856,7 +892,7 @@ export async function getGenieMetrics(
   let totalLlmInvocations = 0;
   let totalCostUsd = 0;
 
-  for (const r of ratRows) {
+  for (const r of filteredRats) {
     const reason = r.invokedReason ?? "";
     if (reason === "skip-low-confidence") skipLowConfidence++;
     else if (reason === "skip-rate-limited") skipRateLimit++;
@@ -897,17 +933,20 @@ export async function getGenieMetrics(
   // a separate axis from signal count: many skip rows produce no signal.
   const gatedCount = skipLowConfidence + skipRateLimit + skipDailyCap + skipNotRequired;
   // fallbackCount is "LLM was invoked but failed validation, fell back to
-  // the algo verdict". Comes from ratifications.
+  // the algo verdict". Comes from ratifications, scoped to filteredRats so
+  // it stays consistent with the timeframe filter.
   let fallbackCount = 0;
-  for (const r of ratRows) {
+  for (const r of filteredRats) {
     if (r.fellBackToAlgo) fallbackCount++;
   }
 
   // ------------------------------------------------------------------
-  // Outcome counts (production resolver enum)
+  // Outcome counts — production resolver writes correct/incorrect/neutral;
+  // we map to the issue-spec names (tp = take-profit hit, sl = stop-loss
+  // hit) at the API boundary so frontend consumers match the spec.
   // ------------------------------------------------------------------
-  let correct = 0;
-  let incorrect = 0;
+  let tp = 0;
+  let sl = 0;
   let neutral = 0;
   // "pending" is computed from signals that don't yet have an outcome row.
   const resolvedSignalIds = new Set<string>();
@@ -918,8 +957,8 @@ export async function getGenieMetrics(
   }
 
   for (const o of filteredOutcomes) {
-    if (o.outcome === "correct") correct++;
-    else if (o.outcome === "incorrect") incorrect++;
+    if (o.outcome === "correct") tp++;
+    else if (o.outcome === "incorrect") sl++;
     else if (o.outcome === "neutral") neutral++;
   }
 
@@ -956,7 +995,7 @@ export async function getGenieMetrics(
   // Cost metrics
   // ------------------------------------------------------------------
   const avgPerSignalUsd = signalCount > 0 ? totalCostUsd / signalCount : 0;
-  const avgPerCorrectUsd = correct > 0 ? totalCostUsd / correct : null;
+  const avgPerTpUsd = tp > 0 ? totalCostUsd / tp : null;
   const cacheHitRate = totalLlmInvocations > 0 ? totalCacheHits / totalLlmInvocations : null;
 
   return {
@@ -971,14 +1010,14 @@ export async function getGenieMetrics(
       gatedCount,
       fallbackCount,
     },
-    outcomes: { correct, incorrect, neutral, pending: pendingOutcomes },
+    outcomes: { tp, sl, neutral, pending: pendingOutcomes },
     winRate: {
       overall: overallWinRate,
       algoOnly: algoOnlyWinRate,
       llmRatified: llmRatifiedWinRate,
       llmDowngraded: llmDowngradedWinRate,
     },
-    cost: { totalUsd: totalCostUsd, avgPerSignalUsd, avgPerCorrectUsd, cacheHitRate },
+    cost: { totalUsd: totalCostUsd, avgPerSignalUsd, avgPerTpUsd, cacheHitRate },
     gating: { skipLowConfidence, skipRateLimit, skipDailyCap, skipNotRequired, invoked },
   };
 }

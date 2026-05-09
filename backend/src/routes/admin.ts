@@ -123,6 +123,12 @@ const VALID_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
 
 admin.get("/genie-metrics", async (c) => {
   const sinceRaw = c.req.query("since");
+  // Canonicalise the parsed Date back to ISO 8601 Z before forwarding.
+  // The service uses this in DDB string range comparisons (BETWEEN), which
+  // assume a consistent Z-suffixed format. A `2026-05-09T12:00:00+00:00`
+  // is parseable but not lex-comparable to `2026-05-09T12:00:00.000Z`,
+  // which would silently produce wrong filtering.
+  let sinceCanon: string | undefined;
   if (sinceRaw !== undefined) {
     const parsed = new Date(sinceRaw);
     if (isNaN(parsed.getTime())) {
@@ -134,6 +140,7 @@ admin.get("/genie-metrics", async (c) => {
         400,
       );
     }
+    sinceCanon = parsed.toISOString();
   }
 
   const pair = c.req.query("pair");
@@ -161,7 +168,7 @@ admin.get("/genie-metrics", async (c) => {
     );
   }
 
-  const metrics = await getGenieMetrics(sinceRaw, pair, timeframe);
+  const metrics = await getGenieMetrics(sinceCanon, pair, timeframe);
   return c.json({ success: true, data: metrics });
 });
 

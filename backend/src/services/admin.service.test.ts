@@ -378,13 +378,15 @@ describe("computeDispersion via getMarket — dedupe fix (Bug 2)", () => {
 });
 
 describe("getGenieMetrics", () => {
-  // Helper: build a minimal ratification row
+  // Helper: build a minimal ratification row. `timeframe` is included so
+  // the timeframe-filter path (now applied to ratRows too) works in tests.
   function makeRatRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       pair: "BTC/USDT",
       invokedAtRecordId: "2026-05-01T00:00:00.000Z#abc",
       invokedAt: "2026-05-01T00:00:00.000Z",
       invokedReason: "news",
+      timeframe: "1h",
       fellBackToAlgo: false,
       cacheHit: false,
       costUsd: 0.01,
@@ -462,8 +464,8 @@ describe("getGenieMetrics", () => {
     const result = await getGenieMetrics();
 
     expect(result.total.signalCount).toBe(0);
-    expect(result.outcomes.correct).toBe(0);
-    expect(result.outcomes.incorrect).toBe(0);
+    expect(result.outcomes.tp).toBe(0);
+    expect(result.outcomes.sl).toBe(0);
     expect(result.cost.totalUsd).toBe(0);
     expect(result.gating.invoked).toBe(0);
     expect(result.winRate.overall).toBeNull();
@@ -483,7 +485,8 @@ describe("getGenieMetrics", () => {
     dynamoSend.mockImplementation(routedMock({ ratifications: rows }));
 
     const { getGenieMetrics } = await importService();
-    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    // Use pair filter so only one pair is queried (avoids 5x multiplication
+    // across SUPPORTED_PAIRS).
     const result = await getGenieMetrics(undefined, "BTC/USDT");
 
     expect(result.gating.skipLowConfidence).toBe(1);
@@ -507,7 +510,8 @@ describe("getGenieMetrics", () => {
     dynamoSend.mockImplementation(routedMock({ ratifications: rows }));
 
     const { getGenieMetrics } = await importService();
-    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    // Use pair filter so only one pair is queried (avoids 5x multiplication
+    // across SUPPORTED_PAIRS).
     const result = await getGenieMetrics(undefined, "BTC/USDT");
 
     // 1 cache hit out of 3 LLM invocations = 1/3
@@ -532,12 +536,13 @@ describe("getGenieMetrics", () => {
     dynamoSend.mockImplementation(routedMock({ signals: signalRows, outcomes: outcomeRows }));
 
     const { getGenieMetrics } = await importService();
-    // Use pair filter so only one pair is queried (avoids 5x multiplication from ALL_PAIRS)
+    // Use pair filter so only one pair is queried (avoids 5x multiplication
+    // across SUPPORTED_PAIRS).
     const result = await getGenieMetrics(undefined, "BTC/USDT");
 
     // 2 correct, 1 incorrect, 1 neutral → directional = 3, wins = 2 → 2/3
-    expect(result.outcomes.correct).toBe(2);
-    expect(result.outcomes.incorrect).toBe(1);
+    expect(result.outcomes.tp).toBe(2);
+    expect(result.outcomes.sl).toBe(1);
     expect(result.outcomes.neutral).toBe(1);
     expect(result.winRate.overall).toBeCloseTo(2 / 3, 5);
     // signalCount is from signals_v2 directly
@@ -580,7 +585,7 @@ describe("getGenieMetrics", () => {
     expect(result.total.signalCount).toBe(6);
   });
 
-  it("computes avgPerCorrectUsd as null when there are no correct outcomes", async () => {
+  it("computes avgPerTpUsd as null when there are no take-profit outcomes", async () => {
     dynamoSend.mockImplementation(
       routedMock({
         signals: [makeSignalRow({ signalId: "sig-only-incorrect" })],
@@ -592,8 +597,8 @@ describe("getGenieMetrics", () => {
     const { getGenieMetrics } = await importService();
     const result = await getGenieMetrics(undefined, "BTC/USDT");
 
-    expect(result.outcomes.correct).toBe(0);
-    expect(result.cost.avgPerCorrectUsd).toBeNull();
+    expect(result.outcomes.tp).toBe(0);
+    expect(result.cost.avgPerTpUsd).toBeNull();
     expect(result.cost.totalUsd).toBeCloseTo(0.05, 5);
   });
 
@@ -615,9 +620,37 @@ describe("getGenieMetrics", () => {
     const result = await getGenieMetrics(undefined, "BTC/USDT", "1h");
 
     // Only the two "1h" rows survive the filter on both signals and outcomes
-    expect(result.outcomes.correct).toBe(2);
-    expect(result.outcomes.incorrect).toBe(0);
+    expect(result.outcomes.tp).toBe(2);
+    expect(result.outcomes.sl).toBe(0);
     expect(result.total.signalCount).toBe(2);
+  });
+
+  it("filters ratification metrics by timeframe — gating, cost, cacheHitRate", async () => {
+    // 1h ratifications: 1 invoked + 1 skip-low-confidence + 1 cache-hit invoked
+    // 4h ratifications: 1 invoked + 1 skip-rate-limited
+    // With timeframe=1h, only the three 1h rat-rows should contribute.
+    const ratRows = [
+      makeRatRow({ timeframe: "1h", invokedReason: "news", costUsd: 0.02, cacheHit: false }),
+      makeRatRow({ timeframe: "1h", invokedReason: "skip-low-confidence", costUsd: 0 }),
+      makeRatRow({ timeframe: "1h", invokedReason: "vol", costUsd: 0.01, cacheHit: true }),
+      makeRatRow({ timeframe: "4h", invokedReason: "news", costUsd: 0.05 }),
+      makeRatRow({ timeframe: "4h", invokedReason: "skip-rate-limited", costUsd: 0 }),
+    ];
+
+    dynamoSend.mockImplementation(routedMock({ ratifications: ratRows }));
+
+    const { getGenieMetrics } = await importService();
+    const result = await getGenieMetrics(undefined, "BTC/USDT", "1h");
+
+    // Only 3 1h rat rows: 1 skip-low-confidence + 2 invoked (one cache-hit)
+    expect(result.gating.skipLowConfidence).toBe(1);
+    expect(result.gating.skipRateLimit).toBe(0); // the 4h one is filtered out
+    expect(result.gating.invoked).toBe(2);
+    expect(result.total.gatedCount).toBe(1);
+    // Cost: 0.02 + 0 + 0.01 = 0.03 (4h's 0.05 excluded)
+    expect(result.cost.totalUsd).toBeCloseTo(0.03, 5);
+    // 1 cache hit out of 2 invocations = 0.5
+    expect(result.cost.cacheHitRate).toBeCloseTo(0.5, 5);
   });
 
   it("uses provided since as windowStart", async () => {

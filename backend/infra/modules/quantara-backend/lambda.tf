@@ -133,8 +133,10 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
       {
         # Read-only access for the admin Market, News, and Genie-metrics
         # pages, which Query and GetItem from ingestion-owned tables.
-        # Without this, calls fail with AccessDeniedException and the admin
-        # endpoints silently return empty results.
+        # Without this, calls fail with AccessDeniedException — the admin
+        # service does NOT swallow DynamoDB permission errors, so the
+        # endpoints surface a 500 (typically "internal_error") to the
+        # caller rather than silently returning empty data.
         Effect = "Allow"
         Action = ["dynamodb:Query", "dynamodb:GetItem"]
         Resource = [
