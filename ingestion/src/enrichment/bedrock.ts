@@ -5,7 +5,15 @@ import { buildEnrichmentMessage } from "./prompts.js";
 
 const bedrock = new BedrockRuntimeClient({});
 
-const MODEL_ID = "anthropic.claude-3-5-haiku-20241022-v1:0";
+// Cross-region inference profile (us.* prefix) — required because all
+// currently-active Anthropic models on Bedrock are profile-only. AWS marked
+// Haiku 3.5 as legacy and revoked access for accounts that hadn't invoked
+// it in 30+ days, which is what was producing the silent enrichment
+// failures (every InvokeModel returned ResourceNotFoundException → catch
+// block wrote `status: "failed"` to news-events). The us.* profile routes
+// across us-west-2 / us-east-1 / us-east-2 by capacity; the org SCP
+// region-lock was updated to permit `bedrock:InvokeModel*` cross-region.
+const MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 export async function enrichNewsItem(title: string, currencies: string[]): Promise<NewsEnrichment> {
   const prompt = buildEnrichmentMessage(title, currencies);
