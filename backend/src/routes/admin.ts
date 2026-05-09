@@ -13,6 +13,7 @@ import {
   getSignals,
   getGenieMetrics,
   getRatifications,
+  getPipelineHealth,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
 
@@ -191,6 +192,29 @@ admin.get("/ratifications", async (c) => {
   });
 
   return c.json({ success: true, data: { items, cursor } });
+});
+
+admin.get("/pipeline-health", async (c) => {
+  const windowHoursRaw = c.req.query("windowHours");
+  let windowHours = 24;
+  if (windowHoursRaw !== undefined) {
+    const parsed = parseInt(windowHoursRaw, 10);
+    if (isNaN(parsed) || parsed < 1 || parsed > 168) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: "windowHours must be an integer between 1 and 168",
+          },
+        },
+        400,
+      );
+    }
+    windowHours = parsed;
+  }
+  const data = await getPipelineHealth(windowHours);
+  return c.json({ success: true, data });
 });
 
 admin.get("/news", async (c) => {

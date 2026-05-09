@@ -1319,3 +1319,345 @@ export async function setWhitelist(ips: string[]): Promise<{ ips: string[] }> {
   );
   return { ips };
 }
+
+// ---------------------------------------------------------------------------
+// getPipelineHealth — data for admin/pipeline-health dashboard
+// ---------------------------------------------------------------------------
+
+const HEALTH_EXCHANGES = ["binanceus", "kraken", "coinbase"] as const;
+type Exchange = (typeof HEALTH_EXCHANGES)[number];
+
+/** Seconds since a candle was last written before we consider an exchange stale/down. */
+const STALE_THRESHOLD_S = 5 * 60; // 5 min
+const DOWN_THRESHOLD_S = 15 * 60; // 15 min
+
+/** Lambda functions tracked for CloudWatch metrics. */
+const HEALTH_LAMBDAS = ["api", "ingestion", "backfill", "news-backfill", "enrichment"] as const;
+
+/** Pairs × timeframes used for quorum success-rate calculation. */
+const QUORUM_TIMEFRAMES = ["15m", "1h", "4h"] as const;
+
+export interface ExchangeHealth {
+  lastDataAt: string | null;
+  streamHealth: "healthy" | "stale" | "down";
+  stalenessSec: number | null;
+}
+
+export interface QuorumHealth {
+  successRate: number | null;
+  perPair: Record<string, { perTf: Record<string, number | null> }>;
+}
+
+export interface LambdaHealth {
+  invocations: number | null;
+  errors: number | null;
+  errorRate: number | null;
+  avgDurationMs: number | null;
+  throttles: number | null;
+}
+
+export interface FargateHealth {
+  runningCount: number;
+  desiredCount: number;
+  lastRestartAt: string | null;
+  cpuUtilizationPct: number | null;
+  memoryUtilizationPct: number | null;
+}
+
+export interface PipelineHealth {
+  windowStart: string;
+  windowEnd: string;
+  exchanges: Record<Exchange, ExchangeHealth>;
+  quorum: QuorumHealth;
+  lambdas: Record<string, LambdaHealth>;
+  fargate: FargateHealth;
+}
+
+/** Fetch the latest candle sk per exchange from the candles GSI.
+ *  The GSI `exchange-index` uses `exchange` as hash key and `sk` as range key.
+ *  We query it with ScanIndexForward=false, Limit=1 to get the most-recent write. */
+async function getExchangeLastDataAt(exchange: Exchange): Promise<string | null> {
+  try {
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: `${PREFIX}-candles`,
+        IndexName: "exchange-index",
+        KeyConditionExpression: "#exchange = :exchange",
+        ExpressionAttributeNames: { "#exchange": "exchange" },
+        ExpressionAttributeValues: { ":exchange": exchange },
+        ScanIndexForward: false,
+        Limit: 1,
+      }),
+    );
+    const item = result.Items?.[0];
+    if (!item) return null;
+    // sk format: exchange#timeframe#iso8601
+    const sk = item.sk as string | undefined;
+    if (!sk) return null;
+    const iso = sk.split("#")[2];
+    return iso ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compute staleness health bucket from a timestamp string. */
+function toStreamHealth(
+  lastDataAt: string | null,
+  nowMs: number,
+): { streamHealth: ExchangeHealth["streamHealth"]; stalenessSec: number | null } {
+  if (!lastDataAt) return { streamHealth: "down", stalenessSec: null };
+  const stalenessSec = Math.round((nowMs - new Date(lastDataAt).getTime()) / 1000);
+  if (stalenessSec > DOWN_THRESHOLD_S) return { streamHealth: "down", stalenessSec };
+  if (stalenessSec > STALE_THRESHOLD_S) return { streamHealth: "stale", stalenessSec };
+  return { streamHealth: "healthy", stalenessSec };
+}
+
+/** Count quorum bar-closes: a bar-close has quorum when ≥2 of 3 exchanges
+ *  had fresh data for that pair+timeframe within the window.
+ *  We read from indicator_state records (exchange=consensus) and compare the
+ *  dispersion field — when dispersion is non-null a quorum was achieved. */
+async function computeQuorumForPairTf(
+  pair: string,
+  timeframe: string,
+  windowStart: string,
+): Promise<number | null> {
+  try {
+    const pk = `${pair}#consensus#${timeframe}`;
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: INDICATOR_STATE_TABLE,
+        KeyConditionExpression: "#pk = :pk AND #sk >= :start",
+        ExpressionAttributeNames: { "#pk": "pk", "#sk": "sk" },
+        ExpressionAttributeValues: { ":pk": pk, ":start": windowStart },
+        ScanIndexForward: false,
+        Limit: 500,
+      }),
+    );
+    const items = result.Items ?? [];
+    if (items.length === 0) return null;
+    const withQuorum = items.filter(
+      (it) => (it.dispersion as number | null) !== null,
+    ).length;
+    return withQuorum / items.length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch CloudWatch metric statistics for a Lambda function over the given window.
+ *
+ * NOTE: This function requires `@aws-sdk/client-cloudwatch` which is not yet
+ * listed in package.json. The IAM permission (`cloudwatch:GetMetricStatistics`)
+ * must be added via Terraform (see `lambda_admin_ops` policy). Until both the
+ * dependency and IAM are in place this function returns null-filled metrics
+ * gracefully instead of throwing.
+ *
+ * To activate: add `"@aws-sdk/client-cloudwatch": "^3.750.0"` to the
+ * `dependencies` block in `backend/package.json` and run `npm install`.
+ */
+async function fetchLambdaMetrics(
+  functionName: string,
+  windowStart: Date,
+  windowEnd: Date,
+): Promise<LambdaHealth> {
+  const nullMetrics: LambdaHealth = {
+    invocations: null,
+    errors: null,
+    errorRate: null,
+    avgDurationMs: null,
+    throttles: null,
+  };
+
+  try {
+    // Dynamic import so the module resolves at call-time; if the package is not
+    // installed Node throws MODULE_NOT_FOUND which we catch below.
+    const { CloudWatchClient, GetMetricStatisticsCommand } = await import(
+      "@aws-sdk/client-cloudwatch"
+    );
+    const cw = new CloudWatchClient({ region: REGION });
+
+    const periodSec = Math.round((windowEnd.getTime() - windowStart.getTime()) / 1000);
+    const dims = [{ Name: "FunctionName", Value: functionName }];
+
+    async function stat(
+      metricName: string,
+      stat: "Sum" | "Average",
+    ): Promise<number | null> {
+      try {
+        const res = await cw.send(
+          new GetMetricStatisticsCommand({
+            Namespace: "AWS/Lambda",
+            MetricName: metricName,
+            Dimensions: dims,
+            StartTime: windowStart,
+            EndTime: windowEnd,
+            Period: periodSec,
+            Statistics: [stat],
+          }),
+        );
+        return res.Datapoints?.[0]?.[stat] ?? null;
+      } catch {
+        return null;
+      }
+    }
+
+    const [invocations, errors, avgDurationMs, throttles] = await Promise.all([
+      stat("Invocations", "Sum"),
+      stat("Errors", "Sum"),
+      stat("Duration", "Average"),
+      stat("Throttles", "Sum"),
+    ]);
+
+    const errorRate =
+      invocations !== null && errors !== null && invocations > 0
+        ? errors / invocations
+        : null;
+
+    return { invocations, errors, errorRate, avgDurationMs, throttles };
+  } catch {
+    // Package not installed or IAM denied — return graceful nulls.
+    return nullMetrics;
+  }
+}
+
+/** Fetch Fargate ECS service state + CloudWatch utilization metrics. */
+async function getFargateHealth(
+  windowStart: Date,
+  windowEnd: Date,
+): Promise<FargateHealth> {
+  const cluster = `${PREFIX}-ingestion`;
+
+  // ECS service state
+  let runningCount = 0;
+  let desiredCount = 0;
+  try {
+    const svcRes = await ecs.send(
+      new DescribeServicesCommand({ cluster, services: [cluster] }),
+    );
+    const svc = svcRes.services?.[0];
+    if (svc) {
+      runningCount = svc.runningCount ?? 0;
+      desiredCount = svc.desiredCount ?? 0;
+    }
+  } catch { /* graceful */ }
+
+  // CloudWatch ECS utilization (requires @aws-sdk/client-cloudwatch)
+  let cpuUtilizationPct: number | null = null;
+  let memoryUtilizationPct: number | null = null;
+  let lastRestartAt: string | null = null;
+
+  try {
+    const { CloudWatchClient, GetMetricStatisticsCommand } = await import(
+      "@aws-sdk/client-cloudwatch"
+    );
+    const cw = new CloudWatchClient({ region: REGION });
+    const periodSec = Math.round((windowEnd.getTime() - windowStart.getTime()) / 1000);
+    const dims = [
+      { Name: "ClusterName", Value: cluster },
+      { Name: "ServiceName", Value: cluster },
+    ];
+
+    async function ecsStat(metricName: string): Promise<number | null> {
+      try {
+        const res = await cw.send(
+          new GetMetricStatisticsCommand({
+            Namespace: "AWS/ECS",
+            MetricName: metricName,
+            Dimensions: dims,
+            StartTime: windowStart,
+            EndTime: windowEnd,
+            Period: periodSec,
+            Statistics: ["Average"],
+          }),
+        );
+        return res.Datapoints?.[0]?.Average ?? null;
+      } catch {
+        return null;
+      }
+    }
+
+    [cpuUtilizationPct, memoryUtilizationPct] = await Promise.all([
+      ecsStat("CPUUtilization"),
+      ecsStat("MemoryUtilization"),
+    ]);
+  } catch { /* package not yet installed */ }
+
+  // Attempt to find last restart time from CloudWatch Logs
+  try {
+    const logGroupName = `/ecs/${PREFIX}-ingestion`;
+    const streams = await cwLogs.send(
+      new DescribeLogStreamsCommand({
+        logGroupName,
+        orderBy: "LastEventTime",
+        descending: true,
+        limit: 1,
+      }),
+    );
+    const createdAt = streams.logStreams?.[0]?.creationTime;
+    if (createdAt) lastRestartAt = new Date(createdAt).toISOString();
+  } catch { /* graceful */ }
+
+  return { runningCount, desiredCount, lastRestartAt, cpuUtilizationPct, memoryUtilizationPct };
+}
+
+export async function getPipelineHealth(windowHours = 24): Promise<PipelineHealth> {
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - windowHours * 60 * 60 * 1000);
+
+  // --- Exchange health ---
+  const exchangeEntries = await Promise.all(
+    HEALTH_EXCHANGES.map(async (exchange) => {
+      const lastDataAt = await getExchangeLastDataAt(exchange);
+      const { streamHealth, stalenessSec } = toStreamHealth(lastDataAt, windowEnd.getTime());
+      return [exchange, { lastDataAt, streamHealth, stalenessSec }] as const;
+    }),
+  );
+  const exchanges = Object.fromEntries(exchangeEntries) as Record<Exchange, ExchangeHealth>;
+
+  // --- Quorum ---
+  let totalBars = 0;
+  let barsWithQuorum = 0;
+  const perPair: QuorumHealth["perPair"] = {};
+
+  for (const pair of PAIRS) {
+    perPair[pair] = { perTf: {} };
+    for (const tf of QUORUM_TIMEFRAMES) {
+      const rate = await computeQuorumForPairTf(pair, tf, windowStart.toISOString());
+      perPair[pair].perTf[tf] = rate;
+      // Accumulate global rate only when data is available
+      if (rate !== null) {
+        // rate already represents the fraction in range [0,1]
+        // We weight each pair+tf equally for the aggregate
+        totalBars += 1;
+        barsWithQuorum += rate;
+      }
+    }
+  }
+
+  const quorumSuccessRate = totalBars > 0 ? barsWithQuorum / totalBars : null;
+  const quorum: QuorumHealth = { successRate: quorumSuccessRate, perPair };
+
+  // --- Lambda metrics ---
+  const lambdaEntries = await Promise.all(
+    HEALTH_LAMBDAS.map(async (name) => {
+      const fullName = `${PREFIX}-${name}`;
+      const metrics = await fetchLambdaMetrics(fullName, windowStart, windowEnd);
+      return [name, metrics] as const;
+    }),
+  );
+  const lambdas = Object.fromEntries(lambdaEntries) as Record<string, LambdaHealth>;
+
+  // --- Fargate ---
+  const fargate = await getFargateHealth(windowStart, windowEnd);
+
+  return {
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+    exchanges,
+    quorum,
+    lambdas,
+    fargate,
+  };
+}

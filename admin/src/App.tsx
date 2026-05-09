@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthGate } from "./components/AuthGate";
 import { Layout } from "./components/Layout";
 import { Genie } from "./pages/Genie";
+import { Health } from "./pages/Health";
 import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Market } from "./pages/Market";
@@ -82,6 +83,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Pipeline />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/health"
+          element={
+            <AuthGate>
+              <Layout>
+                <Health />
               </Layout>
             </AuthGate>
           }

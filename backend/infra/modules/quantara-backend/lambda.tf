@@ -101,6 +101,14 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
         Resource = "*"
       },
       {
+        # Required by GET /api/admin/pipeline-health — Lambda + ECS CloudWatch metrics
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:GetMetricStatistics",
+        ]
+        Resource = "*"
+      },
+      {
         Effect = "Allow"
         Action = [
           "sqs:GetQueueAttributes",
