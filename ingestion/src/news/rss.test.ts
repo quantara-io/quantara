@@ -41,6 +41,7 @@ describe("fetchRssNews", () => {
       .mockRejectedValueOnce(new Error("boom"));
     vi.stubGlobal("fetch", fetchMock);
 
+    const before = Date.now();
     const records = await fetchRssNews();
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -58,16 +59,17 @@ describe("fetchRssNews", () => {
 
     const sol = records.find((r) => r.title.includes("SOL and DOGE"));
     expect(sol?.currencies.sort()).toEqual(["DOGE", "SOL"]);
-    // Empty pubDate falls back to a stable synthetic date derived from the
-    // item's link (stableFallbackDate). Verify it parsed as a valid ISO and
-    // landed within the past 24h (anchored at start of UTC day plus
-    // hash-derived offset within the day). Cross-poll stability is asserted
-    // separately below.
+    // Empty pubDate falls back to the current poll time (new Date().toISOString()).
+    // Verify it parses as a valid ISO and is within the test window.
+    // Tolerance is wide on purpose — `fetchRssNews()` does 3 fetches +
+    // XML parse, so on a slow CI runner the actual fallback timestamp can
+    // legitimately be a few seconds after `before`. Tightening to 1s
+    // makes this flaky without buying any signal.
     const solTs = Date.parse(sol!.publishedAt);
     expect(Number.isNaN(solTs)).toBe(false);
     const now = Date.now();
-    expect(solTs).toBeGreaterThanOrEqual(now - 86_400_000);
-    expect(solTs).toBeLessThanOrEqual(now + 86_400_000);
+    expect(solTs).toBeGreaterThanOrEqual(before);
+    expect(solTs).toBeLessThanOrEqual(now + 5_000);
   });
 
   it("returns [] when every feed errors out", async () => {
@@ -89,30 +91,29 @@ describe("fetchRssNews", () => {
     }
   });
 
-  it("produces a stable publishedAt for items without a pubDate across two polls", async () => {
-    // This is the dedup-correctness property: an article with no pubDate must
-    // get the same (newsId, publishedAt) key on every poll, so storeNewsRecords
-    // can deduplicate it correctly without re-writing a duplicate row.
-    //
-    // `stableFallbackDate` buckets time at 15-minute boundaries, so two
-    // wall-clock-driven polls that straddle a bucket boundary would
-    // legitimately produce different timestamps. Freeze time so the test
-    // exercises the stability promise within a single bucket.
+  it("produces a current-time publishedAt for undated items — different across polls but newsId stays stable", async () => {
+    // Since dedup is now keyed on newsId alone, publishedAt no longer needs to
+    // be stable. Undated articles receive new Date().toISOString() on each poll,
+    // which is correct for recency-bound queries. newsId (derived from guid
+    // hash) remains stable so storeNewsRecords can deduplicate across polls.
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-09T12:07:30Z"));
     try {
+      vi.setSystemTime(new Date("2026-05-09T14:59:00Z")); // just before bucket boundary
       const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => SAMPLE_FEED });
       vi.stubGlobal("fetch", fetchMock);
-
       const first = await fetchRssNews();
+
+      vi.setSystemTime(new Date("2026-05-09T15:01:00Z")); // just after bucket boundary
       const second = await fetchRssNews();
 
-      // The SOL item has an empty pubDate in SAMPLE_FEED.
       const firstSol = first.find((r) => r.title.includes("SOL and DOGE"))!;
       const secondSol = second.find((r) => r.title.includes("SOL and DOGE"))!;
 
-      expect(firstSol.publishedAt).toBe(secondSol.publishedAt);
+      // newsId is stable (guid-based hash, not time-based).
       expect(firstSol.newsId).toBe(secondSol.newsId);
+      // publishedAt differs across polls — that is expected and no longer a dedup problem.
+      expect(firstSol.publishedAt).toBe("2026-05-09T14:59:00.000Z");
+      expect(secondSol.publishedAt).toBe("2026-05-09T15:01:00.000Z");
     } finally {
       vi.useRealTimers();
     }

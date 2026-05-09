@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, BatchWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import pino from "pino";
 
 import type { NewsRecord } from "./types.js";
@@ -103,29 +103,60 @@ async function batchWriteWithRetry(records: NewsRecord[]): Promise<NewsRecord[]>
  * UnprocessedItems that exhaust retry attempts, those records are excluded
  * from the returned set.
  *
- * Dedup key: (newsId, publishedAt) — the DynamoDB primary key.  A GetItem
- * check is issued per record before batching writes.  Each check is logged at
- * DEBUG level (gated by LOG_LEVEL) so future regressions are diagnosable
- * without flooding production logs by default.
+ * Dedup key: newsId only.  A Query on the partition key is issued per record
+ * before batching writes — this detects any existing row with the same newsId
+ * regardless of its publishedAt sort key value, so an undated article polled
+ * across a publishedAt bucket boundary does not produce a duplicate row.
+ * Each check is logged at DEBUG level (gated by LOG_LEVEL) so future
+ * regressions are diagnosable without flooding production logs by default.
  */
 export async function storeNewsRecords(records: NewsRecord[]): Promise<NewsRecord[]> {
   if (records.length === 0) return [];
 
-  // Deduplicate: skip records that already exist in the table.
+  // Deduplicate: skip records whose newsId already exists in the table OR
+  // already appeared earlier in this same batch.
+  //
+  // Query on the partition key (newsId) with Limit 1 so we detect any row
+  // for this article regardless of publishedAt — a GetItem on (newsId,
+  // publishedAt) would miss rows whose publishedAt changed between polls.
+  //
+  // The `seenInBatch` Set guards against the same article appearing twice
+  // in a single poll: without it, both Query calls would return Count: 0
+  // (DDB doesn't see uncommitted writes from this call) and BatchWrite
+  // would either persist two rows or reject the batch on duplicate keys.
   const newRecords: NewsRecord[] = [];
+  const seenInBatch = new Set<string>();
   for (const record of records) {
+    if (seenInBatch.has(record.newsId)) {
+      logger.debug(
+        { newsId: record.newsId, publishedAt: record.publishedAt, source: record.source },
+        "[NewsStore] duplicate skip (within-batch)",
+      );
+      continue;
+    }
     const existing = await client.send(
-      new GetCommand({
+      new QueryCommand({
         TableName: NEWS_TABLE,
-        Key: { newsId: record.newsId, publishedAt: record.publishedAt },
+        KeyConditionExpression: "newsId = :id",
+        ExpressionAttributeValues: { ":id": record.newsId },
         ProjectionExpression: "newsId",
+        Limit: 1,
+        // Strongly-consistent read: a just-written item from a rapid
+        // re-poll must be visible immediately, otherwise a duplicate
+        // (different `publishedAt`, same `newsId`) can slip through.
+        ConsistentRead: true,
       }),
     );
-    if (existing.Item) {
+    if (existing.Count && existing.Count > 0) {
       logger.debug(
         { newsId: record.newsId, publishedAt: record.publishedAt, source: record.source },
         "[NewsStore] duplicate skip",
       );
+      // Track DDB-hit duplicates too: if the same newsId reappears later
+      // in this same batch, the seenInBatch guard short-circuits it before
+      // a second redundant Query is issued. Without this we'd burn an
+      // extra RCU per repeat for any article that's already in DDB.
+      seenInBatch.add(record.newsId);
     } else {
       logger.debug(
         {
@@ -137,6 +168,7 @@ export async function storeNewsRecords(records: NewsRecord[]): Promise<NewsRecor
         "[NewsStore] new record",
       );
       newRecords.push(record);
+      seenInBatch.add(record.newsId);
     }
   }
 
