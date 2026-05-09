@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { NewsRecord } from "./types.js";
 
 const RSS_FEEDS = [
@@ -98,7 +100,7 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
         }
 
         records.push({
-          newsId: `rss-${hashString(item.guid)}`,
+          newsId: `rss-${newsIdHash(item.guid)}`,
           source: feed.name,
           title: item.title,
           url: item.link,
@@ -119,11 +121,11 @@ export async function fetchRssNews(): Promise<NewsRecord[]> {
   return records;
 }
 
-function hashString(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0;
-  }
-  return Math.abs(hash).toString(36);
+// Collision-resistant newsId: SHA-256 truncated to 16 hex chars (64 bits).
+// 2^32 IDs see a 50% collision risk at ~50K items (birthday bound), which the
+// prior 32-bit hashString hit easily. With 64 bits the bound is ~5B items —
+// well past the lifetime news volume. Now that newsId is the sole dedup key,
+// any collision = silent article drop, so collision resistance is critical.
+function newsIdHash(seed: string): string {
+  return createHash("sha256").update(seed).digest("hex").slice(0, 16);
 }

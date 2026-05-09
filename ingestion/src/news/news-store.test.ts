@@ -197,6 +197,38 @@ describe("storeNewsRecords", () => {
       const writes = send.mock.calls.filter((c) => c[0].__cmd === "BatchWrite");
       expect(writes).toHaveLength(1);
     });
+
+    it("collapses repeated newsId within a single batch to one row", async () => {
+      // Same article appearing twice in one poll batch: without the
+      // per-call seenInBatch guard, both Query calls would return Count: 0
+      // (DDB doesn't see uncommitted writes from this call), and BatchWrite
+      // would persist two PutRequest items with the same newsId — either
+      // creating two sort-key rows or rejecting the batch on duplicate
+      // primary keys. Only the first occurrence should hit DDB.
+      send.mockImplementation(async (cmd: { __cmd: string }) => {
+        if (cmd.__cmd === "Query") return { Count: 0, Items: [] }; // not in DDB
+        return {};
+      });
+
+      const { storeNewsRecords } = await import("./news-store.js");
+      const stored = await storeNewsRecords([record("dup-art"), record("dup-art")]);
+
+      // Only the first duplicate is returned.
+      expect(stored).toHaveLength(1);
+      expect(stored[0].newsId).toBe("dup-art");
+
+      // Only one BatchWrite, with one PutRequest item.
+      const writes = send.mock.calls.filter((c) => c[0].__cmd === "BatchWrite");
+      expect(writes).toHaveLength(1);
+      const items = writes[0][0].input.RequestItems["test-news-events"];
+      expect(items).toHaveLength(1);
+      expect(items[0].PutRequest.Item.newsId).toBe("dup-art");
+
+      // Only the FIRST occurrence triggers a Query — the second is short-
+      // circuited by the seenInBatch guard before the DDB call.
+      const queries = send.mock.calls.filter((c) => c[0].__cmd === "Query");
+      expect(queries).toHaveLength(1);
+    });
   });
 
   describe("UnprocessedItems retry", () => {

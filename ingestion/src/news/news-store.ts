@@ -113,12 +113,27 @@ async function batchWriteWithRetry(records: NewsRecord[]): Promise<NewsRecord[]>
 export async function storeNewsRecords(records: NewsRecord[]): Promise<NewsRecord[]> {
   if (records.length === 0) return [];
 
-  // Deduplicate: skip records whose newsId already exists in the table.
+  // Deduplicate: skip records whose newsId already exists in the table OR
+  // already appeared earlier in this same batch.
+  //
   // Query on the partition key (newsId) with Limit 1 so we detect any row
   // for this article regardless of publishedAt — a GetItem on (newsId,
   // publishedAt) would miss rows whose publishedAt changed between polls.
+  //
+  // The `seenInBatch` Set guards against the same article appearing twice
+  // in a single poll: without it, both Query calls would return Count: 0
+  // (DDB doesn't see uncommitted writes from this call) and BatchWrite
+  // would either persist two rows or reject the batch on duplicate keys.
   const newRecords: NewsRecord[] = [];
+  const seenInBatch = new Set<string>();
   for (const record of records) {
+    if (seenInBatch.has(record.newsId)) {
+      logger.debug(
+        { newsId: record.newsId, publishedAt: record.publishedAt, source: record.source },
+        "[NewsStore] duplicate skip (within-batch)",
+      );
+      continue;
+    }
     const existing = await client.send(
       new QueryCommand({
         TableName: NEWS_TABLE,
@@ -144,6 +159,7 @@ export async function storeNewsRecords(records: NewsRecord[]): Promise<NewsRecor
         "[NewsStore] new record",
       );
       newRecords.push(record);
+      seenInBatch.add(record.newsId);
     }
   }
 
