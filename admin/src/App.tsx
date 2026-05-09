@@ -10,6 +10,7 @@ import { News } from "./pages/News";
 import { Pipeline } from "./pages/Pipeline";
 import { Whitelist } from "./pages/Whitelist";
 import { Ratifications } from "./pages/Ratifications";
+import { Pnl } from "./pages/Pnl";
 
 export function App() {
   return (
@@ -82,6 +83,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Pipeline />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/pnl"
+          element={
+            <AuthGate>
+              <Layout>
+                <Pnl />
               </Layout>
             </AuthGate>
           }

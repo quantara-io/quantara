@@ -27,6 +27,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <Tab to="/ratifications">Ratifications</Tab>
             <Tab to="/genie">Genie</Tab>
             <Tab to="/pipeline">Pipeline</Tab>
+            <Tab to="/pnl">PnL</Tab>
           </nav>
           <div className="ml-auto flex items-center gap-3 text-xs text-slate-400">
             <span>{user?.email}</span>

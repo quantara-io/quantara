@@ -10,6 +10,7 @@ const getSignalsMock = vi.fn();
 const getGenieMetricsMock = vi.fn();
 const getRatificationsMock = vi.fn();
 const getPipelineStateMock = vi.fn();
+const getPnlSimulationMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
@@ -25,6 +26,10 @@ vi.mock("../services/admin.service.js", () => ({
 
 vi.mock("../services/pipeline-state.service.js", () => ({
   getPipelineState: getPipelineStateMock,
+}));
+
+vi.mock("../services/pnl-simulation.service.js", () => ({
+  getPnlSimulation: getPnlSimulationMock,
 }));
 
 let currentAuth: Record<string, unknown> = {
@@ -55,6 +60,7 @@ beforeEach(() => {
   getGenieMetricsMock.mockReset();
   getRatificationsMock.mockReset();
   getPipelineStateMock.mockReset();
+  getPnlSimulationMock.mockReset();
   currentAuth = {
     userId: "user_admin",
     email: "admin@example.com",
@@ -682,5 +688,110 @@ describe("GET /pipeline-state", () => {
     const res = await app.request("/pipeline-state");
     expect(res.status).toBe(403);
     expect(getPipelineStateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /pnl-simulation", () => {
+  const mockPnl = {
+    windowStart: "2026-04-09T00:00:00.000Z",
+    windowEnd: "2026-05-09T00:00:00.000Z",
+    trades: { count: 5, wins: 3, losses: 2, neutral: 0 },
+    pnl: { totalUsd: 25.5, avgPerTradeUsd: 5.1, bestUsd: 12.0, worstUsd: -6.5 },
+    equityCurve: [
+      { ts: "2026-04-10T00:00:00.000Z", cumulativeUsd: 12.0 },
+      { ts: "2026-04-15T00:00:00.000Z", cumulativeUsd: 5.5 },
+      { ts: "2026-05-01T00:00:00.000Z", cumulativeUsd: 25.5 },
+    ],
+    drawdown: { maxUsd: 6.5, maxPct: 0.54, durationDays: 5 },
+    perPair: { "BTC/USDT": { trades: 3, pnlUsd: 18, winRate: 0.667 } },
+    perTimeframe: { "1h": { trades: 5, pnlUsd: 25.5, winRate: 0.6 } },
+  };
+
+  it("returns 200 with simulation result for default params", async () => {
+    getPnlSimulationMock.mockResolvedValue(mockPnl);
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockPnl };
+    expect(body.success).toBe(true);
+    expect(body.data.trades.count).toBe(5);
+    expect(body.data.drawdown.maxUsd).toBe(6.5);
+    expect(getPnlSimulationMock).toHaveBeenCalledWith({
+      since: undefined,
+      pair: undefined,
+      timeframe: undefined,
+      positionSizeUsd: undefined,
+      feeBps: undefined,
+    });
+  });
+
+  it("forwards all query params to the service", async () => {
+    getPnlSimulationMock.mockResolvedValue(mockPnl);
+    const app = await loadApp();
+    const since = "2026-04-01T00:00:00.000Z";
+    const res = await app.request(
+      `/pnl-simulation?since=${encodeURIComponent(since)}&pair=BTC%2FUSDT&timeframe=1h&positionSize=250&feeBps=10`,
+    );
+    expect(res.status).toBe(200);
+    expect(getPnlSimulationMock).toHaveBeenCalledWith({
+      since,
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      positionSizeUsd: 250,
+      feeBps: 10,
+    });
+  });
+
+  it("returns 400 when since is not a valid ISO date", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation?since=not-a-date");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPnlSimulationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when pair is not in PAIRS", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation?pair=FAKE%2FUSDT");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPnlSimulationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when timeframe is invalid", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation?timeframe=5m");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPnlSimulationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when positionSize is not positive", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation?positionSize=0");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPnlSimulationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when feeBps is negative", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation?feeBps=-1");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPnlSimulationMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation");
+    expect(res.status).toBe(403);
+    expect(getPnlSimulationMock).not.toHaveBeenCalled();
   });
 });
