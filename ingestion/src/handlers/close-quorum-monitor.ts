@@ -47,9 +47,9 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     if (record.eventName !== "REMOVE") continue;
     if (!record.dynamodb?.OldImage) continue;
 
-    const oldImage = unmarshall(
-      record.dynamodb.OldImage as Record<string, AttributeValue>,
-    ) as { id?: string };
+    const oldImage = unmarshall(record.dynamodb.OldImage as Record<string, AttributeValue>) as {
+      id?: string;
+    };
 
     const id = oldImage.id;
     if (!id) {

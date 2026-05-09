@@ -91,7 +91,10 @@ describe("storeCandles", () => {
   it("throws when source is missing (v6 mandatory field enforcement)", async () => {
     const { storeCandles } = await import("./candle-store.js");
     // Cast to bypass TypeScript so we can test runtime guard
-    const candleWithoutSource = { ...makeCandle(), source: undefined } as unknown as import("@quantara/shared").Candle;
+    const candleWithoutSource = {
+      ...makeCandle(),
+      source: undefined,
+    } as unknown as import("@quantara/shared").Candle;
     await expect(storeCandles([candleWithoutSource])).rejects.toThrow(/candle\.source is required/);
     expect(send).not.toHaveBeenCalled();
   });

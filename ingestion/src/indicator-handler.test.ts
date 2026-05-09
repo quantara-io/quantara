@@ -279,7 +279,10 @@ beforeEach(() => {
       // Quorum table get returns 2 exchanges (quorum reached by default)
       if (cmd.input.TableName === "test-close-quorum") {
         return Promise.resolve({
-          Item: { id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE, "coinbase"]) },
+          Item: {
+            id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+            exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+          },
         });
       }
       // signals-v2 get returns no item (not yet processed)
@@ -319,7 +322,13 @@ beforeEach(() => {
       "4h": { articleCount: 0, avgScore: 0, avgMagnitude: 0, windowStart: "", windowEnd: "" },
       "24h": { articleCount: 0, avgScore: 0, avgMagnitude: 0, windowStart: "", windowEnd: "" },
     },
-    fearGreed: { value: 50, classification: "Neutral", lastTimestamp: null, history: [], trend24h: 0 },
+    fearGreed: {
+      value: 50,
+      classification: "Neutral",
+      lastTimestamp: null,
+      history: [],
+      trend24h: 0,
+    },
   });
 });
 
@@ -373,7 +382,10 @@ describe("handler entry point", () => {
         if (cmd.__cmd === "Get") {
           if (cmd.input.TableName === "test-close-quorum") {
             return Promise.resolve({
-              Item: { id: `${TEST_PAIR}#${tf}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE, "coinbase"]) },
+              Item: {
+                id: `${TEST_PAIR}#${tf}#${TEST_CLOSE_TIME}`,
+                exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+              },
             });
           }
           return Promise.resolve({ Item: undefined });
@@ -426,7 +438,10 @@ describe("Step 1 — ADD exchange to close-quorum", () => {
       if (cmd.__cmd === "Get") {
         if (cmd.input.TableName === "test-close-quorum") {
           return Promise.resolve({
-            Item: { id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE, "coinbase"]) },
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
           });
         }
         return Promise.resolve({ Item: undefined });
@@ -456,7 +471,10 @@ describe("Step 2 — Quorum check", () => {
       if (cmd.__cmd === "Update") return Promise.resolve({});
       if (cmd.__cmd === "Get" && cmd.input.TableName === "test-close-quorum") {
         return Promise.resolve({
-          Item: { id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE]) },
+          Item: {
+            id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+            exchanges: new Set([TEST_EXCHANGE]),
+          },
         });
       }
       return Promise.resolve({ Item: undefined });
@@ -541,12 +559,17 @@ describe("Step 3 — Deterministic SK construction (P2.2 correction)", () => {
       if (cmd.__cmd === "Get") {
         if (cmd.input.TableName === "test-close-quorum") {
           return Promise.resolve({
-            Item: { id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE, "coinbase"]) },
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
           });
         }
         if (cmd.input.TableName === "test-signals-v2") {
           // Simulate existing signal (already processed)
-          return Promise.resolve({ Item: { pair: TEST_PAIR, sk: `${TEST_TF}#${TEST_CLOSE_TIME}` } });
+          return Promise.resolve({
+            Item: { pair: TEST_PAIR, sk: `${TEST_TF}#${TEST_CLOSE_TIME}` },
+          });
         }
         return Promise.resolve({ Item: undefined });
       }
@@ -590,7 +613,10 @@ describe("Step 4 — Conditional Put dedup", () => {
       if (cmd.__cmd === "Get") {
         if (cmd.input.TableName === "test-close-quorum") {
           return Promise.resolve({
-            Item: { id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE, "coinbase"]) },
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
           });
         }
         return Promise.resolve({ Item: undefined });
@@ -615,7 +641,10 @@ describe("Step 4 — Conditional Put dedup", () => {
       if (cmd.__cmd === "Get") {
         if (cmd.input.TableName === "test-close-quorum") {
           return Promise.resolve({
-            Item: { id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE, "coinbase"]) },
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE, "coinbase"]),
+            },
           });
         }
         return Promise.resolve({ Item: undefined });
@@ -705,7 +734,10 @@ describe("REQUIRED_EXCHANGE_COUNT env var", () => {
         if (cmd.input.TableName === "test-close-quorum") {
           // Only 1 exchange — quorum if threshold is 1
           return Promise.resolve({
-            Item: { id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`, exchanges: new Set([TEST_EXCHANGE]) },
+            Item: {
+              id: `${TEST_PAIR}#${TEST_TF}#${TEST_CLOSE_TIME}`,
+              exchanges: new Set([TEST_EXCHANGE]),
+            },
           });
         }
         return Promise.resolve({ Item: undefined });

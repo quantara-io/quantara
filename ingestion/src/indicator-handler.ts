@@ -51,8 +51,7 @@ const rawClient = new DynamoDBClient({});
 const client = DynamoDBDocumentClient.from(rawClient);
 
 const CLOSE_QUORUM_TABLE =
-  process.env.TABLE_CLOSE_QUORUM ??
-  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}close-quorum`;
+  process.env.TABLE_CLOSE_QUORUM ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}close-quorum`;
 
 const SIGNALS_V2_TABLE =
   process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
@@ -64,10 +63,7 @@ const METADATA_TABLE =
  * Minimum number of exchanges that must have reported a close before the
  * IndicatorLambda proceeds. Configurable via env var for testability.
  */
-const REQUIRED_EXCHANGE_COUNT = parseInt(
-  process.env.REQUIRED_EXCHANGE_COUNT ?? "2",
-  10,
-);
+const REQUIRED_EXCHANGE_COUNT = parseInt(process.env.REQUIRED_EXCHANGE_COUNT ?? "2", 10);
 
 // ---------------------------------------------------------------------------
 // Timeframe bar durations
