@@ -7,6 +7,7 @@ const getNewsUsageMock = vi.fn();
 const getWhitelistMock = vi.fn();
 const setWhitelistMock = vi.fn();
 const getSignalsMock = vi.fn();
+const getRatificationsMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
@@ -16,6 +17,7 @@ vi.mock("../services/admin.service.js", () => ({
   getWhitelist: getWhitelistMock,
   setWhitelist: setWhitelistMock,
   getSignals: getSignalsMock,
+  getRatifications: getRatificationsMock,
 }));
 
 let currentAuth: Record<string, unknown> = {
@@ -43,6 +45,7 @@ beforeEach(() => {
   getWhitelistMock.mockReset();
   setWhitelistMock.mockReset();
   getSignalsMock.mockReset();
+  getRatificationsMock.mockReset();
   currentAuth = {
     userId: "user_admin",
     email: "admin@example.com",
@@ -311,6 +314,103 @@ describe("GET /news/usage", () => {
     const body = (await res.json()) as { data: typeof mockUsage };
     expect(Object.keys(body.data.byModel)).toContain("anthropic.claude-haiku-4-5");
     expect(body.data.byModel["anthropic.claude-haiku-4-5"].calls).toBe(84);
+  });
+});
+
+describe("GET /ratifications", () => {
+  const mockRow = {
+    recordId: "rec_001",
+    pair: "BTC/USDT",
+    timeframe: "1h",
+    invokedReason: "bar_close",
+    invokedAt: "2026-05-01T12:00:00.000Z",
+    latencyMs: 320,
+    costUsd: 0.0003,
+    cacheHit: false,
+    validationOk: true,
+    fellBackToAlgo: false,
+    algoCandidateType: "buy",
+    algoCandidateConfidence: 0.72,
+    ratifiedType: "buy",
+    ratifiedConfidence: 0.75,
+    ratifiedReasoning: "Strong momentum across all timeframes.",
+    llmModel: "anthropic.claude-haiku-4-5",
+    algoCandidate: { type: "buy", confidence: 0.72 },
+    ratified: { type: "buy", confidence: 0.75, reasoning: "Strong momentum across all timeframes." },
+    llmRequest: { model: "anthropic.claude-haiku-4-5", systemHash: "abc", userJsonHash: "def" },
+    llmRawResponse: { verdict: "buy" },
+  };
+
+  it("returns 200 with items and cursor", async () => {
+    getRatificationsMock.mockResolvedValue({ items: [mockRow], cursor: null });
+    const app = await loadApp();
+    const res = await app.request("/ratifications");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { items: unknown[]; cursor: unknown } };
+    expect(body.success).toBe(true);
+    expect(body.data.items).toHaveLength(1);
+    expect(body.data.cursor).toBeNull();
+    expect(getRatificationsMock).toHaveBeenCalledWith({
+      pair: undefined,
+      timeframe: undefined,
+      triggerReason: undefined,
+      since: undefined,
+      until: undefined,
+      cursor: undefined,
+      limit: 50,
+    });
+  });
+
+  it("forwards all filter query params to the service", async () => {
+    getRatificationsMock.mockResolvedValue({ items: [], cursor: null });
+    const app = await loadApp();
+    const res = await app.request(
+      "/ratifications?pair=ETH%2FUSDT&timeframe=1h&triggerReason=bar_close&since=2026-05-01T00%3A00%3A00Z&until=2026-05-02T00%3A00%3A00Z&cursor=abc&limit=10",
+    );
+    expect(res.status).toBe(200);
+    expect(getRatificationsMock).toHaveBeenCalledWith({
+      pair: "ETH/USDT",
+      timeframe: "1h",
+      triggerReason: "bar_close",
+      since: "2026-05-01T00:00:00Z",
+      until: "2026-05-02T00:00:00Z",
+      cursor: "abc",
+      limit: 10,
+    });
+  });
+
+  it("returns 400 when limit exceeds 200", async () => {
+    const app = await loadApp();
+    const res = await app.request("/ratifications?limit=201");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getRatificationsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when limit is zero", async () => {
+    const app = await loadApp();
+    const res = await app.request("/ratifications?limit=0");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 403 when caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/ratifications");
+    expect(res.status).toBe(403);
+  });
+
+  it("propagates a non-null cursor in the response", async () => {
+    const nextCursor = "eyJwYWlyIjoiQlRDL1VTRFQifQ==";
+    getRatificationsMock.mockResolvedValue({ items: [mockRow], cursor: nextCursor });
+    const app = await loadApp();
+    const res = await app.request("/ratifications");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { cursor: string } };
+    expect(body.data.cursor).toBe(nextCursor);
   });
 });
 

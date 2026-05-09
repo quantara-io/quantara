@@ -8,6 +8,7 @@ import { Overview } from "./pages/Overview";
 import { Market } from "./pages/Market";
 import { News } from "./pages/News";
 import { Whitelist } from "./pages/Whitelist";
+import { Ratifications } from "./pages/Ratifications";
 
 export function App() {
   return (
@@ -50,6 +51,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Whitelist />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/ratifications"
+          element={
+            <AuthGate>
+              <Layout>
+                <Ratifications />
               </Layout>
             </AuthGate>
           }

@@ -570,6 +570,169 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Ratifications
+// ---------------------------------------------------------------------------
+
+const RATIFICATIONS_TABLE =
+  process.env.TABLE_RATIFICATIONS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ratifications`;
+
+export interface RatificationRow {
+  recordId: string;
+  pair: string;
+  timeframe: string;
+  invokedReason: string;
+  invokedAt: string;
+  latencyMs: number;
+  costUsd: number;
+  cacheHit: boolean;
+  validationOk: boolean;
+  fellBackToAlgo: boolean;
+  algoCandidateType: string | null;
+  algoCandidateConfidence: number | null;
+  ratifiedType: string | null;
+  ratifiedConfidence: number | null;
+  ratifiedReasoning: string | null;
+  llmModel: string | null;
+  // full payload for detail modal
+  algoCandidate: Record<string, unknown> | null;
+  ratified: Record<string, unknown> | null;
+  llmRequest: Record<string, unknown> | null;
+  llmRawResponse: Record<string, unknown> | null;
+}
+
+export interface GetRatificationsParams {
+  pair?: string;
+  timeframe?: string;
+  triggerReason?: string;
+  since?: string;
+  until?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface RatificationsPage {
+  items: RatificationRow[];
+  cursor: string | null;
+}
+
+/** Map a raw DDB item to the API shape. */
+function toRatificationRow(item: Record<string, unknown>): RatificationRow {
+  const algo = (item.algoCandidate as Record<string, unknown> | null) ?? null;
+  const ratified = (item.ratified as Record<string, unknown> | null) ?? null;
+  const validation = (item.validation as { ok?: boolean } | null) ?? null;
+  const llmReq = (item.llmRequest as Record<string, unknown> | null) ?? null;
+  const rawReasoning = (ratified?.reasoning as string | undefined) ?? null;
+  return {
+    recordId: item.recordId as string,
+    pair: item.pair as string,
+    timeframe: item.timeframe as string,
+    invokedReason: item.invokedReason as string,
+    invokedAt: item.invokedAt as string,
+    latencyMs: (item.latencyMs as number) ?? 0,
+    costUsd: (item.costUsd as number) ?? 0,
+    cacheHit: Boolean(item.cacheHit),
+    validationOk: Boolean(validation?.ok),
+    fellBackToAlgo: Boolean(item.fellBackToAlgo),
+    algoCandidateType: (algo?.type as string | null) ?? null,
+    algoCandidateConfidence: (algo?.confidence as number | null) ?? null,
+    ratifiedType: (ratified?.type as string | null) ?? null,
+    ratifiedConfidence: (ratified?.confidence as number | null) ?? null,
+    ratifiedReasoning: rawReasoning ? rawReasoning.slice(0, 240) : null,
+    llmModel: (llmReq?.model as string | null) ?? null,
+    algoCandidate: algo,
+    ratified,
+    llmRequest: llmReq,
+    llmRawResponse: (item.llmRawResponse as Record<string, unknown> | null) ?? null,
+  };
+}
+
+/**
+ * Paginated query of ratification records.
+ *
+ * Strategy: the table has PK=pair, SK=invokedAtRecordId.
+ * When a pair filter is supplied, we Query that partition directly.
+ * When no pair is given, we fan-out over all known pairs.
+ * After applying client-side filters (timeframe, triggerReason, since, until),
+ * we re-sort descending by invokedAt and slice to `limit`.
+ */
+export async function getRatifications(params: GetRatificationsParams): Promise<RatificationsPage> {
+  const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
+  const knownPairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
+  const pairsToQuery = params.pair ? [params.pair] : knownPairs;
+
+  // Build SK range bounds from since/until so DDB does the heavy lifting.
+  const skLo = params.since ? `${params.since}#` : undefined;
+  const skHi = params.until ? `${params.until}#￿` : undefined;
+
+  const allItems: Record<string, unknown>[] = [];
+
+  for (const pair of pairsToQuery) {
+    try {
+      let keyCondition = "#pair = :pair";
+      const exprNames: Record<string, string> = { "#pair": "pair" };
+      const exprValues: Record<string, unknown> = { ":pair": pair };
+
+      if (skLo && skHi) {
+        keyCondition += " AND #sk BETWEEN :lo AND :hi";
+        exprNames["#sk"] = "invokedAtRecordId";
+        exprValues[":lo"] = skLo;
+        exprValues[":hi"] = skHi;
+      } else if (skLo) {
+        keyCondition += " AND #sk >= :lo";
+        exprNames["#sk"] = "invokedAtRecordId";
+        exprValues[":lo"] = skLo;
+      } else if (skHi) {
+        keyCondition += " AND #sk <= :hi";
+        exprNames["#sk"] = "invokedAtRecordId";
+        exprValues[":hi"] = skHi;
+      }
+
+      // Fetch up to limit*2 from each pair partition for cursor/filter headroom.
+      // ScanIndexForward=false gives newest-first from DDB.
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: RATIFICATIONS_TABLE,
+          KeyConditionExpression: keyCondition,
+          ExpressionAttributeNames: exprNames,
+          ExpressionAttributeValues: exprValues,
+          ScanIndexForward: false,
+          Limit: limit * 2,
+          ...(params.cursor ? { ExclusiveStartKey: JSON.parse(Buffer.from(params.cursor, "base64").toString()) } : {}),
+        }),
+      );
+      allItems.push(...(result.Items ?? []));
+    } catch (err) {
+      console.error(`[admin.service] getRatifications query failed for ${pair}:`, err);
+    }
+  }
+
+  // Client-side filters (timeframe, triggerReason) since DDB has no secondary
+  // index on those attributes.
+  const filtered = allItems.filter((item) => {
+    if (params.timeframe && item.timeframe !== params.timeframe) return false;
+    if (params.triggerReason && item.invokedReason !== params.triggerReason) return false;
+    return true;
+  });
+
+  // Re-sort by invokedAt descending (fan-out from multiple partitions breaks DDB order).
+  filtered.sort((a, b) => {
+    const aKey = (a.invokedAtRecordId as string) ?? "";
+    const bKey = (b.invokedAtRecordId as string) ?? "";
+    return bKey.localeCompare(aKey);
+  });
+
+  const page = filtered.slice(0, limit);
+  const nextItem = filtered[limit];
+  const cursor = nextItem
+    ? Buffer.from(
+        JSON.stringify({ pair: nextItem.pair, invokedAtRecordId: nextItem.invokedAtRecordId }),
+      ).toString("base64")
+    : null;
+
+  return { items: page.map(toRatificationRow), cursor };
+}
+
 const WHITELIST_PARAM = `/quantara/${ENVIRONMENT}/docs-allowed-ips`;
 
 export async function getWhitelist(): Promise<{ ips: string[] }> {

@@ -11,6 +11,7 @@ import {
   getWhitelist,
   setWhitelist,
   getSignals,
+  getRatifications,
 } from "../services/admin.service.js";
 
 const admin = new Hono();
@@ -75,6 +76,29 @@ admin.get("/signals", async (c) => {
 
   const signals = await getSignals(pair, since, limit);
   return c.json({ success: true, data: { signals } });
+});
+
+admin.get("/ratifications", async (c) => {
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 50;
+  if (isNaN(limit) || limit < 1 || limit > 200) {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "limit must be between 1 and 200" } },
+      400,
+    );
+  }
+
+  const { items, cursor } = await getRatifications({
+    pair: c.req.query("pair"),
+    timeframe: c.req.query("timeframe"),
+    triggerReason: c.req.query("triggerReason"),
+    since: c.req.query("since"),
+    until: c.req.query("until"),
+    cursor: c.req.query("cursor"),
+    limit,
+  });
+
+  return c.json({ success: true, data: { items, cursor } });
 });
 
 admin.get("/news", async (c) => {
