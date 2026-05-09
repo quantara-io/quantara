@@ -153,6 +153,31 @@ The admin demo can ship while B1 is in progress; B1 just adds a second push even
 
 ---
 
+## Phase D.5 — Short-TF data collection (precursor to E)
+
+**Issue:** #133 — `feat(signals): compute 1m/5m signals for data collection`
+
+Run a subset of the signal pipeline on 1m/5m candle closes for **data collection only**. No LLM ratification. No client emission. Stored to a separate `signals-experimental` table.
+
+**Purpose:**
+
+1. **Validate Phase E ROI** — if 1m signals don't outperform 15m on the rules that look promising, Phase E doesn't justify its scope
+2. **Calibrate rule strengths per TF** — Phase 8 outcome attribution gets data on rules that fire at multiple horizons
+3. **Build training data** — labeled short-TF signal output is useful regardless of how we use it
+
+**Constraints (intentional):**
+
+- No LLM ratification — cost and rate would be ~96× the 15m volume
+- No client emission — UX implications, unverified quality
+- Rule subset only — not every rule makes sense at 1m (e.g. multi-bar trend confirmation is too noisy)
+- Separate storage — don't pollute production signals-v2
+
+**Effort:** 1-2 weeks once Phase A (#117 specifically) lands. Builds on the candle-streams trigger.
+
+**When to commit:** after Phase B is in steady state and you want to evaluate whether Phase E is worth the rewrite.
+
+---
+
 ## Phase E — Continuous tick-level streaming
 
 **Separate product decision, not a latency optimization.** This rewrites the indicator math from candle-close-aggregated to per-tick rolling-window. The signal model fundamentally changes: continuous-probability signals instead of discrete buy/sell/hold on TF closes.
@@ -198,6 +223,10 @@ Phase C — Tail-latency fixes (selective; file as metrics warrant)
        ▼
 Phase D — Faster ratification model (cost optimization)
   └─ D1: Haiku 4.5 first-pass with Sonnet edge-case escalation
+       │
+       ▼
+Phase D.5 — Short-TF data collection (precursor to E)
+  └─ #133 — 1m/5m signals to signals-experimental, no LLM, no fanout
        │
        ▼  (separate product decision; not latency-driven)
        │
