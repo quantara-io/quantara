@@ -332,8 +332,10 @@ export async function updateSignalRatification(
       new UpdateCommand({
         TableName: SIGNALS_V2_TABLE,
         Key: { pair, sk },
-        // Update ratification fields. Also overwrite top-level type/confidence/reasoning
-        // so reads see the canonical final values without needing to chase ratificationVerdict.
+        // Update ratification fields. Also overwrite top-level type/confidence
+        // so reads see the canonical final values without needing to chase
+        // ratificationVerdict. (BlendedSignal has no top-level reasoning field;
+        // the verdict's reasoning lives on ratificationVerdict.reasoning.)
         UpdateExpression:
           "SET ratificationStatus = :status, ratificationVerdict = :verdict, " +
           "algoVerdict = :algoVerdict, #signalType = :type, " +

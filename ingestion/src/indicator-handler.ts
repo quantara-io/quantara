@@ -252,24 +252,41 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
       },
       // onStage2: called when the LLM stream completes (or falls back on error).
       // Performs the stage-2 DDB UPDATE so the row transitions from "pending" to final.
+      // Retries up to 3 times on transient failures so a single DDB throttle
+      // or 5xx doesn't permanently leave the row stuck on "pending".
+      // ConditionalCheckFailedException is NOT retried — it means the row is
+      // already in a final state (handled inside updateSignalRatification).
       async (stage2Payload) => {
-        try {
-          await updateSignalRatification({
-            pair,
-            sk,
-            ratificationStatus: stage2Payload.ratificationStatus,
-            ratificationVerdict: stage2Payload.ratificationVerdict,
-            algoVerdict: stage2Payload.algoVerdict,
-          });
-          console.log(
-            `[IndicatorHandler] ${pair}/${timeframe}: stage-2 ratification UPDATE written (status=${stage2Payload.ratificationStatus}).`,
-          );
-        } catch (updateErr) {
-          console.error(
-            `[IndicatorHandler] ${pair}/${timeframe}: stage-2 UPDATE failed:`,
-            updateErr,
-          );
-          // Non-fatal: stage-1 "pending" row is better than a crash-loop.
+        const MAX_ATTEMPTS = 3;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            await updateSignalRatification({
+              pair,
+              sk,
+              ratificationStatus: stage2Payload.ratificationStatus,
+              ratificationVerdict: stage2Payload.ratificationVerdict,
+              algoVerdict: stage2Payload.algoVerdict,
+            });
+            console.log(
+              `[IndicatorHandler] ${pair}/${timeframe}: stage-2 ratification UPDATE written (status=${stage2Payload.ratificationStatus}, attempt=${attempt}).`,
+            );
+            return;
+          } catch (updateErr) {
+            const isLastAttempt = attempt === MAX_ATTEMPTS;
+            console.warn(
+              `[IndicatorHandler] ${pair}/${timeframe}: stage-2 UPDATE attempt ${attempt}/${MAX_ATTEMPTS} failed${isLastAttempt ? " (giving up)" : ", retrying"}:`,
+              updateErr,
+            );
+            if (isLastAttempt) {
+              // Final attempt failed — log and continue. Stage-1 "pending"
+              // row remains until the next signal supersedes it; not crashing
+              // is better than failing the whole stream batch and re-processing
+              // every record on retry.
+              return;
+            }
+            // Linear backoff: 100ms, 200ms before next attempt.
+            await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+          }
         }
       },
     );
@@ -489,7 +506,10 @@ async function getFearGreedCached(): Promise<number | null> {
  * Pulls 250 bars per exchange, canonicalizes, builds IndicatorState, scores,
  * persists vote, then blends all 4 TF votes for the pair.
  *
- * Returns the final BlendedSignal (after ratification), or null if insufficient data.
+ * Returns the **pre-ratification** blended signal (or null if insufficient
+ * data). Phase B1 (#132): ratification runs in `processCandleClose` AFTER
+ * the stage-1 Put commits, so callers should treat this as the algo-only
+ * candidate and not assume LLM has touched it.
  */
 async function computeBlendedSignal(
   pair: string,

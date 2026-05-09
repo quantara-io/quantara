@@ -5,7 +5,7 @@
  *   - findSubscribersForPair: scans registry with correct filter, handles pagination
  *   - handler: processes INSERT events (new signals)
  *   - handler: processes MODIFY events (Phase B1 — ratification verdict updates)
- *   - handler: skips non-INSERT/MODIFY events (DELETE, REMOVE)
+ *   - handler: skips non-INSERT/MODIFY events (REMOVE — DDB Streams uses INSERT/MODIFY/REMOVE only)
  *   - handler: skips records without pair
  *   - handler: calls postToConnection for each subscriber
  *   - handler: deletes stale connections on GoneException
@@ -169,7 +169,7 @@ describe("handler", () => {
     expect(call.input.ConnectionId).toBe("conn-1");
   });
 
-  it("skips DELETE and REMOVE events", async () => {
+  it("skips REMOVE events (DDB Streams emits INSERT/MODIFY/REMOVE only — no DELETE)", async () => {
     const { handler } = await import("./signals-fanout.js");
     await handler(
       {

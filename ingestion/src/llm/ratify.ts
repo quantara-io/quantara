@@ -195,7 +195,10 @@ export async function ratifySignal(
       fellBackToAlgo: true,
       latencyMs: Date.now() - startMs,
       costUsd: 0,
-      invokedReason: "news",
+      // Derive from gate.reason rather than hardcoding "news" — otherwise
+      // metrics conflate confidence-floor / rate-limit / daily-cap skips
+      // with news-driven invocations.
+      invokedReason: gateReasonToInvokedReason(gate.reason),
       invokedAt,
     });
     const signal: BlendedSignal = { ...context.candidate, ratificationStatus: "not-required" };

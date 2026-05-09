@@ -430,3 +430,85 @@ describe("markSignalInvalidated", () => {
     ).rejects.toThrow("network failure");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase B1 — updateSignalRatification (stage-2 UPDATE)
+// ---------------------------------------------------------------------------
+
+describe("updateSignalRatification", () => {
+  const baseParams = {
+    pair: "BTC/USDT",
+    sk: "1h#1700000000000",
+    ratificationStatus: "ratified" as const,
+    ratificationVerdict: { type: "buy" as const, confidence: 0.72, reasoning: "ema_cross_bullish" },
+    algoVerdict: null,
+  };
+
+  it("issues an UpdateCommand on the deterministic (pair, sk) key with ratification fields", async () => {
+    send.mockResolvedValue({});
+    const { updateSignalRatification } = await import("./signal-store.js");
+    await updateSignalRatification(baseParams);
+
+    expect(send).toHaveBeenCalledOnce();
+    const cmd = send.mock.calls[0][0];
+    expect(cmd.__cmd).toBe("Update");
+    expect(cmd.input.TableName).toBe("test-signals-v2");
+    expect(cmd.input.Key).toEqual({ pair: "BTC/USDT", sk: "1h#1700000000000" });
+    expect(cmd.input.UpdateExpression).toContain("ratificationStatus = :status");
+    expect(cmd.input.UpdateExpression).toContain("ratificationVerdict = :verdict");
+    expect(cmd.input.UpdateExpression).toContain("algoVerdict = :algoVerdict");
+    expect(cmd.input.UpdateExpression).toContain("#signalType = :type");
+    expect(cmd.input.UpdateExpression).toContain("confidence = :confidence");
+    expect(cmd.input.ExpressionAttributeValues[":status"]).toBe("ratified");
+    expect(cmd.input.ExpressionAttributeValues[":type"]).toBe("buy");
+    expect(cmd.input.ExpressionAttributeValues[":confidence"]).toBe(0.72);
+  });
+
+  it("sets ConditionExpression to guard against double-write (only updates rows still in pending state)", async () => {
+    send.mockResolvedValue({});
+    const { updateSignalRatification } = await import("./signal-store.js");
+    await updateSignalRatification(baseParams);
+
+    const cmd = send.mock.calls[0][0];
+    expect(cmd.input.ConditionExpression).toContain("attribute_exists(#signalType)");
+    expect(cmd.input.ConditionExpression).toContain("ratificationStatus = :pending");
+    expect(cmd.input.ExpressionAttributeValues[":pending"]).toBe("pending");
+  });
+
+  it("propagates the downgraded path: status='downgraded' + algoVerdict carries pre-downgrade values", async () => {
+    send.mockResolvedValue({});
+    const { updateSignalRatification } = await import("./signal-store.js");
+    await updateSignalRatification({
+      ...baseParams,
+      ratificationStatus: "downgraded",
+      ratificationVerdict: { type: "hold", confidence: 0.5, reasoning: "LLM downgrade" },
+      algoVerdict: { type: "buy", confidence: 0.72, reasoning: "ema_cross_bullish" },
+    });
+    const cmd = send.mock.calls[0][0];
+    expect(cmd.input.ExpressionAttributeValues[":status"]).toBe("downgraded");
+    expect(cmd.input.ExpressionAttributeValues[":type"]).toBe("hold");
+    expect(cmd.input.ExpressionAttributeValues[":algoVerdict"]).toEqual({
+      type: "buy",
+      confidence: 0.72,
+      reasoning: "ema_cross_bullish",
+    });
+  });
+
+  it("idempotently swallows ConditionalCheckFailedException (row missing OR already final)", async () => {
+    const conditionalError = Object.assign(new Error("ConditionalCheckFailedException"), {
+      name: "ConditionalCheckFailedException",
+    });
+    send.mockRejectedValueOnce(conditionalError);
+    const { updateSignalRatification } = await import("./signal-store.js");
+    await expect(updateSignalRatification(baseParams)).resolves.toBeUndefined();
+  });
+
+  it("re-throws unexpected DDB errors so the caller can retry", async () => {
+    const transientError = new Error("ProvisionedThroughputExceededException");
+    send.mockRejectedValueOnce(transientError);
+    const { updateSignalRatification } = await import("./signal-store.js");
+    await expect(updateSignalRatification(baseParams)).rejects.toThrow(
+      "ProvisionedThroughputExceededException",
+    );
+  });
+});
