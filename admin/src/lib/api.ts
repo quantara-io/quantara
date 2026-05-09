@@ -65,7 +65,32 @@ export async function apiFetch<T>(path: string, opts: RequestOpts = {}): Promise
     clearTokens();
   }
 
-  return (await res.json()) as Envelope<T>;
+  // Defensively parse the body. CloudFront's HTML error pages, gateway
+  // 504s, or any non-JSON response would otherwise throw inside res.json()
+  // and surface as an unhandled promise rejection — pages stuck on Loading
+  // state, no error visible. Wrap the parse and surface as a typed error
+  // envelope so callers see the failure.
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return {
+      success: false,
+      error: {
+        code: `HTTP_${res.status}`,
+        message: `${path} returned ${res.status} ${res.statusText} (non-JSON body)`,
+      },
+    };
+  }
+  try {
+    return (await res.json()) as Envelope<T>;
+  } catch (err) {
+    return {
+      success: false,
+      error: {
+        code: `HTTP_${res.status}_PARSE_ERROR`,
+        message: `${path} returned ${res.status} but response body was not valid JSON: ${(err as Error).message}`,
+      },
+    };
+  }
 }
 
 export const API_PUBLIC_KEY = API_KEY;
