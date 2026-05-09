@@ -16,6 +16,34 @@ interface AuthResult {
   availableMethods?: MfaMethod[];
 }
 
+type WebAuthnRequestOptionsJSON = Parameters<typeof startAuthentication>[0]["optionsJSON"];
+
+/**
+ * Find a WebAuthn options object with a usable `challenge` inside an arbitrary
+ * server response. Aldero's exact shape isn't pinned — observed wrappers include
+ * the raw options object, `{ publicKey: ... }`, and `{ options: ... }`. Returns
+ * the inner options on a hit, or `null` if we can't locate a `challenge` string.
+ */
+function extractWebAuthnOptions(data: unknown): WebAuthnRequestOptionsJSON | null {
+  if (!data || typeof data !== "object") return null;
+  const obj = data as Record<string, unknown>;
+
+  if (typeof obj.challenge === "string") {
+    return obj as unknown as WebAuthnRequestOptionsJSON;
+  }
+  for (const key of ["publicKey", "options", "data"] as const) {
+    const inner = obj[key];
+    if (
+      inner &&
+      typeof inner === "object" &&
+      typeof (inner as Record<string, unknown>).challenge === "string"
+    ) {
+      return inner as unknown as WebAuthnRequestOptionsJSON;
+    }
+  }
+  return null;
+}
+
 export function Login() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("email");
@@ -187,9 +215,7 @@ export function Login() {
     setError("");
     setBusy(true);
     try {
-      const optsRes = await apiFetch<
-        Record<string, unknown> & { publicKey?: Record<string, unknown> }
-      >("/api/auth/passkey/login/options", {
+      const optsRes = await apiFetch<Record<string, unknown>>("/api/auth/passkey/login/options", {
         method: "POST",
         body: email ? { email } : {},
         noAuth: true,
@@ -197,10 +223,21 @@ export function Login() {
       if (!optsRes.success || !optsRes.data) {
         return setError(optsRes.error?.message ?? "Failed to start passkey sign-in");
       }
-      // Aldero may wrap the WebAuthn options under `publicKey` or return them flat — handle both.
-      const optionsJSON = (optsRes.data.publicKey ?? optsRes.data) as unknown as Parameters<
-        typeof startAuthentication
-      >[0]["optionsJSON"];
+
+      // Aldero's response shape isn't fully pinned — different versions wrap the
+      // WebAuthn options under `publicKey`, `options`, or return them flat. Probe
+      // for a shape that has a `challenge` (the one field every WebAuthn options
+      // object must carry). If we can't find one, bail with a clear error rather
+      // than hand a half-formed object to startAuthentication, which throws an
+      // opaque "Cannot read properties of undefined (reading 'replace')" from
+      // inside its base64url decoder.
+      const optionsJSON = extractWebAuthnOptions(optsRes.data);
+      if (!optionsJSON) {
+        console.error("[passkey] unexpected /login/options response shape:", optsRes.data);
+        return setError(
+          "Passkey sign-in unavailable — unexpected response shape from auth service. Check the console.",
+        );
+      }
 
       const assertion = await startAuthentication({ optionsJSON });
 
