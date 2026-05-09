@@ -275,8 +275,13 @@ describe("GET /news/usage", () => {
     expect(body.data.estimatedCostUsd).toBe(0.16);
     expect(getNewsUsageMock).toHaveBeenCalledOnce();
     const calledWith = getNewsUsageMock.mock.calls[0][0] as Date;
-    // Should default to ~24h ago — accept a 5-second tolerance
-    expect(Date.now() - calledWith.getTime()).toBeLessThan(24 * 60 * 60 * 1000 + 5_000);
+    // Should default to ~24h ago, bounded on both sides — the previous
+    // single-sided check (`< 24h + 5s`) would pass for any recent past time
+    // including `now - 1s`, defeating the assertion.
+    const ageMs = Date.now() - calledWith.getTime();
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+    expect(ageMs).toBeGreaterThanOrEqual(TWENTY_FOUR_HOURS_MS - 5_000);
+    expect(ageMs).toBeLessThanOrEqual(TWENTY_FOUR_HOURS_MS + 5_000);
   });
 
   it("forwards the since query param as a Date", async () => {

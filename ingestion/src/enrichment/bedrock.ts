@@ -1,6 +1,8 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import type { NewsEnrichment } from "@quantara/shared";
 
+import { recordLlmUsage } from "../lib/metadata-store.js";
+
 import { buildEnrichmentMessage } from "./prompts.js";
 
 const bedrock = new BedrockRuntimeClient({});
@@ -14,6 +16,9 @@ const bedrock = new BedrockRuntimeClient({});
 // across us-west-2 / us-east-1 / us-east-2 by capacity; the org SCP
 // region-lock was updated to permit `bedrock:InvokeModel*` cross-region.
 const MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+
+/** Stable model tag stamped on usage records — decoupled from the inference profile ID. */
+const MODEL_TAG = "anthropic.claude-haiku-4-5";
 
 export async function enrichNewsItem(title: string, currencies: string[]): Promise<NewsEnrichment> {
   const prompt = buildEnrichmentMessage(title, currencies);
@@ -36,7 +41,21 @@ export async function enrichNewsItem(title: string, currencies: string[]): Promi
     }),
   );
 
-  const body = JSON.parse(new TextDecoder().decode(response.body));
+  const body = JSON.parse(new TextDecoder().decode(response.body)) as {
+    content?: Array<{ text: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+
+  // Record token usage for the admin dashboard. This is the *active* enrichment
+  // path (one InvokeModel per article), so the call boundary IS the article
+  // boundary — countAsArticle: true. Best-effort, never blocks enrichment.
+  void recordLlmUsage({
+    modelTag: MODEL_TAG,
+    inputTokens: body.usage?.input_tokens ?? 0,
+    outputTokens: body.usage?.output_tokens ?? 0,
+    countAsArticle: true,
+  });
+
   const text = body.content?.[0]?.text ?? "{}";
 
   try {

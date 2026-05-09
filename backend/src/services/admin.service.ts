@@ -432,15 +432,18 @@ const METADATA_TABLE =
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}ingestion-metadata`;
 
 // Hard-coded Haiku 4.5 prices (2026-Q1) mirroring enrich.ts constants.
-const HAIKU_INPUT_PRICE_PER_M = 0.80;
-const HAIKU_OUTPUT_PRICE_PER_M = 4.00;
+const HAIKU_INPUT_PRICE_PER_M = 0.8;
+const HAIKU_OUTPUT_PRICE_PER_M = 4.0;
 
 export interface NewsUsage {
   articlesEnriched: number;
   totalInputTokens: number;
   totalOutputTokens: number;
   estimatedCostUsd: number;
-  byModel: Record<string, { calls: number; inputTokens: number; outputTokens: number; costUsd: number }>;
+  byModel: Record<
+    string,
+    { calls: number; inputTokens: number; outputTokens: number; costUsd: number }
+  >;
 }
 
 export async function getNews(limit = 50) {
@@ -461,8 +464,22 @@ export async function getNews(limit = 50) {
 
 /**
  * Aggregate LLM token usage from ingestion-metadata keys of the form
- * `llm_usage#YYYY-MM-DD` written by enrich.ts on each Bedrock invocation.
- * Sums all date-keys that fall within the requested window.
+ * `llm_usage#YYYY-MM-DD` written by `recordLlmUsage` on each Bedrock invocation.
+ *
+ * Storage is **day-bucketed**, so the `since` parameter is truncated to a
+ * date and the window is inclusive of every day from `since-day` through
+ * today. A request for "last 24h" near midnight UTC therefore returns up
+ * to ~48h of data — this is fundamental to day-bucket storage and the UI
+ * label should reflect it ("Today + last N days" rather than a strict
+ * 24h window). Sub-day bucketing would shrink this to one-hour granularity
+ * but trades 24× more DDB writes per active day; not worth it for the
+ * dashboard's accuracy needs.
+ *
+ * Counters are read directly:
+ *   - `calls` = total InvokeModel invocations (1 per call)
+ *   - `articlesEnriched` = total fully-enriched articles (1 per article,
+ *     incremented only on the call that completes the article — see
+ *     `recordLlmUsage(countAsArticle)` for the contract)
  */
 export async function getNewsUsage(since: Date): Promise<NewsUsage> {
   try {
@@ -489,6 +506,9 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
       const inputTok = (item.totalInputTokens as number) ?? 0;
       const outputTok = (item.totalOutputTokens as number) ?? 0;
       const articles = (item.articlesEnriched as number) ?? 0;
+      // Fall back to articles for legacy day-buckets written before the
+      // separate `calls` counter shipped — never under-report total calls.
+      const calls = (item.calls as number) ?? articles;
       const model: string = (item.modelTag as string) ?? "anthropic.claude-haiku-4-5";
 
       articlesEnriched += articles;
@@ -498,8 +518,7 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
       if (!byModel[model]) {
         byModel[model] = { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
       }
-      // Each day-key accumulates 2 Haiku calls per article (pair-tag + sentiment).
-      byModel[model].calls += articles * 2;
+      byModel[model].calls += calls;
       byModel[model].inputTokens += inputTok;
       byModel[model].outputTokens += outputTok;
     }
@@ -518,7 +537,13 @@ export async function getNewsUsage(since: Date): Promise<NewsUsage> {
     return { articlesEnriched, totalInputTokens, totalOutputTokens, estimatedCostUsd, byModel };
   } catch (err) {
     console.error("[admin.service] getNewsUsage failed:", err);
-    return { articlesEnriched: 0, totalInputTokens: 0, totalOutputTokens: 0, estimatedCostUsd: 0, byModel: {} };
+    return {
+      articlesEnriched: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      estimatedCostUsd: 0,
+      byModel: {},
+    };
   }
 }
 

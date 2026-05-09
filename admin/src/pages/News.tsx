@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 
 import { apiFetch } from "../lib/api";
 
+// Active enrichment path (`ingestion/src/enrichment/bedrock.ts`) writes a
+// string-union sentiment + per-event extraction. This is what most production
+// records carry today.
 interface NewsEnrichment {
   sentiment?: "bullish" | "bearish" | "neutral";
   confidence?: number;
@@ -9,6 +12,15 @@ interface NewsEnrichment {
   relevance?: Record<string, number>;
   timeHorizon?: string;
   summary?: string;
+}
+
+// Phase 5a path (`ingestion/src/news/enrich.ts`) writes a numeric
+// `sentiment` object alongside `mentionedPairs`. Records may carry either
+// or both shapes — the UI handles both.
+interface Phase5aSentiment {
+  score?: number; // -1 (bearish) … +1 (bullish)
+  magnitude?: number; // 0 (weak) … 1 (strong claim)
+  model?: string;
 }
 
 interface NewsItem {
@@ -19,7 +31,12 @@ interface NewsItem {
   currencies?: string[];
   rawSentiment?: string;
   status?: string;
+  /** Active path enrichment (string-union sentiment). */
   enrichment?: NewsEnrichment;
+  /** Phase 5a sentiment object (score + magnitude); written separately when Phase 5a runs. */
+  sentiment?: Phase5aSentiment;
+  /** Phase 5a pair-tagging output. */
+  mentionedPairs?: string[];
   enrichedAt?: string;
 }
 
@@ -45,47 +62,67 @@ interface NewsUsage {
 
 type SentimentFilter = "all" | "positive" | "negative" | "high-magnitude";
 
+/**
+ * Resolve the article's sentiment label from whichever enrichment shape is
+ * present. Phase 5a's numeric `sentiment.score` takes precedence when set
+ * (more accurate); falls back to the active path's string sentiment, then
+ * to the source feed's rawSentiment.
+ */
 function sentimentLabel(item: NewsItem): "positive" | "negative" | "neutral" {
+  const score = item.sentiment?.score;
+  if (typeof score === "number") {
+    if (score > 0.1) return "positive";
+    if (score < -0.1) return "negative";
+    return "neutral";
+  }
   const s = item.enrichment?.sentiment ?? item.rawSentiment;
   if (s === "bullish" || s === "positive") return "positive";
   if (s === "bearish" || s === "negative") return "negative";
   return "neutral";
 }
 
-function confidenceValue(item: NewsItem): number {
-  return item.enrichment?.confidence ?? 0;
+/**
+ * Strength of the sentiment claim, in [0, 1]. Phase 5a's `sentiment.magnitude`
+ * is the right field for this; the active path's `enrichment.confidence` is a
+ * proxy (entity-extraction certainty, not sentiment intensity), used as a
+ * fallback when magnitude isn't populated.
+ */
+function magnitudeValue(item: NewsItem): number {
+  if (typeof item.sentiment?.magnitude === "number") return item.sentiment.magnitude;
+  if (typeof item.enrichment?.confidence === "number") return item.enrichment.confidence;
+  return 0;
 }
 
 function matchesFilter(item: NewsItem, filter: SentimentFilter): boolean {
   if (filter === "all") return true;
   if (filter === "positive") return sentimentLabel(item) === "positive";
   if (filter === "negative") return sentimentLabel(item) === "negative";
-  if (filter === "high-magnitude") return confidenceValue(item) >= 0.7;
+  if (filter === "high-magnitude") return magnitudeValue(item) >= 0.7;
   return true;
 }
 
 function SentimentChip({ item }: { item: NewsItem }) {
   const label = sentimentLabel(item);
-  const confidence = confidenceValue(item);
-  const confidenceStr = confidence > 0 ? ` ${Math.round(confidence * 100)}%` : "";
+  const magnitude = magnitudeValue(item);
+  const magStr = magnitude > 0 ? ` ${Math.round(magnitude * 100)}%` : "";
 
   if (label === "positive") {
     return (
       <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 text-[11px]">
-        bullish{confidenceStr}
+        bullish{magStr}
       </span>
     );
   }
   if (label === "negative") {
     return (
       <span className="px-1.5 py-0.5 rounded bg-red-950 text-red-300 text-[11px]">
-        bearish{confidenceStr}
+        bearish{magStr}
       </span>
     );
   }
   return (
     <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">
-      neutral{confidenceStr}
+      neutral{magStr}
     </span>
   );
 }
@@ -94,7 +131,10 @@ function UsageCard({ usage }: { usage: NewsUsage }) {
   return (
     <div className="rounded-lg border border-slate-700 bg-slate-900 p-4 mb-2">
       <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
-        24h LLM Usage
+        LLM Usage{" "}
+        <span className="font-normal normal-case text-slate-500">
+          (today + last 24h, day-bucketed)
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div>
