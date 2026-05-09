@@ -477,9 +477,11 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
     }
 
     // Then mark one kraken stream as 6-min stale (past warn threshold, below reconnect threshold).
+    // Backdate startedAt too so the new grace-period guard doesn't override the staleness.
     const krakenKey = [...streams.keys()].find((k) => k.startsWith("kraken:"));
     expect(krakenKey).toBeDefined();
     streams.get(krakenKey!).lastDataAt = Date.now() - 6 * 60_000;
+    streams.get(krakenKey!).startedAt = Date.now() - 6 * 60_000;
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -518,11 +520,13 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
     const initialWatchOHLCVCalls = watchOHLCVMock.mock.calls.length;
 
     // Mark kraken:BTC/USDT as 11-min stale (past reconnect threshold).
+    // Backdate startedAt too so the grace-period guard yields to the staleness check.
     const targetKey = "kraken:BTC/USDT";
     const targetState = streams.get(targetKey);
     expect(targetState).toBeDefined();
     const originalAbortController = targetState.abortController;
     targetState.lastDataAt = Date.now() - 11 * 60_000;
+    targetState.startedAt = Date.now() - 11 * 60_000;
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -573,8 +577,9 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
     // Mark only kraken:ETH/USDT as past the reconnect threshold.
     const targetKey = "kraken:ETH/USDT";
     streams.get(targetKey)!.lastDataAt = Date.now() - 11 * 60_000;
+    streams.get(targetKey)!.startedAt = Date.now() - 11 * 60_000;
 
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     (manager as any).watchdog();
 
@@ -589,7 +594,11 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
       }
     }
 
-    vi.restoreAllMocks();
+    // Restore only the console.warn spy. Avoid `vi.restoreAllMocks()` here —
+    // it would also call `mockRestore` on the module-level ccxt exchange
+    // class mocks (created via `vi.fn().mockImplementation(...)`), which
+    // strips their implementations and breaks the next test's `new ProExchange()`.
+    warnSpy.mockRestore();
     await manager.stop();
   });
 
@@ -615,7 +624,17 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
     expect(streams.get(targetKey)).toBeDefined();
     const targetState = streams.get(targetKey)!;
     const originalAbortController = targetState.abortController;
+    const originalGen = targetState.restartGeneration;
     targetState.lastDataAt = Date.now() - 11 * 60_000;
+    // startedAt also old so the effective-last-seen calc puts us past the
+    // reconnect threshold (otherwise the new grace-period guard would hold).
+    targetState.startedAt = Date.now() - 11 * 60_000;
+
+    // Snapshot how many fetchOHLCV / watchOHLCV calls coinbase had before restart.
+    // fetchOHLCV is called only by the Coinbase REST backfill loop; watchOHLCV
+    // is called only by exchanges that support it (NOT coinbase).
+    const fetchCallsBefore = fetchOHLCVMock.mock.calls.length;
+    const watchOHLCVCallsBefore = watchOHLCVMock.mock.calls.length;
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -631,6 +650,22 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
 
     // lastDataAt should be reset to 0 so the loop starts fresh.
     expect(targetState.lastDataAt).toBe(0);
+
+    // restartGeneration must bump so old-loop-continuations exit on gen check.
+    expect(targetState.restartGeneration).toBe(originalGen + 1);
+
+    // Wait for the freshly-spawned Coinbase REST loop to make its first
+    // fetchOHLCV call. Polling via vi.waitFor handles whichever microtask /
+    // macrotask boundary the runner needs without a hard-coded delay.
+    await vi.waitFor(
+      () => expect(fetchOHLCVMock.mock.calls.length).toBeGreaterThan(fetchCallsBefore),
+      { timeout: 1000 },
+    );
+
+    // watchOHLCV must NOT have been called for coinbase — the coinbase ccxt
+    // adapter has watchOHLCV: false, so the watchdog's restart path takes the
+    // REST branch, never the WS branch.
+    expect(watchOHLCVMock.mock.calls.length).toBe(watchOHLCVCallsBefore);
 
     warnSpy.mockRestore();
     await manager.stop();
@@ -654,15 +689,20 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
     }
 
     // Make kraken:XRP/USDT just past the stale threshold (6 min).
+    // Backdate startedAt too so the grace-period guard yields to the staleness check.
     const mildKey = "kraken:XRP/USDT";
     streams.get(mildKey)!.lastDataAt = Date.now() - 6 * 60_000;
+    streams.get(mildKey)!.startedAt = Date.now() - 6 * 60_000;
 
     // Make binanceus:BTC/USDT past the reconnect threshold (11 min).
     const severeKey = "binanceus:BTC/USDT";
     streams.get(severeKey)!.lastDataAt = Date.now() - 11 * 60_000;
+    streams.get(severeKey)!.startedAt = Date.now() - 11 * 60_000;
 
     const warnings: string[] = [];
-    vi.spyOn(console, "warn").mockImplementation((msg: string) => warnings.push(msg));
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation((msg: string) => warnings.push(msg));
 
     (manager as any).watchdog();
 
@@ -676,7 +716,7 @@ describe("MarketStreamManager — watchdog auto-reconnect", () => {
     expect(restartWarnings.some((w) => w.includes(severeKey))).toBe(true);
     expect(restartWarnings.some((w) => w.includes(mildKey))).toBe(false);
 
-    vi.restoreAllMocks();
+    warnSpy.mockRestore();
     await manager.stop();
   });
 });
