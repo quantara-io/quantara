@@ -71,17 +71,21 @@ This is your contract with the human. Keep it tight — 3-5 bullets max.
 
 - Make the smallest diff that satisfies the acceptance criteria.
 - Tests are mandatory for new logic in `backend/`. Use vitest, follow `quantara-tests` conventions.
-- Run **before** committing:
+- Run **before** committing — this is the **pre-push CI gate**. CI runs the same commands; if any fail locally, they will fail in CI:
 
 ```bash
 cd "$WORKTREE"
 npm run format:fix                         # always — prevents lint failures in CI
-npm run typecheck --workspaces
-npm run lint                               # catch remaining lint errors before push
+npm run typecheck --workspaces             # MUST pass — no @ts-expect-error escapes
+npm run lint                               # MUST pass — no warnings ignored
 npm run test --workspace=quantara-backend  # if backend changed
+npm run test --workspace=quantara-ingestion # if ingestion changed
 ```
 
+**Hard rule:** if any of these fail locally, you do **not** push. Fix the failure, re-run, push only when all four are green. Pushing red and "letting CI find it" wastes a CI cycle and pollutes PR history with chore-format-fix commits.
+
 - If tests fail after 3 fix attempts, **stop and escalate** (see Escalation below).
+- If you added a new dependency (any `import` from a package not previously imported in that workspace), `npm install <pkg> --workspace=<ws>` and **commit the lockfile change** in the same PR. Do not leave `@ts-expect-error missing dep` directives in the code as a tripwire flag — the dep must actually exist.
 
 ### 6. Self-review (mandatory)
 
@@ -106,6 +110,19 @@ Check, against the issue's acceptance criteria:
 - DynamoDB table or GSI schema changes
 
 ### 7. Commit + push
+
+**Before push: rebase onto current main.** Concurrent PRs landing while you work cause silent conflicts that CI may not catch but the merge will. Always sync before push:
+
+```bash
+cd "$WORKTREE"
+git fetch origin main
+git rebase origin/main
+# If conflicts: resolve them locally if straightforward (e.g. additions to the same Terraform file or same package.json deps array). If non-trivial, abort and escalate as agent-blocked.
+```
+
+If the rebase produces conflicts you can't resolve without changing the spirit of either side's change, abort (`git rebase --abort`) and escalate as `agent-blocked`. Do not force-push to "fix" a conflict by overwriting main.
+
+After rebase clean:
 
 ```bash
 cd "$WORKTREE"
@@ -152,9 +169,9 @@ EOF
 )"
 ```
 
-### 9. Wait for CI to pass (unconditional — do not skip, even on tripwires)
+### 9. Wait for CI to pass — unconditional, blocking, self-fix loop
 
-**This step runs regardless of what step 10 will decide.** Even if the PR will eventually be labeled `needs-human-review` due to a tripwire, a reviewer or human must never see a PR with red CI. Run `npm run format:fix` before committing (step 5) to avoid the most common failure.
+**This step is mandatory and blocking.** You do **not** report any STATUS (`merged-pending`, `awaiting-review`, `needs-human-review`) until CI is green or you've hit the 3-attempt cap. "Tests pass locally" is **not** "CI is green." A PR with red CI is never acceptable to surface to a human reviewer regardless of tripwires.
 
 ```bash
 PR_NUMBER=$(gh pr view --json number -q .number)
@@ -163,29 +180,59 @@ PR_NUMBER=$(gh pr view --json number -q .number)
 gh pr checks "$PR_NUMBER" --watch --interval 30 --required || CI_FAILED=1
 ```
 
-If `CI_FAILED` is set, pull the failure logs and iterate:
+**Self-fix loop.** When CI fails, do not escalate immediately. Iterate:
 
 ```bash
-RUN_ID=$(gh pr view "$PR_NUMBER" --json statusCheckRollup \
-  -q '.statusCheckRollup[] | select(.conclusion=="FAILURE") | .detailsUrl' \
-  | head -1 | grep -oE '[0-9]+$')
-gh run view "$RUN_ID" --repo quantara-io/quantara --log-failed 2>&1 | tail -100
+ATTEMPT=1
+while [ -n "$CI_FAILED" ] && [ "$ATTEMPT" -le 3 ]; do
+  echo "CI fix attempt $ATTEMPT of 3"
+
+  # 1. Pull the failure log
+  RUN_ID=$(gh pr view "$PR_NUMBER" --json statusCheckRollup \
+    -q '.statusCheckRollup[] | select(.conclusion=="FAILURE") | .detailsUrl' \
+    | head -1 | grep -oE '[0-9]+$')
+  gh run view "$RUN_ID" --repo quantara-io/quantara --log-failed 2>&1 | tail -100
+
+  # 2. Apply the fix locally (see "Common failures and fixes" table below)
+  # 3. Re-run the local pre-push gate from step 5
+  cd "$WORKTREE"
+  npm run format:fix
+  npm run typecheck --workspaces
+  npm run lint
+  npm run test --workspace=quantara-backend  # or whichever workspace is affected
+
+  # 4. Commit + push the fix
+  git add <fixed files>
+  git commit -m "fix: <specific failure addressed>"
+  git push origin "$BRANCH"
+
+  # 5. Wait for CI again
+  unset CI_FAILED
+  gh pr checks "$PR_NUMBER" --watch --interval 30 --required || CI_FAILED=1
+  ATTEMPT=$((ATTEMPT + 1))
+done
 ```
 
-Common failures and fixes:
-| Failure | Likely cause | Fix |
-|---|---|---|
-| `npm ci` lockfile mismatch | Added a dep to `package.json` without regenerating `package-lock.json` | `npm install` locally; commit the lockfile delta |
-| Typecheck failure on a downstream test fixture | Type widening (e.g. new required field on a shared interface) hits fixtures in workspaces this PR didn't touch | Update those fixtures with the new field; merge `origin/main` first if your branch is behind |
-| Lint / Prettier format check | `npm run format:fix` was not run before committing | Run `npm run format:fix` and push the fix commit |
-| Test failure on a previously-green test | Cross-cutting change broke an unrelated test | Read the test, understand the dependency, fix the test or the change |
+**Common failures and fixes** — try the fix yourself before escalating:
 
-Cap at **3 fix attempts**. If CI is still red after 3 iterations:
+| Failure                                                                                  | Likely cause                                                                                     | Fix                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Lint / Prettier format check                                                             | `npm run format:fix` was not run before committing                                               | Run `npm run format:fix` and push the fix commit. **This is the most common failure** — running it pre-push (step 5) prevents it.                                                    |
+| Typecheck: `TS2578: Unused '@ts-expect-error' directive`                                 | A `@ts-expect-error` flag became unused after a fix earlier in the same PR (e.g. a dep was added) | Remove the directive. If the dep was added to package.json but missed in package-lock.json, run `npm install` and commit the lockfile.                                              |
+| Typecheck: `Cannot find module 'foo'`                                                    | New `import` from a package not in `package.json`                                                | `npm install <pkg> --workspace=<ws>`; commit both `package.json` and `package-lock.json`. Never paper over with `@ts-expect-error`.                                                  |
+| `npm ci` lockfile mismatch                                                               | Added a dep to `package.json` without regenerating `package-lock.json`                           | `npm install` locally; commit the lockfile delta.                                                                                                                                    |
+| Typecheck failure on a downstream test fixture                                           | Type widening (e.g. new required field on a shared interface) hits fixtures this PR didn't touch | Update those fixtures with the new field; if your branch is behind main, `git fetch origin main && git rebase origin/main` first.                                                    |
+| Test failure on a previously-green test                                                  | Cross-cutting change broke an unrelated test                                                     | Read the test, understand the dependency, fix the test or the change.                                                                                                                |
+| Mergeable status `CONFLICTING` / `DIRTY` after another PR landed in main during your work | Concurrent PR overlapped on the same files                                                       | `git fetch origin main && git rebase origin/main`; resolve straightforward conflicts (additions to same TF file, package.json deps); push. If conflicts are non-trivial, escalate. |
+
+**Cap at 3 fix attempts.** If CI is still red after 3 self-fix iterations:
 
 - Label the PR `agent-blocked`
-- Comment with the specific failure and the iterations attempted
+- Comment with the specific failure pattern and what you tried each iteration
 - Set `STATUS: agent-blocked` in your final report
 - Stop. Do not push more attempts.
+
+**Do not** report `STATUS: needs-human-review` while CI is red. Tripwire escalation requires green CI first — see step 10. The reviewer / human never sees a red-CI PR.
 
 ### 10. Apply final labels and decide STATUS
 
