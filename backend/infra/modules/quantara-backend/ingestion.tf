@@ -294,8 +294,20 @@ resource "aws_iam_role_policy" "enrichment_bedrock" {
       Effect = "Allow"
       Action = ["bedrock:InvokeModel"]
       Resource = [
+        # Direct foundation models in this region (kept for any code paths
+        # invoking the bare foundation-model ARN — none currently active, but
+        # cheap to retain).
         "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-haiku*",
         "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-haiku*",
+        # Cross-region inference profile (us.* prefix) that's actually invoked
+        # by ingestion/src/enrichment/bedrock.ts and ingestion/src/news/enrich.ts
+        # since PR #162. The profile resource lives in this account.
+        "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.claude-haiku*",
+        # Foundation-model ARNs in any region the inference profile may route
+        # to. Bedrock evaluates IAM against both the profile entry point AND
+        # the underlying model in whichever region serves the request, so this
+        # second arm is required for cross-region profiles to actually work.
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku*",
       ]
     }]
   })
