@@ -39,6 +39,35 @@ export interface SignalHistoryEntry {
 export type SignalOutcome = "correct" | "incorrect" | "neutral" | "pending";
 
 /**
+ * Consolidated user-facing interpretation of a signal — surfaced prominently
+ * so clients do not have to stitch together ratificationVerdict + rulesFired.
+ *
+ * Added in Phase B2 (#171).
+ */
+export interface SignalInterpretation {
+  /**
+   * Source of the narrative:
+   *   "llm-ratified"   — stage-2 LLM ratification text
+   *   "llm-downgraded" — stage-2 LLM disagreed with algo; this is the LLM's reasoning
+   *   "algo-only"      — gated (no LLM call) or pending; falls back to rulesFired summary
+   */
+  source: "llm-ratified" | "llm-downgraded" | "algo-only";
+
+  /**
+   * Human-readable narrative. For LLM sources this is ratificationVerdict.reasoning.
+   * For algo-only it is a generated summary like "BTC/USDT: ema-cross + rsi-oversold + macd-bullish",
+   * or "Awaiting LLM ratification…" when ratificationStatus is "pending".
+   */
+  text: string;
+
+  /**
+   * When source is "llm-downgraded", shows the original algo verdict for transparency.
+   * Maps from the existing algoVerdict field.
+   */
+  originalAlgo?: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string };
+}
+
+/**
  * The user-facing headline signal — one per pair, combining all per-TF votes.
  * Carries the per-TF votes for transparency / reasoning attribution.
  *
@@ -69,6 +98,17 @@ export interface BlendedSignal {
   // The next regular TF close emits a fresh signal row with invalidatedAt = null.
   invalidatedAt?: string | null;
   invalidationReason?: string | null; // e.g. "Breaking news: Coinbase delists ETH staking"
+
+  /**
+   * Consolidated user-facing narrative for why this signal was emitted.
+   * Added in Phase B2 (#171). Optional so pre-B2 rows still type-check.
+   *
+   * source meanings:
+   *   "llm-ratified"   — stage-2 LLM agreed; text = ratificationVerdict.reasoning
+   *   "llm-downgraded" — stage-2 LLM disagreed; text = LLM's reasoning, originalAlgo carries the algo verdict
+   *   "algo-only"      — gated, not-required, or pending; text = rulesFired summary (or "Awaiting LLM…" hint)
+   */
+  interpretation?: SignalInterpretation | null;
 
   // Phase B1 — two-stage ratification status (§B1 of LATENCY_PLAN.md).
   // null / absent = pre-B1 row; "pending" = LLM ratification in flight;

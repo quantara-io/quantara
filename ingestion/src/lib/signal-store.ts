@@ -8,6 +8,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { BlendedSignal, Timeframe } from "@quantara/shared";
+import { buildInterpretation } from "@quantara/shared";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -16,6 +17,7 @@ const SIGNALS_V2_TABLE =
 
 /** 90-day TTL for signals */
 const TTL_SECONDS = 86400 * 90;
+
 
 /**
  * v6 schema: signals-v2 PK = `pair`, SK = `tf#closeTime` (deterministic).
@@ -155,26 +157,40 @@ export async function getRecentSignals(
   const merged = perTfResults.flat();
   merged.sort((a, b) => Number(b["asOf"] ?? 0) - Number(a["asOf"] ?? 0));
 
-  return merged.slice(0, limit).map((item) => ({
-    pair: item.pair as string,
-    type: item.type as BlendedSignal["type"],
-    confidence: item.confidence as number,
-    volatilityFlag: item.volatilityFlag as boolean,
-    gateReason: item.gateReason as BlendedSignal["gateReason"],
-    rulesFired: item.rulesFired as string[],
-    perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
-    weightsUsed: item.weightsUsed as BlendedSignal["weightsUsed"],
-    asOf: item.asOf as number,
-    emittingTimeframe: item.emittingTimeframe as BlendedSignal["emittingTimeframe"],
-    risk: (item.risk ?? null) as BlendedSignal["risk"],
-    invalidatedAt: (item.invalidatedAt ?? null) as string | null,
-    invalidationReason: (item.invalidationReason ?? null) as string | null,
-    signalId: item.signalId as string,
-    emittedAt: item.emittedAt as string,
-    sk:
-      (item.sk as string) ??
-      buildSignalSk(item.emittingTimeframe as Timeframe, item.asOf as number),
-  }));
+  return merged.slice(0, limit).map((item) => {
+    const partial: Pick<BlendedSignal, "ratificationStatus" | "ratificationVerdict" | "algoVerdict" | "rulesFired" | "pair" | "type"> = {
+      pair: item.pair as string,
+      type: item.type as BlendedSignal["type"],
+      rulesFired: (item.rulesFired as string[]) ?? [],
+      ratificationStatus: (item.ratificationStatus ?? null) as BlendedSignal["ratificationStatus"],
+      ratificationVerdict: (item.ratificationVerdict ?? null) as BlendedSignal["ratificationVerdict"],
+      algoVerdict: (item.algoVerdict ?? null) as BlendedSignal["algoVerdict"],
+    };
+    return {
+      pair: item.pair as string,
+      type: item.type as BlendedSignal["type"],
+      confidence: item.confidence as number,
+      volatilityFlag: item.volatilityFlag as boolean,
+      gateReason: item.gateReason as BlendedSignal["gateReason"],
+      rulesFired: (item.rulesFired as string[]) ?? [],
+      perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
+      weightsUsed: item.weightsUsed as BlendedSignal["weightsUsed"],
+      asOf: item.asOf as number,
+      emittingTimeframe: item.emittingTimeframe as BlendedSignal["emittingTimeframe"],
+      risk: (item.risk ?? null) as BlendedSignal["risk"],
+      invalidatedAt: (item.invalidatedAt ?? null) as string | null,
+      invalidationReason: (item.invalidationReason ?? null) as string | null,
+      ratificationStatus: (item.ratificationStatus ?? null) as BlendedSignal["ratificationStatus"],
+      ratificationVerdict: (item.ratificationVerdict ?? null) as BlendedSignal["ratificationVerdict"],
+      algoVerdict: (item.algoVerdict ?? null) as BlendedSignal["algoVerdict"],
+      interpretation: buildInterpretation(partial),
+      signalId: item.signalId as string,
+      emittedAt: item.emittedAt as string,
+      sk:
+        (item.sk as string) ??
+        buildSignalSk(item.emittingTimeframe as Timeframe, item.asOf as number),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

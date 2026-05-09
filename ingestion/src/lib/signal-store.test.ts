@@ -519,3 +519,90 @@ describe("updateSignalRatification", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase B2 (#171) — interpretation field populated by getRecentSignals
+// ---------------------------------------------------------------------------
+
+describe("getRecentSignals — interpretation field (Phase B2)", () => {
+  const baseDdbItem = {
+    pair: "BTC/USDT",
+    sk: "15m#1700000000000",
+    signalId: "id-1",
+    emittedAt: new Date(1700000000000).toISOString(),
+    type: "buy",
+    confidence: 0.72,
+    volatilityFlag: false,
+    gateReason: null,
+    rulesFired: ["ema_cross_bullish", "rsi_oversold"],
+    perTimeframe: {},
+    weightsUsed: {},
+    asOf: 1700000000000,
+    emittingTimeframe: "15m",
+    risk: null,
+  };
+
+  it("populates interpretation.source='algo-only' when ratificationStatus is null", async () => {
+    send.mockImplementation((cmd: any) => {
+      if (cmd.input.ExpressionAttributeValues?.[":tfPrefix"] === "15m#") {
+        return Promise.resolve({ Items: [{ ...baseDdbItem, ratificationStatus: null }] });
+      }
+      return Promise.resolve({ Items: [] });
+    });
+    const { getRecentSignals } = await import("./signal-store.js");
+    const results = await getRecentSignals("BTC/USDT");
+    expect(results[0].interpretation?.source).toBe("algo-only");
+    expect(results[0].interpretation?.text).toContain("BTC/USDT");
+  });
+
+  it("populates interpretation.source='algo-only' with awaiting hint when status is 'pending'", async () => {
+    send.mockImplementation((cmd: any) => {
+      if (cmd.input.ExpressionAttributeValues?.[":tfPrefix"] === "15m#") {
+        return Promise.resolve({ Items: [{ ...baseDdbItem, ratificationStatus: "pending" }] });
+      }
+      return Promise.resolve({ Items: [] });
+    });
+    const { getRecentSignals } = await import("./signal-store.js");
+    const results = await getRecentSignals("BTC/USDT");
+    expect(results[0].interpretation?.source).toBe("algo-only");
+    expect(results[0].interpretation?.text).toMatch(/Awaiting LLM ratification/);
+  });
+
+  it("populates interpretation.source='llm-ratified' when ratificationStatus is 'ratified'", async () => {
+    const item = {
+      ...baseDdbItem,
+      ratificationStatus: "ratified",
+      ratificationVerdict: { type: "buy", confidence: 0.72, reasoning: "EMA confirmed by LLM." },
+    };
+    send.mockImplementation((cmd: any) => {
+      if (cmd.input.ExpressionAttributeValues?.[":tfPrefix"] === "15m#") {
+        return Promise.resolve({ Items: [item] });
+      }
+      return Promise.resolve({ Items: [] });
+    });
+    const { getRecentSignals } = await import("./signal-store.js");
+    const results = await getRecentSignals("BTC/USDT");
+    expect(results[0].interpretation?.source).toBe("llm-ratified");
+    expect(results[0].interpretation?.text).toBe("EMA confirmed by LLM.");
+  });
+
+  it("populates interpretation.source='llm-downgraded' with originalAlgo when status is 'downgraded'", async () => {
+    const item = {
+      ...baseDdbItem,
+      ratificationStatus: "downgraded",
+      ratificationVerdict: { type: "hold", confidence: 0.5, reasoning: "LLM downgrade." },
+      algoVerdict: { type: "buy", confidence: 0.72, reasoning: "ema_cross_bullish" },
+    };
+    send.mockImplementation((cmd: any) => {
+      if (cmd.input.ExpressionAttributeValues?.[":tfPrefix"] === "15m#") {
+        return Promise.resolve({ Items: [item] });
+      }
+      return Promise.resolve({ Items: [] });
+    });
+    const { getRecentSignals } = await import("./signal-store.js");
+    const results = await getRecentSignals("BTC/USDT");
+    expect(results[0].interpretation?.source).toBe("llm-downgraded");
+    expect(results[0].interpretation?.text).toBe("LLM downgrade.");
+    expect(results[0].interpretation?.originalAlgo?.type).toBe("buy");
+  });
+});
