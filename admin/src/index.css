@@ -3,13 +3,128 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --paper: 251 250 247;
+    --surface: 246 244 238;
+    --sunken: 235 233 227;
+    --line: 224 221 213;
+    --line-strong: 200 195 184;
+
+    --ink: 22 20 15;
+    --ink2: 58 54 48;
+    --muted: 132 128 122;
+    --muted2: 168 163 156;
+
+    --brand: 107 92 255;
+    --brand-strong: 86 69 235;
+    --brand-soft: 235 232 255;
+
+    --up: 16 163 107;
+    --up-strong: 14 142 94;
+    --up-soft: 220 244 232;
+
+    --down: 220 70 70;
+    --down-strong: 188 54 54;
+    --down-soft: 250 226 226;
+
+    --warn: 194 166 51;
+    --warn-soft: 248 237 196;
+
+    --asset-btc: 247 147 26;
+    --asset-eth: 138 155 239;
+    --asset-sol: 20 200 130;
+    --asset-avax: 232 65 66;
+    --asset-link: 36 90 219;
+    --asset-doge: 194 166 51;
+    --asset-matic: 153 69 255;
+    --asset-xrp: 70 70 70;
+  }
+
+  html.dark {
+    --paper: 15 14 12;
+    --surface: 22 20 15;
+    --sunken: 28 25 19;
+    --line: 52 48 42;
+    --line-strong: 78 73 65;
+
+    --ink: 245 242 235;
+    --ink2: 214 209 199;
+    --muted: 138 132 122;
+    --muted2: 94 89 80;
+
+    --brand: 139 125 255;
+    --brand-strong: 107 92 255;
+    --brand-soft: 38 30 80;
+
+    --up: 45 201 133;
+    --up-strong: 20 241 149;
+    --up-soft: 14 50 36;
+
+    --down: 240 98 98;
+    --down-strong: 232 65 66;
+    --down-soft: 64 22 22;
+
+    --warn: 225 199 104;
+    --warn-soft: 60 50 20;
+
+    --asset-sol: 20 241 149;
+    --asset-eth: 138 155 239;
+  }
+
   html,
   body,
   #root {
     height: 100%;
   }
+
   body {
     font-family:
-      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+      sans-serif;
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular numerals everywhere data is shown. */
+  .tabular,
+  .font-mono,
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .num {
+    font-family:
+      "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hairline {
+    background: rgb(var(--line));
+    height: 1px;
+    width: 100%;
+  }
+
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40
+      focus-visible:ring-offset-0;
+  }
+
+  /* Scrollbar styling for rails. */
+  .rail-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+  .rail-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .rail-scroll::-webkit-scrollbar-thumb {
+    background: rgb(var(--line));
+    border-radius: 3px;
+  }
+  .rail-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--line-strong));
   }
 }

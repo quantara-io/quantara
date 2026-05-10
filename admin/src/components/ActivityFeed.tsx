@@ -12,8 +12,10 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PipelineEvent } from "@quantara/shared";
+
 import { getAccessToken } from "../lib/auth";
 import { apiFetch } from "../lib/api";
+
 import { eventKey, BoundedKeySet } from "./activityFeedDedupe";
 
 // ---------------------------------------------------------------------------
@@ -38,12 +40,12 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 // ---------------------------------------------------------------------------
 
 const EVENT_TYPE_COLORS: Record<PipelineEvent["type"], string> = {
-  "indicator-state-updated": "bg-slate-700 text-slate-300",
-  "signal-emitted": "bg-cyan-900 text-cyan-300",
-  "ratification-fired": "bg-indigo-900 text-indigo-300",
-  "news-enriched": "bg-emerald-900 text-emerald-300",
-  "sentiment-shock-detected": "bg-orange-900 text-orange-300",
-  "quorum-failed": "bg-red-900 text-red-300",
+  "indicator-state-updated": "bg-line text-ink2",
+  "signal-emitted": "bg-brand-soft text-brand",
+  "ratification-fired": "bg-brand-soft text-brand",
+  "news-enriched": "bg-up-soft text-up-strong",
+  "sentiment-shock-detected": "bg-warn-soft text-warn",
+  "quorum-failed": "bg-down-soft text-down-strong",
 };
 
 const ALL_EVENT_TYPES: PipelineEvent["type"][] = [
@@ -329,7 +331,7 @@ export function ActivityFeed() {
           className={`px-3 py-1 rounded text-xs font-medium border ${
             paused
               ? "border-amber-500 text-amber-400 bg-amber-950/30"
-              : "border-slate-700 text-slate-400 hover:text-slate-200"
+              : "border-line text-muted hover:text-ink"
           }`}
         >
           {paused ? `Resume (${queueRef.current.length} queued)` : "Pause"}
@@ -339,8 +341,8 @@ export function ActivityFeed() {
           onClick={() => setAutoScroll((a) => !a)}
           className={`px-3 py-1 rounded text-xs font-medium border ${
             autoScroll
-              ? "border-cyan-600 text-cyan-400 bg-cyan-950/30"
-              : "border-slate-700 text-slate-400 hover:text-slate-200"
+              ? "border-brand text-brand bg-brand-soft"
+              : "border-line text-muted hover:text-ink"
           }`}
         >
           {autoScroll ? "Auto-scroll ON" : "Auto-scroll OFF"}
@@ -348,12 +350,12 @@ export function ActivityFeed() {
 
         <button
           onClick={() => setAllEntries([])}
-          className="px-3 py-1 rounded text-xs font-medium border border-slate-700 text-slate-500 hover:text-slate-300"
+          className="px-3 py-1 rounded text-xs font-medium border border-line text-muted2 hover:text-ink2"
         >
           Clear
         </button>
 
-        <span className="text-xs text-slate-600">{allEntries.length} events</span>
+        <span className="text-xs text-muted2">{allEntries.length} events</span>
       </div>
 
       {/* Event type filter chips */}
@@ -379,8 +381,8 @@ export function ActivityFeed() {
             onClick={() => togglePair(p)}
             className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-opacity ${
               activePairs.has(p)
-                ? "border-slate-500 text-slate-300 bg-slate-800"
-                : "border-slate-700 text-slate-600 opacity-40"
+                ? "border-line-strong text-ink2 bg-sunken"
+                : "border-line text-muted2 opacity-40"
             }`}
           >
             {p}
@@ -389,9 +391,9 @@ export function ActivityFeed() {
       </div>
 
       {/* Event log */}
-      <div className="rounded-lg border border-slate-800 bg-slate-950 h-[28rem] overflow-y-auto font-mono text-[11px]">
+      <div className="rounded-lg border border-line bg-paper h-[28rem] overflow-y-auto font-mono text-[11px]">
         {displayedEntries.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-slate-600">
+          <div className="flex items-center justify-center h-full text-muted2">
             {!backfillDone
               ? "Loading history…"
               : status === "connecting"
@@ -402,8 +404,8 @@ export function ActivityFeed() {
           <table className="w-full">
             <tbody>
               {displayedEntries.map((entry) => (
-                <tr key={entry.id} className="border-b border-slate-800/60 hover:bg-slate-900/40">
-                  <td className="pl-3 pr-2 py-1 text-slate-500 whitespace-nowrap w-28">
+                <tr key={entry.id} className="border-b border-line/60 hover:bg-surface/40">
+                  <td className="pl-3 pr-2 py-1 text-muted2 whitespace-nowrap w-28">
                     {new Date(entry.receivedAt).toLocaleTimeString()}
                   </td>
                   <td className="pr-2 py-1 w-44">
@@ -413,7 +415,7 @@ export function ActivityFeed() {
                       {entry.event.type}
                     </span>
                   </td>
-                  <td className="pr-3 py-1 text-slate-300">{eventSummary(entry.event)}</td>
+                  <td className="pr-3 py-1 text-ink2">{eventSummary(entry.event)}</td>
                 </tr>
               ))}
             </tbody>
@@ -432,13 +434,13 @@ export function ActivityFeed() {
 function StatusBadge({ status }: { status: "connecting" | "connected" | "disconnected" }) {
   const [color, label] =
     status === "connected"
-      ? ["bg-emerald-400", "Live"]
+      ? ["bg-up", "Live"]
       : status === "connecting"
         ? ["bg-amber-400 animate-pulse", "Connecting"]
-        : ["bg-red-400", "Disconnected"];
+        : ["bg-down", "Disconnected"];
 
   return (
-    <span className="flex items-center gap-1.5 text-xs text-slate-400">
+    <span className="flex items-center gap-1.5 text-xs text-muted">
       <span className={`inline-block w-2 h-2 rounded-full ${color}`} />
       {label}
     </span>

@@ -64,21 +64,21 @@ export function Market() {
       </div>
 
       {error && (
-        <div className="p-3 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+        <div className="p-3 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
           {error}
         </div>
       )}
       {!data ? (
-        <div className="text-sm text-slate-500">Loading…</div>
+        <div className="text-sm text-muted2">Loading…</div>
       ) : (
         <>
-          <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-            <h2 className="text-xs uppercase tracking-widest text-slate-500 mb-3">
+          <div className="rounded-lg border border-line bg-surface p-4">
+            <h2 className="text-xs uppercase tracking-widest text-muted2 mb-3">
               Latest Prices (all pairs)
             </h2>
             <table className="w-full text-xs">
               <thead>
-                <tr className="text-slate-500">
+                <tr className="text-muted2">
                   {["Pair", "Exchange", "Price", "Bid", "Ask", "24h Vol"].map((h) => (
                     <th key={h} className="text-left font-medium pb-2">
                       {h}
@@ -88,19 +88,19 @@ export function Market() {
               </thead>
               <tbody>
                 {data.prices.map((p, i) => (
-                  <tr key={i} className="border-t border-slate-800">
-                    <td className="py-1.5 text-slate-300">{p.pair}</td>
-                    <td className="py-1.5 text-slate-300">{p.exchange}</td>
-                    <td className="py-1.5 text-cyan-300 font-mono">
+                  <tr key={i} className="border-t border-line">
+                    <td className="py-1.5 text-ink2">{p.pair}</td>
+                    <td className="py-1.5 text-ink2">{p.exchange}</td>
+                    <td className="py-1.5 text-brand font-mono">
                       {p.price?.toFixed?.(p.price < 1 ? 6 : 2)}
                     </td>
-                    <td className="py-1.5 text-slate-400 font-mono">
+                    <td className="py-1.5 text-muted font-mono">
                       {p.bid?.toFixed?.(p.bid < 1 ? 6 : 2) ?? "—"}
                     </td>
-                    <td className="py-1.5 text-slate-400 font-mono">
+                    <td className="py-1.5 text-muted font-mono">
                       {p.ask?.toFixed?.(p.ask < 1 ? 6 : 2) ?? "—"}
                     </td>
-                    <td className="py-1.5 text-slate-400 font-mono">
+                    <td className="py-1.5 text-muted font-mono">
                       {p.volume24h?.toLocaleString?.() ?? "—"}
                     </td>
                   </tr>
@@ -109,13 +109,13 @@ export function Market() {
             </table>
           </div>
 
-          <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-            <h2 className="text-xs uppercase tracking-widest text-slate-500 mb-3">
+          <div className="rounded-lg border border-line bg-surface p-4">
+            <h2 className="text-xs uppercase tracking-widest text-muted2 mb-3">
               Candles · {data.pair} @ {data.exchange} · 1m · last {data.candles.length}
             </h2>
             <table className="w-full text-xs font-mono">
               <thead>
-                <tr className="text-slate-500">
+                <tr className="text-muted2">
                   {["Time", "Open", "High", "Low", "Close", "Volume"].map((h) => (
                     <th key={h} className="text-left font-medium pb-2">
                       {h}
@@ -128,21 +128,21 @@ export function Market() {
                   .slice(-30)
                   .reverse()
                   .map((c, i) => (
-                    <tr key={i} className="border-t border-slate-800">
-                      <td className="py-1 text-slate-400">
+                    <tr key={i} className="border-t border-line">
+                      <td className="py-1 text-muted">
                         {new Date(c.openTime).toLocaleTimeString()}
                       </td>
-                      <td className="py-1 text-slate-300">
+                      <td className="py-1 text-ink2">
                         {c.open?.toFixed?.(c.open < 1 ? 6 : 2)}
                       </td>
-                      <td className="py-1 text-emerald-400">
+                      <td className="py-1 text-up">
                         {c.high?.toFixed?.(c.high < 1 ? 6 : 2)}
                       </td>
-                      <td className="py-1 text-red-400">{c.low?.toFixed?.(c.low < 1 ? 6 : 2)}</td>
-                      <td className="py-1 text-slate-300">
+                      <td className="py-1 text-down">{c.low?.toFixed?.(c.low < 1 ? 6 : 2)}</td>
+                      <td className="py-1 text-ink2">
                         {c.close?.toFixed?.(c.close < 1 ? 6 : 2)}
                       </td>
-                      <td className="py-1 text-slate-500">{c.volume?.toFixed?.(2)}</td>
+                      <td className="py-1 text-muted2">{c.volume?.toFixed?.(2)}</td>
                     </tr>
                   ))}
               </tbody>
@@ -166,12 +166,12 @@ function Selector({
   onChange: (v: string) => void;
 }) {
   return (
-    <label className="text-xs text-slate-400 flex items-center gap-2">
+    <label className="text-xs text-muted flex items-center gap-2">
       {label}
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+        className="rounded-md bg-paper border border-line px-2 py-1 text-sm text-ink focus:outline-none focus:border-brand"
       >
         {options.map((o) => (
           <option key={o}>{o}</option>

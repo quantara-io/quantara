@@ -171,7 +171,7 @@ export function HelpTooltip({ label, children, code, link, position = "top" }: H
             open ? closePopover() : openPopover();
           }
         }}
-        className="inline-flex items-center justify-center text-slate-500 hover:text-slate-300 focus:outline-none focus-visible:ring-1 focus-visible:ring-slate-500 rounded-full transition-colors"
+        className="inline-flex items-center justify-center text-muted2 hover:text-ink2 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand/40 rounded-full transition-colors"
       >
         {/* 12x12 SVG circle-question icon */}
         <svg
@@ -203,21 +203,21 @@ export function HelpTooltip({ label, children, code, link, position = "top" }: H
           ref={popoverRef}
           id={tooltipId}
           role="tooltip"
-          className={`absolute z-50 w-72 rounded border border-slate-700 bg-slate-900 p-3 shadow-lg text-xs text-slate-200 ${positionClasses[resolvedSide]}`}
+          className={`absolute z-50 w-72 rounded border border-line bg-surface p-3 shadow-lg text-xs text-ink ${positionClasses[resolvedSide]}`}
           // Allow focus to enter the popover (for links / keyboard nav)
           tabIndex={-1}
           onMouseEnter={openPopover}
           onMouseLeave={closePopover}
         >
           {/* Headline */}
-          <p className="font-semibold text-slate-100 mb-1">{label}</p>
+          <p className="font-semibold text-ink mb-1">{label}</p>
 
           {/* Body */}
-          <div className="text-slate-300 leading-relaxed">{children}</div>
+          <div className="text-ink2 leading-relaxed">{children}</div>
 
           {/* Optional code block */}
           {code && (
-            <pre className="mt-2 font-mono text-[10px] text-slate-400 bg-slate-950/60 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">
+            <pre className="mt-2 font-mono text-[10px] text-muted bg-paper/60 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">
               {code}
             </pre>
           )}
@@ -228,7 +228,7 @@ export function HelpTooltip({ label, children, code, link, position = "top" }: H
               href={link.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-2 inline-block text-cyan-400 hover:text-cyan-300 underline underline-offset-2"
+              className="mt-2 inline-block text-brand hover:text-brand underline underline-offset-2"
             >
               {link.text ?? "Learn more"} &rarr;
             </a>

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { PipelineEvent } from "@quantara/shared";
+
 import { eventKey, BoundedKeySet } from "./activityFeedDedupe";
 
 // Backfill stamps `ts` from a persisted field at fetch time; the live WS

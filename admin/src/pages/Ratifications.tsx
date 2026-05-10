@@ -124,9 +124,9 @@ function Modal({ row, onClose }: { row: RatificationRow; onClose: () => void }) 
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
-          <h2 id="ratification-modal-title" className="text-sm font-semibold text-cyan-300">
+      <div className="bg-surface border border-line rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-line">
+          <h2 id="ratification-modal-title" className="text-sm font-semibold text-brand">
             Ratification detail — {row.pair} {row.timeframe} @{" "}
             {new Date(row.invokedAt).toLocaleString()}
           </h2>
@@ -135,7 +135,7 @@ function Modal({ row, onClose }: { row: RatificationRow; onClose: () => void }) 
             type="button"
             aria-label="Close"
             onClick={onClose}
-            className="text-slate-500 hover:text-slate-200 text-lg leading-none"
+            className="text-muted2 hover:text-ink text-lg leading-none"
           >
             &times;
           </button>
@@ -192,8 +192,8 @@ function Modal({ row, onClose }: { row: RatificationRow; onClose: () => void }) 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-1">{title}</p>
-      <div className="bg-slate-800/50 rounded-lg p-3 space-y-1">{children}</div>
+      <p className="text-[10px] uppercase tracking-widest text-muted2 mb-1">{title}</p>
+      <div className="bg-sunken/50 rounded-lg p-3 space-y-1">{children}</div>
     </div>
   );
 }
@@ -201,21 +201,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function KV({ k, v, tooltip }: { k: string; v: unknown; tooltip?: React.ReactNode }) {
   return (
     <div className="flex gap-2">
-      <span className="text-slate-500 min-w-[140px] inline-flex items-center gap-1">
+      <span className="text-muted2 min-w-[140px] inline-flex items-center gap-1">
         {k}
         {tooltip}
       </span>
-      <span className="text-slate-200 break-all">{String(v)}</span>
+      <span className="text-ink break-all">{String(v)}</span>
     </div>
   );
 }
 
 function JsonBlock({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
-    return <span className="text-slate-500 italic">null</span>;
+    return <span className="text-muted2 italic">null</span>;
   }
   return (
-    <pre className="text-[11px] text-emerald-300 whitespace-pre-wrap break-all">
+    <pre className="text-[11px] text-up-strong whitespace-pre-wrap break-all">
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -325,12 +325,12 @@ export function Ratifications() {
     return (
       <th
         onClick={() => toggleSort(col)}
-        className="px-3 py-2 text-left text-[10px] uppercase tracking-wider text-slate-500 cursor-pointer select-none hover:text-slate-300 whitespace-nowrap"
+        className="px-3 py-2 text-left text-[10px] uppercase tracking-wider text-muted2 cursor-pointer select-none hover:text-ink2 whitespace-nowrap"
       >
         <span className="inline-flex items-center gap-1">
           {label}
           {tooltip}
-          {active && <span className="text-cyan-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
+          {active && <span className="text-brand">{sortDir === "asc" ? "▲" : "▼"}</span>}
         </span>
       </th>
     );
@@ -343,15 +343,15 @@ export function Ratifications() {
       {/* Filter bar */}
       <div className="flex flex-wrap gap-2 items-center">
         {/* Pair pills */}
-        <span className="text-[11px] text-slate-500">Pair:</span>
+        <span className="text-[11px] text-muted2">Pair:</span>
         {(["", ...(PAIRS as readonly string[])] as string[]).map((p) => (
           <button
             key={p || "all"}
             onClick={() => setFilterPair(p)}
             className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
               filterPair === p
-                ? "border-cyan-500 bg-cyan-950 text-cyan-300"
-                : "border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200"
+                ? "border-brand bg-brand-soft text-brand"
+                : "border-line bg-sunken text-muted hover:text-ink"
             }`}
           >
             {p || "All"}
@@ -359,7 +359,7 @@ export function Ratifications() {
         ))}
 
         {/* Trigger pills */}
-        <span className="ml-2 text-[11px] text-slate-500">Trigger:</span>
+        <span className="ml-2 text-[11px] text-muted2">Trigger:</span>
         {(["", ...TRIGGER_REASONS] as string[]).map((t) => (
           <button
             key={t || "all"}
@@ -367,7 +367,7 @@ export function Ratifications() {
             className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
               filterTrigger === t
                 ? "border-purple-500 bg-purple-950 text-purple-300"
-                : "border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200"
+                : "border-line bg-sunken text-muted hover:text-ink"
             }`}
           >
             {t || "All"}
@@ -375,15 +375,15 @@ export function Ratifications() {
         ))}
 
         {/* Time range pills */}
-        <span className="ml-2 text-[11px] text-slate-500">Range:</span>
+        <span className="ml-2 text-[11px] text-muted2">Range:</span>
         {(["1h", "24h", "7d", "custom"] as TimeRange[]).map((r) => (
           <button
             key={r}
             onClick={() => setTimeRange(r)}
             className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
               timeRange === r
-                ? "border-emerald-500 bg-emerald-950 text-emerald-300"
-                : "border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200"
+                ? "border-up bg-up-soft text-up-strong"
+                : "border-line bg-sunken text-muted hover:text-ink"
             }`}
           >
             {r === "custom" ? "Custom" : `Last ${r}`}
@@ -394,7 +394,7 @@ export function Ratifications() {
             type="datetime-local"
             value={customSince}
             onChange={(e) => setCustomSince(e.target.value)}
-            className="ml-1 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[11px] text-slate-200"
+            className="ml-1 bg-sunken border border-line rounded px-2 py-1 text-[11px] text-ink"
           />
         )}
 
@@ -402,7 +402,7 @@ export function Ratifications() {
           <button
             onClick={() => exportCsv(sorted)}
             disabled={sorted.length === 0}
-            className="px-3 py-1.5 text-[11px] rounded border border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-[11px] rounded border border-line bg-sunken text-muted hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Export CSV
           </button>
@@ -410,15 +410,15 @@ export function Ratifications() {
       </div>
 
       {error && (
-        <div className="p-3 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+        <div className="p-3 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
           {error}
         </div>
       )}
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-lg border border-slate-800">
+      <div className="overflow-x-auto rounded-lg border border-line">
         <table className="min-w-full text-xs">
-          <thead className="sticky top-0 bg-slate-900 border-b border-slate-800 z-10">
+          <thead className="sticky top-0 bg-surface border-b border-line z-10">
             <tr>
               <SortHeader col="invokedAt" label="Time" />
               <SortHeader col="pair" label="Pair" />
@@ -449,7 +449,7 @@ export function Ratifications() {
               <SortHeader col="validationOk" label="Valid?" />
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/50">
+          <tbody className="divide-y divide-line/50">
             {sorted.map((row) => (
               // <tr> is not keyboard-focusable by default — make it behave
               // like a button so keyboard users can open the detail modal.
@@ -466,52 +466,52 @@ export function Ratifications() {
                 role="button"
                 tabIndex={0}
                 aria-label={`Open ratification details for ${row.pair} at ${new Date(row.invokedAt).toLocaleString()}`}
-                className="cursor-pointer hover:bg-slate-800/40 transition-colors focus:outline-none focus:bg-slate-800/60 focus:ring-1 focus:ring-cyan-500/40"
+                className="cursor-pointer hover:bg-sunken/40 transition-colors focus:outline-none focus:bg-sunken/60 focus:ring-1 focus:ring-brand/40"
               >
-                <td className="px-3 py-2 text-slate-400 whitespace-nowrap">
+                <td className="px-3 py-2 text-muted whitespace-nowrap">
                   {new Date(row.invokedAt).toLocaleString()}
                 </td>
-                <td className="px-3 py-2 text-slate-200 whitespace-nowrap">{row.pair}</td>
-                <td className="px-3 py-2 text-slate-400">{row.timeframe}</td>
+                <td className="px-3 py-2 text-ink whitespace-nowrap">{row.pair}</td>
+                <td className="px-3 py-2 text-muted">{row.timeframe}</td>
                 <td className="px-3 py-2">
                   <TriggerBadge reason={row.triggerReason} />
                 </td>
                 <td
-                  className="px-3 py-2 text-slate-500 truncate max-w-[120px]"
+                  className="px-3 py-2 text-muted2 truncate max-w-[120px]"
                   title={row.llmModel ?? ""}
                 >
                   {row.llmModel ? row.llmModel.split(".").pop() : "—"}
                 </td>
                 <td className="px-3 py-2">
                   <span
-                    className={`px-1.5 py-0.5 rounded text-[10px] ${row.cacheHit ? "bg-indigo-950 text-indigo-300" : "bg-slate-800 text-slate-500"}`}
+                    className={`px-1.5 py-0.5 rounded text-[10px] ${row.cacheHit ? "bg-brand-soft text-brand" : "bg-sunken text-muted2"}`}
                   >
                     {row.cacheHit ? "HIT" : "MISS"}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-slate-400 text-right tabular-nums">
+                <td className="px-3 py-2 text-muted text-right tabular-nums">
                   {row.latencyMs}ms
                 </td>
-                <td className="px-3 py-2 text-slate-400 text-right tabular-nums">
+                <td className="px-3 py-2 text-muted text-right tabular-nums">
                   ${row.costUsd.toFixed(5)}
                 </td>
                 <td className="px-3 py-2">
                   {row.algoCandidateType ? (
                     <VerdictBadge type={row.algoCandidateType} conf={row.algoCandidateConfidence} />
                   ) : (
-                    <span className="text-slate-600">—</span>
+                    <span className="text-muted2">—</span>
                   )}
                 </td>
                 <td className="px-3 py-2">
                   {row.ratifiedType ? (
                     <VerdictBadge type={row.ratifiedType} conf={row.ratifiedConfidence} />
                   ) : (
-                    <span className="text-slate-600">—</span>
+                    <span className="text-muted2">—</span>
                   )}
                 </td>
                 <td className="px-3 py-2">
                   <span
-                    className={`px-1.5 py-0.5 rounded text-[10px] ${row.validationOk ? "bg-emerald-950 text-emerald-300" : "bg-red-950 text-red-300"}`}
+                    className={`px-1.5 py-0.5 rounded text-[10px] ${row.validationOk ? "bg-up-soft text-up-strong" : "bg-down-soft text-down-strong"}`}
                   >
                     {row.validationOk ? "OK" : "FAIL"}
                   </span>
@@ -520,7 +520,7 @@ export function Ratifications() {
             ))}
             {sorted.length === 0 && !loading && (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-slate-600 text-sm">
+                <td colSpan={11} className="px-4 py-8 text-center text-muted2 text-sm">
                   No ratification records found.
                 </td>
               </tr>
@@ -531,17 +531,17 @@ export function Ratifications() {
 
       {/* Load more / spinner */}
       <div className="flex items-center justify-center gap-4 pt-1">
-        {loading && <span className="text-sm text-slate-500">Loading...</span>}
+        {loading && <span className="text-sm text-muted2">Loading...</span>}
         {!loading && cursor && (
           <button
             onClick={() => void load(false, cursor)}
-            className="px-4 py-2 text-sm rounded border border-slate-700 bg-slate-800 text-slate-300 hover:text-white"
+            className="px-4 py-2 text-sm rounded border border-line bg-sunken text-ink2 hover:text-white"
           >
             Load more
           </button>
         )}
         {!loading && !cursor && rows.length > 0 && (
-          <span className="text-[11px] text-slate-600">{rows.length} records loaded</span>
+          <span className="text-[11px] text-muted2">{rows.length} records loaded</span>
         )}
       </div>
     </div>
@@ -557,22 +557,22 @@ function TriggerBadge({ reason }: { reason: string }) {
     reason === "bar_close"
       ? "bg-blue-950 text-blue-300"
       : reason === "sentiment_shock"
-        ? "bg-orange-950 text-orange-300"
+        ? "bg-warn-soft text-warn"
         : reason === "manual"
           ? "bg-violet-950 text-violet-300"
           : reason.startsWith("skip-")
-            ? "bg-slate-800 text-slate-500"
-            : "bg-slate-800 text-slate-400";
+            ? "bg-sunken text-muted2"
+            : "bg-sunken text-muted";
   return <span className={`px-1.5 py-0.5 rounded text-[10px] ${colour}`}>{reason}</span>;
 }
 
 function VerdictBadge({ type, conf }: { type: string; conf: number | null }) {
   const colour =
     type === "buy" || type === "strong_buy"
-      ? "bg-emerald-950 text-emerald-300"
+      ? "bg-up-soft text-up-strong"
       : type === "sell" || type === "strong_sell"
-        ? "bg-red-950 text-red-300"
-        : "bg-slate-800 text-slate-400";
+        ? "bg-down-soft text-down-strong"
+        : "bg-sunken text-muted";
   return (
     <span className={`px-1.5 py-0.5 rounded text-[10px] ${colour}`}>
       {type}

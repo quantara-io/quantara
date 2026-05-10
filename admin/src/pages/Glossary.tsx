@@ -98,29 +98,29 @@ function EntryCard({ glossaryKey }: { glossaryKey: GlossaryKey }) {
   return (
     <article
       id={glossaryKey}
-      className="scroll-mt-20 rounded-lg border border-slate-800 bg-slate-900/60 p-6"
+      className="scroll-mt-20 rounded-lg border border-line bg-surface/60 p-6"
     >
       {/* Headline */}
-      <h2 className="text-lg font-semibold text-slate-100 mb-1">{entry.label}</h2>
+      <h2 className="text-lg font-semibold text-ink mb-1">{entry.label}</h2>
 
       {/* Short body (tooltip text) */}
-      <p className="text-sm text-slate-300 leading-relaxed mb-3">{entry.body}</p>
+      <p className="text-sm text-ink2 leading-relaxed mb-3">{entry.body}</p>
 
       {/* Optional formula block */}
       {entry.code && (
-        <pre className="mb-4 font-mono text-xs text-slate-400 bg-slate-950/70 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap">
+        <pre className="mb-4 font-mono text-xs text-muted bg-paper/70 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap">
           {entry.code}
         </pre>
       )}
 
       {/* Long-form content */}
       {entry.longForm && (
-        <div className="mt-4 space-y-6 border-t border-slate-800 pt-4">
+        <div className="mt-4 space-y-6 border-t border-line pt-4">
           {/* Additional paragraphs */}
           {entry.longForm.paragraphs.length > 0 && (
             <div className="space-y-3">
               {entry.longForm.paragraphs.map((para, i) => (
-                <p key={i} className="text-sm text-slate-300 leading-relaxed">
+                <p key={i} className="text-sm text-ink2 leading-relaxed">
                   {para}
                 </p>
               ))}
@@ -130,7 +130,7 @@ function EntryCard({ glossaryKey }: { glossaryKey: GlossaryKey }) {
           {/* Where you'll see this */}
           {entry.longForm.seenOn && entry.longForm.seenOn.length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+              <p className="text-xs font-semibold text-muted2 uppercase tracking-wider mb-2">
                 Where you'll see this
               </p>
               <ul className="flex flex-wrap gap-2">
@@ -138,7 +138,7 @@ function EntryCard({ glossaryKey }: { glossaryKey: GlossaryKey }) {
                   <li key={loc.href}>
                     <Link
                       to={loc.href}
-                      className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-slate-100 transition-colors"
+                      className="inline-flex items-center gap-1 rounded border border-line bg-sunken px-2.5 py-1 text-xs text-ink2 hover:bg-line hover:text-ink transition-colors"
                     >
                       {loc.page}
                     </Link>
@@ -151,7 +151,7 @@ function EntryCard({ glossaryKey }: { glossaryKey: GlossaryKey }) {
           {/* Related terms */}
           {entry.longForm.related && entry.longForm.related.length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+              <p className="text-xs font-semibold text-muted2 uppercase tracking-wider mb-2">
                 Related terms
               </p>
               <ul className="flex flex-wrap gap-2">
@@ -159,7 +159,7 @@ function EntryCard({ glossaryKey }: { glossaryKey: GlossaryKey }) {
                   <li key={relKey}>
                     <a
                       href={`#${relKey}`}
-                      className="inline-flex items-center gap-1 rounded border border-cyan-900 bg-cyan-950/40 px-2.5 py-1 text-xs text-cyan-400 hover:bg-cyan-900/50 hover:text-cyan-300 transition-colors"
+                      className="inline-flex items-center gap-1 rounded border border-brand/30 bg-brand-soft px-2.5 py-1 text-xs text-brand hover:bg-brand-soft/50 hover:text-brand transition-colors"
                     >
                       {GLOSSARY[relKey].label}
                     </a>
@@ -214,7 +214,7 @@ export function Glossary() {
         <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto pr-2 space-y-5">
           {groups.map(({ category, keys }) => (
             <div key={category}>
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted2 mb-1.5">
                 {category}
               </p>
               <ul className="space-y-0.5">
@@ -224,8 +224,8 @@ export function Glossary() {
                       href={`#${key}`}
                       className={`block px-2 py-1 rounded text-xs transition-colors ${
                         activeKey === key
-                          ? "bg-slate-800 text-cyan-300"
-                          : "text-slate-400 hover:text-slate-100"
+                          ? "bg-sunken text-brand"
+                          : "text-muted hover:text-ink"
                       }`}
                     >
                       {GLOSSARY[key].label}
@@ -244,24 +244,24 @@ export function Glossary() {
       <div className="flex-1 min-w-0">
         {/* Page header */}
         <div className="mb-8">
-          <h1 className="text-2xl font-semibold text-slate-100">Glossary</h1>
-          <p className="mt-1 text-sm text-slate-400">
+          <h1 className="text-2xl font-semibold text-ink">Glossary</h1>
+          <p className="mt-1 text-sm text-muted">
             Long-form explanations of every term used in the Quantara admin dashboard. Use the index
             on the left to jump to a specific term, or share a direct link with{" "}
-            <code className="font-mono text-xs text-cyan-400">/admin/glossary#&lt;term&gt;</code>.
+            <code className="font-mono text-xs text-brand">/admin/glossary#&lt;term&gt;</code>.
           </p>
         </div>
 
         {/* Mobile: compact flat index */}
         <div className="lg:hidden mb-6">
-          <details className="rounded border border-slate-800 bg-slate-900/60">
-            <summary className="cursor-pointer px-4 py-3 text-sm text-slate-300 font-medium select-none">
+          <details className="rounded border border-line bg-surface/60">
+            <summary className="cursor-pointer px-4 py-3 text-sm text-ink2 font-medium select-none">
               Jump to term &darr;
             </summary>
             <div className="px-4 pb-4 space-y-3">
               {groups.map(({ category, keys }) => (
                 <div key={category}>
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted2 mb-1">
                     {category}
                   </p>
                   <div className="flex flex-wrap gap-2">
@@ -269,7 +269,7 @@ export function Glossary() {
                       <a
                         key={key}
                         href={`#${key}`}
-                        className="text-xs text-slate-400 hover:text-slate-100"
+                        className="text-xs text-muted hover:text-ink"
                       >
                         {GLOSSARY[key].label}
                       </a>
@@ -285,7 +285,7 @@ export function Glossary() {
         <div className="space-y-10">
           {groups.map(({ category, keys }) => (
             <section key={category}>
-              <h2 className="text-base font-semibold text-slate-500 uppercase tracking-wider mb-4">
+              <h2 className="text-base font-semibold text-muted2 uppercase tracking-wider mb-4">
                 {category}
               </h2>
               <div className="space-y-4">

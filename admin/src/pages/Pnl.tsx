@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PAIRS } from "@quantara/shared";
+
 import { apiFetch } from "../lib/api";
 import { HelpTooltip } from "../components/HelpTooltip";
 
@@ -153,12 +154,12 @@ export function Pnl() {
       </div>
 
       {error && (
-        <div className="p-3 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+        <div className="p-3 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
           {error}
         </div>
       )}
 
-      {loading && <div className="text-sm text-slate-500">Running simulation…</div>}
+      {loading && <div className="text-sm text-muted2">Running simulation…</div>}
 
       {!loading && data && (
         <>
@@ -167,7 +168,7 @@ export function Pnl() {
             <Hero
               label="Total PnL"
               value={fmt$(data.pnl.totalUsd)}
-              valueClass={data.pnl.totalUsd >= 0 ? "text-emerald-400" : "text-red-400"}
+              valueClass={data.pnl.totalUsd >= 0 ? "text-up" : "text-down"}
             />
             <Hero
               label={`Trades (${data.trades.wins}W / ${data.trades.losses}L)`}
@@ -177,7 +178,7 @@ export function Pnl() {
               label="Max Drawdown"
               value={fmt$(data.drawdown.maxUsd)}
               sub={`${(data.drawdown.maxPct * 100).toFixed(1)}%`}
-              valueClass="text-orange-400"
+              valueClass="text-warn"
             />
             <Hero label="DD Duration" value={`${data.drawdown.durationDays.toFixed(1)}d`} />
           </div>
@@ -185,8 +186,8 @@ export function Pnl() {
           {/* Secondary hero row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Hero label="Avg / Trade" value={fmt$(data.pnl.avgPerTradeUsd)} />
-            <Hero label="Best Trade" value={fmt$(data.pnl.bestUsd)} valueClass="text-emerald-400" />
-            <Hero label="Worst Trade" value={fmt$(data.pnl.worstUsd)} valueClass="text-red-400" />
+            <Hero label="Best Trade" value={fmt$(data.pnl.bestUsd)} valueClass="text-up" />
+            <Hero label="Worst Trade" value={fmt$(data.pnl.worstUsd)} valueClass="text-down" />
             <Hero
               label="Win Rate"
               value={
@@ -198,15 +199,15 @@ export function Pnl() {
           </div>
 
           {/* Equity curve */}
-          <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+          <div className="rounded-lg border border-line bg-surface p-4">
             <div className="flex items-center gap-2 mb-3">
-              <h2 className="text-xs uppercase tracking-widest text-slate-500">Equity Curve</h2>
+              <h2 className="text-xs uppercase tracking-widest text-muted2">Equity Curve</h2>
               {/* Assumption caveat tooltip */}
               <HelpTooltip label="Simulation assumptions" position="bottom">
-                <ul className="space-y-1 list-disc list-inside text-slate-400">
+                <ul className="space-y-1 list-disc list-inside text-muted">
                   <li>
                     Signals are executed at{" "}
-                    <span className="text-slate-300">emit-bar close price</span> (priceAtSignal).
+                    <span className="text-ink2">emit-bar close price</span> (priceAtSignal).
                   </li>
                   <li>No slippage, no partial fills, no order-book effects.</li>
                   <li>Fixed position size per trade — no real risk sizing.</li>
@@ -218,31 +219,31 @@ export function Pnl() {
             </div>
             <EquityCurveChart curve={data.equityCurve} />
             {data.equityCurve.length < 2 && (
-              <p className="text-sm text-slate-500 text-center py-6">
+              <p className="text-sm text-muted2 text-center py-6">
                 No resolved trades in this window — equity curve unavailable.
               </p>
             )}
           </div>
 
           {/* Per-pair table */}
-          <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+          <div className="rounded-lg border border-line bg-surface p-4">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-xs uppercase tracking-widest text-slate-500">By Pair</h2>
+              <h2 className="text-xs uppercase tracking-widest text-muted2">By Pair</h2>
               <SortPicker value={pairSort} onChange={setPairSort} />
             </div>
             <SliceTable stats={data.perPair} sort={pairSort} />
           </div>
 
           {/* Per-timeframe table */}
-          <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+          <div className="rounded-lg border border-line bg-surface p-4">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-xs uppercase tracking-widest text-slate-500">By Timeframe</h2>
+              <h2 className="text-xs uppercase tracking-widest text-muted2">By Timeframe</h2>
               <SortPicker value={tfSort} onChange={setTfSort} />
             </div>
             <SliceTable stats={data.perTimeframe} sort={tfSort} />
           </div>
 
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-muted2">
             Window: {new Date(data.windowStart).toLocaleDateString()} –{" "}
             {new Date(data.windowEnd).toLocaleDateString()}
             {" · "}Position: ${positionSize} · Fee: {feeBps} bps round-trip
@@ -269,10 +270,10 @@ function Hero({
   valueClass?: string;
 }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
-      <div className={`text-2xl font-semibold mt-1 ${valueClass ?? "text-slate-100"}`}>{value}</div>
-      {sub && <div className="text-xs text-slate-500 mt-1">{sub}</div>}
+    <div className="rounded-lg border border-line bg-surface p-4">
+      <div className="text-[10px] uppercase tracking-widest text-muted2">{label}</div>
+      <div className={`text-2xl font-semibold mt-1 ${valueClass ?? "text-ink"}`}>{value}</div>
+      {sub && <div className="text-xs text-muted2 mt-1">{sub}</div>}
     </div>
   );
 }
@@ -392,13 +393,13 @@ function SliceTable({
   });
 
   if (rows.length === 0) {
-    return <p className="text-xs text-slate-500">No data</p>;
+    return <p className="text-xs text-muted2">No data</p>;
   }
 
   return (
     <table className="w-full text-xs">
       <thead>
-        <tr className="text-slate-500">
+        <tr className="text-muted2">
           {["Name", "Trades", "PnL (USD)", "Win Rate"].map((h) => (
             <th key={h} className="text-left font-medium pb-2">
               {h}
@@ -408,15 +409,15 @@ function SliceTable({
       </thead>
       <tbody>
         {rows.map(([name, s]) => (
-          <tr key={name} className="border-t border-slate-800">
-            <td className="py-1.5 text-slate-300 font-mono">{name}</td>
-            <td className="py-1.5 text-slate-400">{s.trades}</td>
+          <tr key={name} className="border-t border-line">
+            <td className="py-1.5 text-ink2 font-mono">{name}</td>
+            <td className="py-1.5 text-muted">{s.trades}</td>
             <td
-              className={`py-1.5 font-mono font-semibold ${s.pnlUsd >= 0 ? "text-emerald-400" : "text-red-400"}`}
+              className={`py-1.5 font-mono font-semibold ${s.pnlUsd >= 0 ? "text-up" : "text-down"}`}
             >
               {fmt$(s.pnlUsd)}
             </td>
-            <td className="py-1.5 text-slate-300">
+            <td className="py-1.5 text-ink2">
               {s.winRate != null ? `${(s.winRate * 100).toFixed(1)}%` : "—"}
             </td>
           </tr>
@@ -451,7 +452,7 @@ function SortPicker({
 function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[10px] uppercase tracking-widest text-slate-500">{label}</span>
+      <span className="text-[10px] uppercase tracking-widest text-muted2">{label}</span>
       <div className="flex gap-1">{children}</div>
     </label>
   );
@@ -471,8 +472,8 @@ function ToggleBtn({
       onClick={onClick}
       className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
         active
-          ? "bg-cyan-900/60 text-cyan-300 border border-cyan-800"
-          : "bg-slate-900 text-slate-400 border border-slate-700 hover:text-slate-100"
+          ? "bg-brand-soft text-brand border border-brand/30"
+          : "bg-surface text-muted border border-line hover:text-ink"
       }`}
     >
       {children}
@@ -493,7 +494,7 @@ function Selector({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+      className="rounded-md bg-paper border border-line px-2 py-1 text-xs text-ink focus:outline-none focus:border-brand"
     >
       {options.map(([val, label]) => (
         <option key={val} value={val}>
@@ -522,7 +523,7 @@ function NumInput({
         const v = parseFloat(e.target.value);
         if (isFinite(v) && v >= min) onChange(v);
       }}
-      className="w-20 rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+      className="w-20 rounded-md bg-paper border border-line px-2 py-1 text-xs text-ink focus:outline-none focus:border-brand"
     />
   );
 }

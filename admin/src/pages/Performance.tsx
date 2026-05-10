@@ -67,9 +67,9 @@ function pct(v: number): string {
 }
 
 function winRateColor(rate: number): string {
-  if (rate >= 0.6) return "text-emerald-400";
-  if (rate >= 0.45) return "text-yellow-400";
-  return "text-red-400";
+  if (rate >= 0.6) return "text-up";
+  if (rate >= 0.45) return "text-warn";
+  return "text-down";
 }
 
 // ---------------------------------------------------------------------------
@@ -78,8 +78,8 @@ function winRateColor(rate: number): string {
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <h2 className="text-xs uppercase tracking-widest text-slate-500 mb-4">{title}</h2>
+    <div className="rounded-lg border border-line bg-surface p-4">
+      <h2 className="text-xs uppercase tracking-widest text-muted2 mb-4">{title}</h2>
       {children}
     </div>
   );
@@ -93,7 +93,7 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
   if (bins.length === 0) {
     return (
       <SectionCard title="Confidence Calibration">
-        <p className="text-sm text-slate-500 text-center py-4">
+        <p className="text-sm text-muted2 text-center py-4">
           Not enough data — bins require at least 10 resolved signals each.
         </p>
       </SectionCard>
@@ -102,7 +102,7 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
 
   return (
     <SectionCard title="Confidence Calibration">
-      <p className="text-xs text-slate-500 mb-3 inline-flex items-center gap-1">
+      <p className="text-xs text-muted2 mb-3 inline-flex items-center gap-1">
         Stated confidence (x) vs realized win rate (bar). Diagonal = perfect calibration.
         <HelpTooltip label={GLOSSARY.confidenceCalibration.label}>
           {GLOSSARY.confidenceCalibration.body}
@@ -116,25 +116,25 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
           const idealWidth = `${(((bin.binMin + bin.binMax) / 2) * 100).toFixed(1)}%`;
           return (
             <div key={`${bin.binMin}-${bin.binMax}`} className="flex items-center gap-3 text-xs">
-              <span className="text-slate-500 w-14 text-right font-mono shrink-0">
+              <span className="text-muted2 w-14 text-right font-mono shrink-0">
                 {pct(bin.binMin)}
               </span>
-              <div className="relative flex-1 h-5 bg-slate-800 rounded overflow-hidden">
+              <div className="relative flex-1 h-5 bg-sunken rounded overflow-hidden">
                 {/* Ideal diagonal reference */}
                 <div
-                  className="absolute top-0 left-0 h-full bg-slate-700/40 rounded"
+                  className="absolute top-0 left-0 h-full bg-line/40 rounded"
                   style={{ width: idealWidth }}
                 />
                 {/* Actual win rate bar */}
                 <div
-                  className={`absolute top-0 left-0 h-full rounded ${bin.winRate >= (bin.binMin + bin.binMax) / 2 ? "bg-emerald-700/70" : "bg-red-800/70"}`}
+                  className={`absolute top-0 left-0 h-full rounded ${bin.winRate >= (bin.binMin + bin.binMax) / 2 ? "bg-up" : "bg-down-soft"}`}
                   style={{ width: barWidth }}
                 />
               </div>
               <span className={`w-12 font-mono text-right ${winRateColor(bin.winRate)}`}>
                 {pct(bin.winRate)}
               </span>
-              <span className="text-slate-600 w-14 text-right font-mono shrink-0">
+              <span className="text-muted2 w-14 text-right font-mono shrink-0">
                 n={bin.signalCount}
               </span>
             </div>
@@ -143,15 +143,15 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
       </div>
 
       {/* Legend */}
-      <div className="flex items-center gap-4 mt-3 text-[11px] text-slate-600">
+      <div className="flex items-center gap-4 mt-3 text-[11px] text-muted2">
         <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-2 bg-slate-700/60 rounded" /> Ideal
+          <span className="inline-block w-3 h-2 bg-line/60 rounded" /> Ideal
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-2 bg-emerald-700/70 rounded" /> Actual (above ideal)
+          <span className="inline-block w-3 h-2 bg-up rounded" /> Actual (above ideal)
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-2 bg-red-800/70 rounded" /> Actual (below ideal)
+          <span className="inline-block w-3 h-2 bg-down-soft rounded" /> Actual (below ideal)
         </span>
       </div>
 
@@ -159,7 +159,7 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
       <div className="mt-4 overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-slate-500">
+            <tr className="text-muted2">
               <th className="text-left font-medium pb-2">Bin</th>
               <th className="text-left font-medium pb-2">Avg Conf</th>
               <th className="text-left font-medium pb-2">
@@ -173,15 +173,15 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
           </thead>
           <tbody>
             {bins.map((bin) => (
-              <tr key={`row-${bin.binMin}`} className="border-t border-slate-800">
-                <td className="py-1.5 text-slate-400 font-mono">
+              <tr key={`row-${bin.binMin}`} className="border-t border-line">
+                <td className="py-1.5 text-muted font-mono">
                   {pct(bin.binMin)}&ndash;{pct(bin.binMax)}
                 </td>
-                <td className="py-1.5 text-slate-300 font-mono">{pct(bin.avgConfidence)}</td>
+                <td className="py-1.5 text-ink2 font-mono">{pct(bin.avgConfidence)}</td>
                 <td className={`py-1.5 font-mono ${winRateColor(bin.winRate)}`}>
                   {pct(bin.winRate)}
                 </td>
-                <td className="py-1.5 text-slate-500">{bin.signalCount}</td>
+                <td className="py-1.5 text-muted2">{bin.signalCount}</td>
               </tr>
             ))}
           </tbody>
@@ -231,7 +231,7 @@ function RulesSection({
     tooltip?: React.ReactNode;
   }) => (
     <th
-      className="text-left font-medium pb-2 cursor-pointer select-none hover:text-slate-300"
+      className="text-left font-medium pb-2 cursor-pointer select-none hover:text-ink2"
       onClick={() => toggleSort(k)}
     >
       <span className="inline-flex items-center gap-1">
@@ -247,14 +247,14 @@ function RulesSection({
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {/* Per-rule table */}
         <div>
-          <p className="text-[11px] text-slate-500 mb-2">Click a column header to sort.</p>
+          <p className="text-[11px] text-muted2 mb-2">Click a column header to sort.</p>
           {perRule.length === 0 ? (
-            <p className="text-sm text-slate-500 py-2">No rule data available.</p>
+            <p className="text-sm text-muted2 py-2">No rule data available.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-slate-500">
+                  <tr className="text-muted2">
                     <th className="text-left font-medium pb-2">Rule</th>
                     <SortHeader k="fireCount" label="Fires" />
                     <SortHeader
@@ -271,13 +271,13 @@ function RulesSection({
                 </thead>
                 <tbody>
                   {sorted.map((row) => (
-                    <tr key={row.rule} className="border-t border-slate-800">
-                      <td className="py-1.5 text-slate-300 font-mono text-[11px]">{row.rule}</td>
-                      <td className="py-1.5 text-slate-400">{row.fireCount}</td>
+                    <tr key={row.rule} className="border-t border-line">
+                      <td className="py-1.5 text-ink2 font-mono text-[11px]">{row.rule}</td>
+                      <td className="py-1.5 text-muted">{row.fireCount}</td>
                       <td className={`py-1.5 font-mono ${winRateColor(row.tpRate)}`}>
                         {pct(row.tpRate)}
                       </td>
-                      <td className="py-1.5 text-slate-400 font-mono">{pct(row.avgConfidence)}</td>
+                      <td className="py-1.5 text-muted font-mono">{pct(row.avgConfidence)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -288,19 +288,19 @@ function RulesSection({
 
         {/* Co-occurrence table */}
         <div>
-          <p className="text-[11px] text-slate-500 mb-2 inline-flex items-center gap-1">
+          <p className="text-[11px] text-muted2 mb-2 inline-flex items-center gap-1">
             Pairwise rule co-occurrence (rules that fire together on the same signal).
             <HelpTooltip label={GLOSSARY.coOccurrence.label}>
               {GLOSSARY.coOccurrence.body}
             </HelpTooltip>
           </p>
           {coOccurrence.length === 0 ? (
-            <p className="text-sm text-slate-500 py-2">No co-occurrence data available.</p>
+            <p className="text-sm text-muted2 py-2">No co-occurrence data available.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-slate-500">
+                  <tr className="text-muted2">
                     <th className="text-left font-medium pb-2 w-1/2">Rule Pair</th>
                     <th className="text-left font-medium pb-2">Joint Count</th>
                     <th className="text-left font-medium pb-2">
@@ -315,13 +315,13 @@ function RulesSection({
                 </thead>
                 <tbody>
                   {coOccurrence.slice(0, 20).map((row) => (
-                    <tr key={row.rules.join("|")} className="border-t border-slate-800">
-                      <td className="py-1.5 text-slate-400 font-mono text-[11px]">
+                    <tr key={row.rules.join("|")} className="border-t border-line">
+                      <td className="py-1.5 text-muted font-mono text-[11px]">
                         {row.rules[0]}
                         <br />
                         {row.rules[1]}
                       </td>
-                      <td className="py-1.5 text-slate-400">{row.jointCount}</td>
+                      <td className="py-1.5 text-muted">{row.jointCount}</td>
                       <td className={`py-1.5 font-mono ${winRateColor(row.tpRateWhenJoint)}`}>
                         {pct(row.tpRateWhenJoint)}
                       </td>
@@ -363,31 +363,31 @@ function RegimeSection({
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* ATR Quartile bars */}
         <div>
-          <p className="text-[11px] text-slate-500 mb-3 inline-flex items-center gap-1">
+          <p className="text-[11px] text-muted2 mb-3 inline-flex items-center gap-1">
             Win rate by ATR volatility quartile.
             <HelpTooltip label={GLOSSARY.volatilityQuartile.label}>
               {GLOSSARY.volatilityQuartile.body}
             </HelpTooltip>
           </p>
           {byVolatility.length === 0 ? (
-            <p className="text-sm text-slate-500 py-2">No ATR data available.</p>
+            <p className="text-sm text-muted2 py-2">No ATR data available.</p>
           ) : (
             <div className="space-y-2">
               {byVolatility.map((b) => (
                 <div key={b.atrPercentile} className="flex items-center gap-3 text-xs">
-                  <span className="text-slate-500 w-24 shrink-0 text-right">
+                  <span className="text-muted2 w-24 shrink-0 text-right">
                     {QUARTILE_LABELS[b.atrPercentile] ?? `Q(${b.atrPercentile}+)`}
                   </span>
-                  <div className="relative flex-1 h-5 bg-slate-800 rounded overflow-hidden">
+                  <div className="relative flex-1 h-5 bg-sunken rounded overflow-hidden">
                     <div
-                      className="h-full bg-cyan-800/60 rounded"
+                      className="h-full bg-brand-soft rounded"
                       style={{ width: `${(b.signalCount / maxVol) * 100}%` }}
                     />
                   </div>
                   <span className={`w-14 font-mono text-right ${winRateColor(b.winRate)}`}>
                     {pct(b.winRate)}
                   </span>
-                  <span className="text-slate-600 w-10 text-right font-mono shrink-0">
+                  <span className="text-muted2 w-10 text-right font-mono shrink-0">
                     n={b.signalCount}
                   </span>
                 </div>
@@ -398,12 +398,12 @@ function RegimeSection({
 
         {/* 24-hour heat strip */}
         <div>
-          <p className="text-[11px] text-slate-500 mb-3 inline-flex items-center gap-1">
+          <p className="text-[11px] text-muted2 mb-3 inline-flex items-center gap-1">
             Win rate by UTC hour of signal close time.
             <HelpTooltip label={GLOSSARY.hourBucket.label}>{GLOSSARY.hourBucket.body}</HelpTooltip>
           </p>
           {byHour.length === 0 ? (
-            <p className="text-sm text-slate-500 py-2">No hourly data available.</p>
+            <p className="text-sm text-muted2 py-2">No hourly data available.</p>
           ) : (
             <>
               {/* Heat strip — 24 columns */}
@@ -413,14 +413,14 @@ function RegimeSection({
                   const intensity = bucket ? bucket.winRate : null;
                   const bg =
                     intensity === null
-                      ? "bg-slate-800"
+                      ? "bg-sunken"
                       : intensity >= 0.65
-                        ? "bg-emerald-600"
+                        ? "bg-up"
                         : intensity >= 0.5
-                          ? "bg-emerald-800/70"
+                          ? "bg-up-soft"
                           : intensity >= 0.35
-                            ? "bg-yellow-700/60"
-                            : "bg-red-800/60";
+                            ? "bg-warn/60"
+                            : "bg-down-soft";
                   return (
                     <div
                       key={h}
@@ -435,7 +435,7 @@ function RegimeSection({
                 })}
               </div>
               {/* Hour labels */}
-              <div className="flex gap-px text-[9px] text-slate-600 mb-3">
+              <div className="flex gap-px text-[9px] text-muted2 mb-3">
                 {Array.from({ length: 24 }, (_, h) => (
                   <div key={h} className="flex-1 text-center">
                     {h % 6 === 0 ? h : ""}
@@ -447,7 +447,7 @@ function RegimeSection({
               <div className="overflow-x-auto max-h-48 overflow-y-auto">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="text-slate-500">
+                    <tr className="text-muted2">
                       <th className="text-left font-medium pb-2">UTC Hour</th>
                       <th className="text-left font-medium pb-2">Signals</th>
                       <th className="text-left font-medium pb-2">Win Rate</th>
@@ -459,17 +459,17 @@ function RegimeSection({
                       .slice()
                       .sort((a, b) => b.winRate - a.winRate)
                       .map((b) => (
-                        <tr key={b.utcHour} className="border-t border-slate-800">
-                          <td className="py-1 text-slate-400 font-mono">
+                        <tr key={b.utcHour} className="border-t border-line">
+                          <td className="py-1 text-muted font-mono">
                             {String(b.utcHour).padStart(2, "0")}:00
                           </td>
-                          <td className="py-1 text-slate-400">{b.signalCount}</td>
+                          <td className="py-1 text-muted">{b.signalCount}</td>
                           <td className={`py-1 font-mono ${winRateColor(b.winRate)}`}>
                             {pct(b.winRate)}
                           </td>
                           <td className="py-1">
                             <div
-                              className="h-1.5 bg-cyan-800/50 rounded"
+                              className="h-1.5 bg-brand-soft rounded"
                               style={{ width: `${(b.signalCount / maxHour) * 80}px` }}
                             />
                           </td>
@@ -541,22 +541,22 @@ export function Performance() {
     <div className="space-y-4">
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-3">
-        <label className="text-xs text-slate-500 uppercase tracking-wider">Window</label>
+        <label className="text-xs text-muted2 uppercase tracking-wider">Window</label>
         <select
           value={since}
           onChange={(e) => setSince(e.target.value)}
-          className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1"
+          className="bg-sunken border border-line text-ink2 text-xs rounded px-2 py-1"
         >
           <option value="7d">Last 7 days</option>
           <option value="30d">Last 30 days</option>
           <option value="90d">Last 90 days</option>
         </select>
 
-        <label className="text-xs text-slate-500 uppercase tracking-wider ml-2">Pair</label>
+        <label className="text-xs text-muted2 uppercase tracking-wider ml-2">Pair</label>
         <select
           value={pair}
           onChange={(e) => setPair(e.target.value)}
-          className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1"
+          className="bg-sunken border border-line text-ink2 text-xs rounded px-2 py-1"
         >
           <option value="">All pairs</option>
           {PAIRS.map((p) => (
@@ -566,11 +566,11 @@ export function Performance() {
           ))}
         </select>
 
-        <label className="text-xs text-slate-500 uppercase tracking-wider ml-2">Timeframe</label>
+        <label className="text-xs text-muted2 uppercase tracking-wider ml-2">Timeframe</label>
         <select
           value={timeframe}
           onChange={(e) => setTimeframe(e.target.value as Timeframe)}
-          className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1"
+          className="bg-sunken border border-line text-ink2 text-xs rounded px-2 py-1"
         >
           <option value="">All timeframes</option>
           {TIMEFRAMES.map((tf) => (
@@ -580,12 +580,12 @@ export function Performance() {
           ))}
         </select>
 
-        {loading && <span className="text-xs text-slate-500 ml-2">Loading…</span>}
+        {loading && <span className="text-xs text-muted2 ml-2">Loading…</span>}
       </div>
 
       {/* Error state */}
       {error && (
-        <div className="p-4 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+        <div className="p-4 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
           {error}
         </div>
       )}
@@ -593,7 +593,7 @@ export function Performance() {
       {/* Content */}
       {data && (
         <>
-          <div className="text-xs text-slate-600">
+          <div className="text-xs text-muted2">
             Window {new Date(data.windowStart).toLocaleDateString()} &ndash;{" "}
             {new Date(data.windowEnd).toLocaleDateString()}
           </div>
@@ -604,7 +604,7 @@ export function Performance() {
       )}
 
       {!loading && !data && !error && (
-        <div className="text-sm text-slate-500 text-center py-8">No data available.</div>
+        <div className="text-sm text-muted2 text-center py-8">No data available.</div>
       )}
     </div>
   );
