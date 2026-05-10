@@ -1846,3 +1846,154 @@ describe("getActivity — signals fetcher uses Limit:1 per cell", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #133 review (PR #230): getShadowSignals — concurrency cap
+// ---------------------------------------------------------------------------
+
+describe("getShadowSignals — concurrency cap", () => {
+  const SIGNALS_COLLECTION_TABLE = "quantara-dev-signals-collection";
+
+  it("issues at most 4 concurrent DDB queries across all pair × tf cells", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input: Record<string, unknown> }) => {
+        if (cmd.input.TableName !== SIGNALS_COLLECTION_TABLE) {
+          return { Items: [] };
+        }
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        // Yield to the event loop a few times so concurrent callers actually
+        // overlap. A single `await Promise.resolve()` would resolve the
+        // microtask queue immediately and fail to expose unbounded fan-out.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        inFlight -= 1;
+        return { Items: [] };
+      },
+    );
+
+    const { getShadowSignals } = await importService();
+    // No pair filter → 5 pairs × 2 timeframes = 10 tasks. Cap is 4.
+    await getShadowSignals({ limit: 100 });
+
+    // Expect 10 total queries to signals-collection.
+    const collectionCalls = dynamoSend.mock.calls.filter(
+      ([cmd]) =>
+        (cmd as { input: Record<string, unknown> }).input.TableName === SIGNALS_COLLECTION_TABLE,
+    );
+    expect(collectionCalls).toHaveLength(10);
+
+    // And concurrency must never exceed the cap.
+    expect(maxInFlight).toBeGreaterThan(0);
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #133 review (PR #230): getShadowSignals — source field validation
+// ---------------------------------------------------------------------------
+
+describe("getShadowSignals — source field validation", () => {
+  const SIGNALS_COLLECTION_TABLE = "quantara-dev-signals-collection";
+  const NOW_MS = 1_715_187_600_000;
+
+  function makeShadowItem(pair: string, tf: string, source: string, closeTimeMs: number) {
+    return {
+      pair,
+      sk: `${tf}#${closeTimeMs}`,
+      signalId: `${closeTimeMs.toString(16).padStart(14, "0")}-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`,
+      emittedAt: new Date(closeTimeMs).toISOString(),
+      closeTime: closeTimeMs,
+      timeframe: tf,
+      source,
+      type: "buy",
+      confidence: 0.6,
+      volatilityFlag: false,
+      gateReason: null,
+      rulesFired: ["rsi-oversold-strong"],
+      bullishScore: 2,
+      bearishScore: 0,
+      asOf: closeTimeMs,
+    };
+  }
+
+  it("keeps source='shadow' rows and drops any non-shadow rows", async () => {
+    const shadowItem = makeShadowItem("BTC/USDT", "1m", "shadow", NOW_MS);
+    const nonShadowItem = makeShadowItem("BTC/USDT", "1m", "live", NOW_MS - 60_000);
+
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input: Record<string, unknown> }) => {
+        if (cmd.input.TableName !== SIGNALS_COLLECTION_TABLE) return { Items: [] };
+        const values = cmd.input.ExpressionAttributeValues as { ":pair": string };
+        if (values[":pair"] === "BTC/USDT") {
+          return { Items: [shadowItem, nonShadowItem] };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getShadowSignals } = await importService();
+    const rows = await getShadowSignals({ pair: "BTC/USDT", timeframe: "1m", limit: 100 });
+
+    // Only the shadow row survives; the "live" row is dropped.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.source).toBe("shadow");
+    expect(rows[0]?.shadow).toBe(true);
+    expect(rows[0]?.signalId).toBe(shadowItem.signalId);
+  });
+
+  it("reads source from the stored item rather than hard-coding it", async () => {
+    // Sanity: a row with source='shadow' must come back as shadow because
+    // we read the field, not because we statically set it. We assert the
+    // returned source matches the item — if the implementation regressed
+    // back to a hard-coded literal, missing-source rows would still be
+    // labeled "shadow" instead of being filtered out (covered by next case).
+    const shadowItem = makeShadowItem("BTC/USDT", "5m", "shadow", NOW_MS);
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input: Record<string, unknown> }) => {
+        if (cmd.input.TableName !== SIGNALS_COLLECTION_TABLE) return { Items: [] };
+        return { Items: [shadowItem] };
+      },
+    );
+
+    const { getShadowSignals } = await importService();
+    const rows = await getShadowSignals({ pair: "BTC/USDT", timeframe: "5m", limit: 100 });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.source).toBe("shadow");
+  });
+
+  it("filters out rows with missing or wrong source field", async () => {
+    const itemMissingSource = {
+      pair: "BTC/USDT",
+      sk: `1m#${NOW_MS}`,
+      signalId: "x",
+      emittedAt: new Date(NOW_MS).toISOString(),
+      closeTime: NOW_MS,
+      timeframe: "1m",
+      // source intentionally omitted
+      type: "buy",
+      confidence: 0.6,
+      volatilityFlag: false,
+      gateReason: null,
+      rulesFired: [],
+      bullishScore: 0,
+      bearishScore: 0,
+      asOf: NOW_MS,
+    };
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input: Record<string, unknown> }) => {
+        if (cmd.input.TableName !== SIGNALS_COLLECTION_TABLE) return { Items: [] };
+        return { Items: [itemMissingSource] };
+      },
+    );
+
+    const { getShadowSignals } = await importService();
+    const rows = await getShadowSignals({ pair: "BTC/USDT", timeframe: "1m", limit: 100 });
+
+    expect(rows).toHaveLength(0);
+  });
+});

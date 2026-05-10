@@ -576,3 +576,36 @@ describe("indicator computation", () => {
     expect(opts?.fearGreed).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// signalId format — shared with the production handler
+// ---------------------------------------------------------------------------
+
+describe("signalId — shared format with production handler", () => {
+  it("produces signalIds in the same format as signal-store.makeSignalId", async () => {
+    const { handler } = await import("./indicator-handler-shadow.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const collectionPut = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-collection",
+    );
+    expect(collectionPut).toBeDefined();
+    const writtenId = collectionPut![0].input.Item.signalId as string;
+
+    // Re-derive the expected prefix using the same shared helper that
+    // the handler now uses. This is the back-compat shape: 14-hex-char
+    // closeTime padded with leading zeros, a dash, then a UUIDv4.
+    const { makeSignalId } = await import("./lib/signal-store.js");
+    const sample = makeSignalId(TEST_CLOSE_TIME);
+
+    // Same prefix → same closeTime encoding → handlers agree on id format.
+    const writtenPrefix = writtenId.split("-")[0];
+    const samplePrefix = sample.split("-")[0];
+    expect(writtenPrefix).toBe(samplePrefix);
+
+    // And the overall format is `<14 hex chars>-<uuid>`.
+    expect(writtenId).toMatch(
+      /^[0-9a-f]{14}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+});

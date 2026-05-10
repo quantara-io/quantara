@@ -2219,29 +2219,45 @@ export async function getShadowSignals(opts: {
   const pairs = pair ? [pair] : (SUPPORTED_PAIRS as readonly string[]).slice();
   const shadowTfs = timeframe ? [timeframe] : ["1m", "5m"];
 
-  try {
-    const perPairTf = await Promise.all(
-      pairs.flatMap((p) =>
-        shadowTfs.map(async (tf) => {
-          const tfPrefix = `${tf}#`;
-          const result = await dynamo.send(
-            new QueryCommand({
-              TableName: SIGNALS_COLLECTION_TABLE,
-              KeyConditionExpression: "#pair = :pair AND #sk BETWEEN :lo AND :hi",
-              ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
-              ExpressionAttributeValues: {
-                ":pair": p,
-                ":lo": `${tfPrefix}${sinceMs}`,
-                ":hi": `${tfPrefix}￿`,
-              },
-              ScanIndexForward: false,
-              Limit: limit,
-            }),
-          );
-          return result.Items ?? [];
+  // Bound DDB fan-out. With all 5 pairs × 2 timeframes (= 10 queries) the
+  // unbounded Promise.all path was issuing every Query simultaneously, which
+  // can spike provisioned-throughput consumption and trigger throttling at
+  // higher pair counts. Cap at 4 concurrent queries — a manual semaphore
+  // keeps the dependency footprint clean (no p-limit).
+  const SHADOW_QUERY_CONCURRENCY = 4;
+  const tasks: Array<() => Promise<Record<string, unknown>[]>> = pairs.flatMap((p) =>
+    shadowTfs.map((tf) => async (): Promise<Record<string, unknown>[]> => {
+      const tfPrefix = `${tf}#`;
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: SIGNALS_COLLECTION_TABLE,
+          KeyConditionExpression: "#pair = :pair AND #sk BETWEEN :lo AND :hi",
+          ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+          ExpressionAttributeValues: {
+            ":pair": p,
+            ":lo": `${tfPrefix}${sinceMs}`,
+            ":hi": `${tfPrefix}￿`,
+          },
+          ScanIndexForward: false,
+          Limit: limit,
         }),
-      ),
-    );
+      );
+      return (result.Items as Record<string, unknown>[] | undefined) ?? [];
+    }),
+  );
+
+  try {
+    const perPairTf: Record<string, unknown>[][] = new Array(tasks.length);
+    let nextIdx = 0;
+    async function worker(): Promise<void> {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= tasks.length) return;
+        perPairTf[i] = await tasks[i]!();
+      }
+    }
+    const workerCount = Math.min(SHADOW_QUERY_CONCURRENCY, tasks.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
     const merged = perPairTf.flat();
     merged.sort((a, b) => {
@@ -2250,7 +2266,18 @@ export async function getShadowSignals(opts: {
       return bT.localeCompare(aT);
     });
 
-    return merged.slice(0, limit).map(
+    // Defensive: signals-collection should only ever contain source="shadow"
+    // rows (the shadow handler is the only writer), but if a non-shadow row
+    // somehow lands here, drop it rather than silently mislabeling it as
+    // shadow. Anything else indicates a bug we want to surface, not paper over.
+    const filtered = merged.filter((item) => item["source"] === "shadow");
+    if (filtered.length !== merged.length) {
+      console.warn(
+        `[admin.service] getShadowSignals dropped ${merged.length - filtered.length} non-shadow rows from signals-collection`,
+      );
+    }
+
+    return filtered.slice(0, limit).map(
       (item): ShadowSignalRow => ({
         pair: item["pair"] as string,
         sk: item["sk"] as string,
@@ -2258,7 +2285,10 @@ export async function getShadowSignals(opts: {
         emittedAt: item["emittedAt"] as string,
         closeTime: item["closeTime"] as number,
         timeframe: item["timeframe"] as string,
-        source: "shadow",
+        // After the filter above, source is guaranteed "shadow". Read it
+        // from the item (with the literal cast) rather than hard-coding so
+        // any future drift surfaces in the filter, not silently here.
+        source: item["source"] as "shadow",
         type: item["type"] as "buy" | "sell" | "hold",
         confidence: item["confidence"] as number,
         volatilityFlag: (item["volatilityFlag"] as boolean) ?? false,

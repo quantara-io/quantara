@@ -33,7 +33,6 @@ import {
   PutCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { randomUUID } from "node:crypto";
 import type { Timeframe } from "@quantara/shared";
 import { RULES } from "@quantara/shared";
 
@@ -41,6 +40,7 @@ import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
 import { putIndicatorState } from "./lib/indicator-state-store.js";
+import { makeSignalId } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
 import { evaluateGates, narrowPair } from "./signals/gates.js";
@@ -209,8 +209,9 @@ async function processShadowCandleClose(candle: StreamCandle): Promise<void> {
   }
 
   // Generate a time-sortable signal ID for back-compat with analysis tooling.
-  const tsPart = closeTime.toString(16).padStart(14, "0");
-  const signalId = `${tsPart}-${randomUUID()}`;
+  // Use the shared helper so shadow rows use the exact same id format as
+  // production rows (signal-store.makeSignalId).
+  const signalId = makeSignalId(closeTime);
   const emittedAt = new Date(closeTime).toISOString();
 
   try {
