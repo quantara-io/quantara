@@ -16,6 +16,7 @@ const getGenieDeepDiveMock = vi.fn();
 const forceRatificationMock = vi.fn();
 const replayNewsEnrichmentMock = vi.fn();
 const injectSentimentShockMock = vi.fn();
+const getActivityMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
@@ -28,6 +29,7 @@ vi.mock("../services/admin.service.js", () => ({
   getGenieMetrics: getGenieMetricsMock,
   getRatifications: getRatificationsMock,
   getPipelineHealth: getPipelineHealthMock,
+  getActivity: getActivityMock,
 }));
 
 vi.mock("../services/pipeline-state.service.js", () => ({
@@ -82,6 +84,7 @@ beforeEach(() => {
   forceRatificationMock.mockReset();
   replayNewsEnrichmentMock.mockReset();
   injectSentimentShockMock.mockReset();
+  getActivityMock.mockReset();
   currentAuth = {
     userId: "user_admin",
     email: "admin@example.com",
@@ -1344,5 +1347,114 @@ describe("POST /debug/inject-sentiment-shock", () => {
     });
     expect(res.status).toBe(403);
     expect(injectSentimentShockMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /activity
+// ---------------------------------------------------------------------------
+
+describe("GET /activity", () => {
+  const mockSignalEvent = {
+    type: "signal-emitted" as const,
+    pair: "BTC/USDT",
+    timeframe: "1h",
+    signalType: "buy" as const,
+    confidence: 0.82,
+    closeTime: "2026-05-09T12:00:00.000Z",
+    ts: "2026-05-09T12:00:01.000Z",
+  };
+
+  const mockRatEvent = {
+    type: "ratification-fired" as const,
+    pair: "BTC/USDT",
+    timeframe: "1h",
+    triggerReason: "bar_close",
+    verdict: "ratified" as const,
+    latencyMs: 320,
+    costUsd: 0.0003,
+    cacheHit: false,
+    ts: "2026-05-09T12:00:02.000Z",
+  };
+
+  it("returns 200 with events array from the service", async () => {
+    getActivityMock.mockResolvedValue({ events: [mockSignalEvent, mockRatEvent] });
+    const app = await loadApp();
+    const res = await app.request("/activity");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { events: unknown[] } };
+    expect(body.success).toBe(true);
+    expect(body.data.events).toHaveLength(2);
+    expect(getActivityMock).toHaveBeenCalledWith(100);
+  });
+
+  it("defaults limit to 100 when no query param given", async () => {
+    getActivityMock.mockResolvedValue({ events: [] });
+    const app = await loadApp();
+    await app.request("/activity");
+    expect(getActivityMock).toHaveBeenCalledWith(100);
+  });
+
+  it("forwards a valid limit query param to the service", async () => {
+    getActivityMock.mockResolvedValue({ events: [] });
+    const app = await loadApp();
+    const res = await app.request("/activity?limit=250");
+    expect(res.status).toBe(200);
+    expect(getActivityMock).toHaveBeenCalledWith(250);
+  });
+
+  it("allows limit=500 (maximum)", async () => {
+    getActivityMock.mockResolvedValue({ events: [] });
+    const app = await loadApp();
+    const res = await app.request("/activity?limit=500");
+    expect(res.status).toBe(200);
+    expect(getActivityMock).toHaveBeenCalledWith(500);
+  });
+
+  it("returns 400 when limit exceeds 500", async () => {
+    const app = await loadApp();
+    const res = await app.request("/activity?limit=501");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when limit is zero", async () => {
+    const app = await loadApp();
+    const res = await app.request("/activity?limit=0");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when limit is not a number", async () => {
+    const app = await loadApp();
+    const res = await app.request("/activity?limit=abc");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/activity");
+    expect(res.status).toBe(403);
+    expect(getActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("passes events through with their PipelineEvent shape intact", async () => {
+    getActivityMock.mockResolvedValue({ events: [mockSignalEvent] });
+    const app = await loadApp();
+    const res = await app.request("/activity");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { events: (typeof mockSignalEvent)[] };
+    };
+    expect(body.data.events[0]).toEqual(mockSignalEvent);
   });
 });

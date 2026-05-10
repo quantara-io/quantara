@@ -14,6 +14,7 @@ import {
   getGenieMetrics,
   getRatifications,
   getPipelineHealth,
+  getActivity,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
 import { getPnlSimulation } from "../services/pnl-simulation.service.js";
@@ -684,6 +685,37 @@ admin.post("/debug/inject-sentiment-shock", async (c) => {
   }
 
   return c.json({ success: true, data: result });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/activity
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/activity?limit=100
+ *
+ * Returns the most recent N pipeline events aggregated across signal-history,
+ * ratifications, news-events (enriched), and indicator-state. The response
+ * shape matches the WS `PipelineEvent` union so the frontend can use the same
+ * rendering path for both historical backfill and live events.
+ *
+ * Default limit: 100. Max: 500.
+ */
+admin.get("/activity", async (c) => {
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 100;
+  if (isNaN(limit) || limit < 1 || limit > 500) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "limit must be between 1 and 500" },
+      },
+      400,
+    );
+  }
+
+  const data = await getActivity(limit);
+  return c.json({ success: true, data });
 });
 
 export { admin };

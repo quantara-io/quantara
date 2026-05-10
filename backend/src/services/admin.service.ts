@@ -6,7 +6,7 @@ import {
   QueryCommand,
   BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
-import type { BlendedSignal, IndicatorState } from "@quantara/shared";
+import type { BlendedSignal, IndicatorState, PipelineEvent } from "@quantara/shared";
 import { HAIKU_INPUT_PRICE_PER_M, HAIKU_OUTPUT_PRICE_PER_M, PAIRS } from "@quantara/shared";
 import { ECSClient, DescribeServicesCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SQSClient, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
@@ -1476,6 +1476,277 @@ export async function getRatifications(params: GetRatificationsParams): Promise<
     cursor: nextCursor ? Buffer.from(JSON.stringify(nextCursor)).toString("base64") : null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// getActivity — backfill for the ActivityFeed component (issue #222)
+// ---------------------------------------------------------------------------
+
+/**
+ * Aggregate the most recent N pipeline events across four DynamoDB sources and
+ * normalize each one into the `PipelineEvent` discriminated union understood by
+ * `ActivityFeed.tsx`.
+ *
+ * Sources (matches what the WS fanout publishes):
+ *  1. signals-v2        → "signal-emitted" events, newest per (pair × timeframe).
+ *  2. ratifications     → "ratification-fired" (non-skip) events.
+ *  3. news-events       → "news-enriched" events filtered to status="enriched".
+ *  4. indicator-state   → "indicator-state-updated", most recent per (pair × timeframe).
+ *
+ * Events are merged, sorted by their `ts` field descending, and sliced to `limit`.
+ */
+export async function getActivity(limit: number): Promise<{ events: PipelineEvent[] }> {
+  const safeLimit = Math.min(Math.max(limit, 1), 500);
+
+  // Per-source budgets: fetch enough rows from each source that after merging
+  // we can always return `safeLimit` events sorted by recency.
+  const perSourceLimit = Math.min(safeLimit, 150);
+
+  const [signalEvents, ratificationEvents, newsEvents, indicatorEvents] = await Promise.all([
+    fetchRecentSignalEvents(perSourceLimit),
+    fetchRecentRatificationEvents(perSourceLimit),
+    fetchRecentNewsEvents(perSourceLimit),
+    fetchRecentIndicatorEvents(),
+  ]);
+
+  const all: PipelineEvent[] = [
+    ...signalEvents,
+    ...ratificationEvents,
+    ...newsEvents,
+    ...indicatorEvents,
+  ];
+
+  // Sort newest-first by `ts`, then slice.
+  all.sort((a, b) => b.ts.localeCompare(a.ts));
+  return { events: all.slice(0, safeLimit) };
+}
+
+// ---------------------------------------------------------------------------
+// Per-source fetch helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch recent signal-emitted events from signals-v2.
+ *
+ * `Limit: 1` per (pair × timeframe) is intentional: with 5 pairs × 4 timeframes
+ * = 20 cells, we get the 20 most recent signals across the matrix in one batch
+ * of 20 cheap point Queries (1 RCU each). The caller (`getActivity`) merges
+ * these alongside the other event sources, sorts by `ts` desc, and slices to
+ * the requested limit. The previous `Limit: limit` per cell did 20 × `limit`
+ * row reads to surface a feed that only ever shows ~5–20 signal events.
+ */
+async function fetchRecentSignalEvents(limit: number): Promise<PipelineEvent[]> {
+  const blendTfs = ["15m", "1h", "4h", "1d"] as const;
+  const events: PipelineEvent[] = [];
+
+  try {
+    const perTfItems = await Promise.all(
+      (PAIRS as readonly string[]).flatMap((pair) =>
+        blendTfs.map(async (tf) => {
+          const result = await dynamo.send(
+            new QueryCommand({
+              TableName: SIGNALS_V2_TABLE,
+              KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :prefix)",
+              ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+              ExpressionAttributeValues: { ":pair": pair, ":prefix": `${tf}#` },
+              ScanIndexForward: false,
+              // Latest-per-cell only — cheap "newest signal across the matrix"
+              // pattern. Tuning this back to `limit` was an N+1 read amplifier.
+              Limit: 1,
+            }),
+          );
+          return result.Items ?? [];
+        }),
+      ),
+    );
+
+    for (const items of perTfItems) {
+      for (const item of items) {
+        const emittedAt =
+          (item.emittedAt as string | undefined) ?? new Date(Number(item.asOf ?? 0)).toISOString();
+        events.push({
+          type: "signal-emitted",
+          pair: item.pair as string,
+          timeframe: item.emittingTimeframe as string,
+          signalType: item.type as "buy" | "sell" | "hold",
+          confidence: (item.confidence as number) ?? 0,
+          closeTime: new Date(Number(item.closeTime ?? item.asOf ?? 0)).toISOString(),
+          ts: emittedAt,
+        });
+      }
+    }
+  } catch (err) {
+    console.error("[admin.service] fetchRecentSignalEvents failed:", err);
+  }
+
+  // Sort newest-first by closeTime so the caller's slice picks the most
+  // recent signals across the matrix when fewer than `limit` are kept.
+  events.sort((a, b) => {
+    const aClose = a.type === "signal-emitted" ? a.closeTime : "";
+    const bClose = b.type === "signal-emitted" ? b.closeTime : "";
+    return bClose.localeCompare(aClose);
+  });
+
+  return events.slice(0, limit);
+}
+
+/** Fetch recent ratification-fired events from the ratifications table. */
+async function fetchRecentRatificationEvents(limit: number): Promise<PipelineEvent[]> {
+  const events: PipelineEvent[] = [];
+
+  try {
+    await Promise.all(
+      (PAIRS as readonly string[]).map(async (pair) => {
+        const result = await dynamo.send(
+          new QueryCommand({
+            TableName: RATIFICATIONS_TABLE,
+            KeyConditionExpression: "#pair = :pair",
+            ExpressionAttributeNames: { "#pair": "pair" },
+            ExpressionAttributeValues: { ":pair": pair },
+            ScanIndexForward: false,
+            Limit: limit,
+          }),
+        );
+
+        for (const item of result.Items ?? []) {
+          // Skip "skip" rows — they are gating rows, not fired ratifications.
+          const invokedReason = (item.invokedReason as string) ?? "";
+          if (invokedReason.startsWith("skip")) continue;
+
+          const invokedAt = (item.invokedAt as string) ?? new Date().toISOString();
+          const ratified = item.ratified as { type?: string; confidence?: number } | null;
+          let verdict: "ratified" | "downgraded" | "not-required" = "not-required";
+          if (item.fellBackToAlgo) verdict = "downgraded";
+          else if (ratified?.type) verdict = "ratified";
+
+          events.push({
+            type: "ratification-fired",
+            pair: item.pair as string,
+            timeframe: (item.timeframe as string) ?? "",
+            triggerReason:
+              typeof item.triggerReason === "string" && item.triggerReason.length > 0
+                ? (item.triggerReason as string)
+                : "bar_close",
+            verdict,
+            latencyMs: (item.latencyMs as number) ?? 0,
+            costUsd: (item.costUsd as number) ?? 0,
+            cacheHit: Boolean(item.cacheHit),
+            ts: invokedAt,
+          });
+        }
+      }),
+    );
+  } catch (err) {
+    console.error("[admin.service] fetchRecentRatificationEvents failed:", err);
+  }
+
+  return events;
+}
+
+/** Fetch recent news-enriched events from the news-events table. */
+async function fetchRecentNewsEvents(limit: number): Promise<PipelineEvent[]> {
+  const events: PipelineEvent[] = [];
+
+  try {
+    // Walk the published-day-index newest-first. Walk up to 3 days to ensure
+    // we can fill the requested limit even on low-traffic days.
+    const MAX_DAYS = 3;
+    let collected = 0;
+    const today = new Date();
+
+    for (let d = 0; d < MAX_DAYS && collected < limit; d++) {
+      const day = new Date(today);
+      day.setUTCDate(today.getUTCDate() - d);
+      const dayStr = day.toISOString().slice(0, 10);
+
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: NEWS_TABLE,
+          IndexName: NEWS_DAY_INDEX,
+          KeyConditionExpression: "#day = :day",
+          FilterExpression: "#status = :enriched",
+          ExpressionAttributeNames: { "#day": "publishedDay", "#status": "status" },
+          ExpressionAttributeValues: { ":day": dayStr, ":enriched": "enriched" },
+          ScanIndexForward: false,
+          Limit: limit - collected,
+        }),
+      );
+
+      for (const item of result.Items ?? []) {
+        const enrichment = item.enrichment as Record<string, unknown> | undefined;
+        const mentionedPairs = (enrichment?.mentionedPairs as string[] | undefined) ?? [];
+        const sentiment = enrichment?.sentiment as
+          | { score?: number; magnitude?: number }
+          | undefined;
+
+        events.push({
+          type: "news-enriched",
+          newsId: item.newsId as string,
+          mentionedPairs,
+          sentimentScore: (sentiment?.score as number) ?? 0,
+          sentimentMagnitude: (sentiment?.magnitude as number) ?? 0,
+          ts: (item.enrichedAt as string | undefined) ?? (item.publishedAt as string),
+        });
+        collected++;
+      }
+    }
+  } catch (err) {
+    console.error("[admin.service] fetchRecentNewsEvents failed:", err);
+  }
+
+  return events;
+}
+
+/** Fetch the most-recent indicator-state update per pair × timeframe. */
+async function fetchRecentIndicatorEvents(): Promise<PipelineEvent[]> {
+  const blendTfs = ["15m", "1h", "4h", "1d"] as const;
+  const events: PipelineEvent[] = [];
+
+  try {
+    // One Query per (pair × timeframe) with Limit=1 + ScanIndexForward=false
+    // returns the single most-recent snapshot cheaply.
+    await Promise.all(
+      (PAIRS as readonly string[]).flatMap((pair) =>
+        blendTfs.map(async (tf) => {
+          const pk = `${pair}#consensus#${tf}`;
+          const result = await dynamo.send(
+            new QueryCommand({
+              TableName: INDICATOR_STATE_TABLE,
+              KeyConditionExpression: "#pk = :pk",
+              ExpressionAttributeNames: { "#pk": "pk" },
+              ExpressionAttributeValues: { ":pk": pk },
+              ScanIndexForward: false,
+              Limit: 1,
+            }),
+          );
+
+          const item = result.Items?.[0];
+          if (!item) return;
+
+          // asOf is stored as ISO8601 string (SK). asOfMs is the epoch-ms number.
+          const ts =
+            typeof item.asOf === "string"
+              ? item.asOf
+              : new Date(Number(item.asOfMs ?? 0)).toISOString();
+
+          events.push({
+            type: "indicator-state-updated",
+            pair: item.pair as string,
+            timeframe: tf,
+            barsSinceStart: (item.barsSinceStart as number) ?? 0,
+            rsi14: item.rsi14 != null ? (item.rsi14 as number) : undefined,
+            ts,
+          });
+        }),
+      ),
+    );
+  } catch (err) {
+    console.error("[admin.service] fetchRecentIndicatorEvents failed:", err);
+  }
+
+  return events;
+}
+
+// ---------------------------------------------------------------------------
 
 const WHITELIST_PARAM = `/quantara/${ENVIRONMENT}/docs-allowed-ips`;
 

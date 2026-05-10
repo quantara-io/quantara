@@ -13,6 +13,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PipelineEvent } from "@quantara/shared";
 import { getAccessToken } from "../lib/auth";
+import { apiFetch } from "../lib/api";
+import { eventKey, BoundedKeySet } from "./activityFeedDedupe";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -127,6 +129,9 @@ export function ActivityFeed() {
   );
   const [activePairs, setActivePairs] = useState<Set<string>>(new Set([...ALL_PAIRS, ""]));
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
+  // Tracks whether the initial REST backfill has resolved (success or failure).
+  // While false, show a loading indicator instead of "no events".
+  const [backfillDone, setBackfillDone] = useState(false);
 
   const queueRef = useRef<FeedEntry[]>([]);
   const pausedRef = useRef(false);
@@ -160,8 +165,27 @@ export function ActivityFeed() {
 
   // WebSocket connection — auto-reconnects with exponential backoff up to
   // MAX_RECONNECT_ATTEMPTS, then surfaces "disconnected" permanently.
+  //
+  // On mount, we first backfill from GET /api/admin/activity before opening
+  // the WebSocket. The backfill resolves before `connect()` is called, so
+  // allEntries is seeded with historical events and no race exists between
+  // setAllEntries (backfill) and ws.onmessage (live). Duplicate events that
+  // arrive via the WS within the narrow fetch window are deduped by a stable
+  // per-event-type identity in the onmessage handler below.
   useEffect(() => {
     intentionalCloseRef.current = false;
+
+    // Track seen event identities to dedupe WS events that overlap with the
+    // backfill window AND repeat live events (defensive). The dedupe identity
+    // is a stable per-type key (see `activityFeedDedupe.ts`) — NOT `ts`,
+    // because the WS producer stamps `ts = new Date()` at fanout time while
+    // the backfill route reads `ts` from persisted fields, so the same logical
+    // event would otherwise collide on every dimension except `ts`.
+    //
+    // The set is bounded so memory stays flat on long-running sessions. It
+    // is intentionally NOT cleared on `ws.onopen`; clearing it there would
+    // re-open the dedupe window every reconnect and was the original bug.
+    const seenKeys = new BoundedKeySet(MAX_EVENTS);
 
     function connect() {
       const token = getAccessToken();
@@ -187,6 +211,11 @@ export function ActivityFeed() {
         } catch {
           return; // ignore malformed messages
         }
+
+        // Skip events already accepted (from backfill or an earlier WS msg).
+        const key = eventKey(event);
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
 
         const entry: FeedEntry = {
           id: nextId++,
@@ -222,7 +251,35 @@ export function ActivityFeed() {
       };
     }
 
-    connect();
+    // Backfill historical events, then open the WS. The async IIFE ensures
+    // `connect()` is only called after the backfill completes (or fails),
+    // eliminating the race between setAllEntries and ws.onmessage.
+    void (async () => {
+      const res = await apiFetch<{ events: PipelineEvent[] }>("/api/admin/activity?limit=100");
+      if (res.success && res.data) {
+        const backfillEntries: FeedEntry[] = [];
+        for (const event of res.data.events) {
+          const key = eventKey(event);
+          // Defensive dedupe within the backfill payload itself.
+          if (!seenKeys.add(key)) continue;
+          backfillEntries.push({
+            id: nextId++,
+            receivedAt: event.ts,
+            event,
+          });
+        }
+        setAllEntries((prev) => {
+          // If the component unmounted during the fetch, don't update state.
+          if (intentionalCloseRef.current) return prev;
+          const combined = [...backfillEntries, ...prev];
+          return combined.length > MAX_EVENTS ? combined.slice(-MAX_EVENTS) : combined;
+        });
+      }
+      if (!intentionalCloseRef.current) setBackfillDone(true);
+      // Connect regardless of backfill success — the feed is still usable
+      // with live-only events if the REST call fails.
+      if (!intentionalCloseRef.current) connect();
+    })();
 
     return () => {
       intentionalCloseRef.current = true;
@@ -335,7 +392,11 @@ export function ActivityFeed() {
       <div className="rounded-lg border border-slate-800 bg-slate-950 h-[28rem] overflow-y-auto font-mono text-[11px]">
         {displayedEntries.length === 0 ? (
           <div className="flex items-center justify-center h-full text-slate-600">
-            {status === "connecting" ? "Connecting…" : "No events match the current filters."}
+            {!backfillDone
+              ? "Loading history…"
+              : status === "connecting"
+                ? "Connecting…"
+                : "No events match the current filters."}
           </div>
         ) : (
           <table className="w-full">

@@ -1774,3 +1774,75 @@ describe("getPipelineHealth — response shape", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// getActivity — recent-events backfill
+// ---------------------------------------------------------------------------
+
+describe("getActivity — signals fetcher uses Limit:1 per cell", () => {
+  const SIGNALS_TABLE = "quantara-dev-signals-v2";
+
+  function makeSignalRow(pair: string, tf: string, closeTimeMs: number) {
+    return {
+      pair,
+      sk: `${tf}#${closeTimeMs}`,
+      emittingTimeframe: tf,
+      type: "buy",
+      confidence: 0.6,
+      closeTime: closeTimeMs,
+      asOf: closeTimeMs,
+      emittedAt: new Date(closeTimeMs).toISOString(),
+    };
+  }
+
+  it("issues exactly 20 signals Queries (5 pairs × 4 tfs), each with Limit:1, then merges and slices", async () => {
+    // Arrange: dispatch DDB calls based on the table the command is hitting.
+    // Other sources (ratifications, news, indicator-state) return empty so we
+    // can isolate signals behavior.
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input: Record<string, unknown> }) => {
+        const table = cmd.input.TableName as string;
+        if (table === SIGNALS_TABLE) {
+          const values = cmd.input.ExpressionAttributeValues as {
+            ":pair": string;
+            ":prefix": string;
+          };
+          const pair = values[":pair"];
+          const tf = values[":prefix"].slice(0, -1); // strip trailing "#"
+          // Stagger closeTime per (pair, tf) so we can assert merge-sort ordering.
+          const baseMs = 1_700_000_000_000;
+          const pairOffset =
+            (["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"].indexOf(pair) + 1) *
+            1_000_000;
+          const tfOffset = (["15m", "1h", "4h", "1d"].indexOf(tf) + 1) * 100_000;
+          return { Items: [makeSignalRow(pair, tf, baseMs + pairOffset + tfOffset)] };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getActivity } = await importService();
+    const result = await getActivity(10);
+
+    // Count signals queries: should be exactly 5 × 4 = 20.
+    const signalsCalls = dynamoSend.mock.calls.filter(
+      ([cmd]) =>
+        (cmd as { __cmd: string; input: Record<string, unknown> }).input.TableName ===
+        SIGNALS_TABLE,
+    );
+    expect(signalsCalls).toHaveLength(20);
+    // And every signals query must use Limit: 1 — that's the whole point.
+    for (const [cmd] of signalsCalls) {
+      expect((cmd as { input: { Limit: number } }).input.Limit).toBe(1);
+    }
+
+    // The merged feed should return at most 10 signal events (caller's limit),
+    // sorted newest-first by `ts` (which is `emittedAt`).
+    const signalEvents = result.events.filter((e) => e.type === "signal-emitted");
+    expect(signalEvents.length).toBeLessThanOrEqual(10);
+    for (let i = 1; i < signalEvents.length; i++) {
+      // descending by ts
+      expect(signalEvents[i].ts <= signalEvents[i - 1].ts).toBe(true);
+    }
+  });
+});
