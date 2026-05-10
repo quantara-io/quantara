@@ -210,6 +210,60 @@ describe("forceRatification", () => {
     expect(result.algoConfidence).toBe(0.5);
     expect(result.ratifiedConfidence).toBe(0.5);
   });
+
+  it("persists canonical schema: ratified=null + validation.ok=false on fallback path", async () => {
+    const fakeSignal = { type: "buy", confidence: 0.7, rulesFired: ["x"] };
+
+    mockIdempotencyOk();
+    dynamoSend
+      .mockResolvedValueOnce({ Count: 0 })
+      .mockResolvedValueOnce({ Items: [fakeSignal] })
+      .mockResolvedValueOnce({});
+
+    bedrockSend.mockRejectedValueOnce(new Error("Bedrock timeout"));
+
+    const { forceRatification } = await import("./admin-debug.service.js");
+    await forceRatification({ pair: "BTC/USDT", timeframe: "1h", userId: "user_admin" });
+
+    // Index 3 = PutCommand for the ratification record (idem, cap, query, put).
+    const putItem = dynamoSend.mock.calls[3][0].Item as Record<string, unknown>;
+    expect(putItem.ratified).toBeNull();
+    expect(putItem.validation).toEqual({ ok: false, reason: "bedrock_fallback" });
+    expect(putItem.fellBackToAlgo).toBe(true);
+    // Legacy field must NOT be present (admin.service.ts:toRatificationRow reads validation.ok).
+    expect(putItem).not.toHaveProperty("validationOk");
+    // 30-day TTL alignment with ingestion/src/lib/ratification-store.ts.
+    const nowSec = Math.floor(Date.now() / 1000);
+    expect(putItem.ttl).toBeGreaterThan(nowSec + 29 * 24 * 60 * 60);
+  });
+
+  it("persists canonical schema: ratified non-null + validation.ok=true on success path", async () => {
+    const fakeSignal = { type: "buy", confidence: 0.8, rulesFired: ["rsi"] };
+
+    mockIdempotencyOk();
+    dynamoSend
+      .mockResolvedValueOnce({ Count: 0 })
+      .mockResolvedValueOnce({ Items: [fakeSignal] })
+      .mockResolvedValueOnce({});
+
+    bedrockSend.mockResolvedValueOnce({
+      body: bedrockBody(
+        '{"verdict":"downgrade","confidence":0.6,"reasoning":"Confidence too high."}',
+      ),
+    });
+
+    const { forceRatification } = await import("./admin-debug.service.js");
+    await forceRatification({ pair: "BTC/USDT", timeframe: "1h", userId: "user_admin" });
+
+    const putItem = dynamoSend.mock.calls[3][0].Item as Record<string, unknown>;
+    expect(putItem.validation).toEqual({ ok: true });
+    expect(putItem.ratified).toMatchObject({
+      type: "buy",
+      confidence: 0.6,
+      verdictKind: "downgrade",
+    });
+    expect(putItem).not.toHaveProperty("validationOk");
+  });
 });
 
 // ---------------------------------------------------------------------------

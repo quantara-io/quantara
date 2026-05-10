@@ -100,6 +100,10 @@ const DAILY_DEBUG_CAP = 200;
 // many seconds collapse to a single LLM/DDB call.
 const IDEMPOTENCY_TTL_SECONDS = 60;
 
+// Ratification record TTL. Aligned with ingestion/src/lib/ratification-store.ts
+// so debug-injected rows expire on the same schedule as production rows.
+const RATIFICATION_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 // ---------------------------------------------------------------------------
 // `symbolToTradingPair` — bare-symbol → trading-pair normalisation.
 // Mirrors `ingestion/src/news/sentiment-shock.ts:symbolToTradingPair`. Pure
@@ -367,7 +371,11 @@ Rate this signal's validity and provide your reasoning in 2-3 sentences.`;
           costUsd,
           cacheHit: false,
           fellBackToAlgo,
-          validationOk: verdictKind !== "fallback",
+          // Canonical schema (matches ingestion/src/lib/ratification-store.ts).
+          // toRatificationRow() in admin.service.ts reads `validation.ok` —
+          // a top-level `validationOk` is invisible to it.
+          validation:
+            verdictKind === "fallback" ? { ok: false, reason: "bedrock_fallback" } : { ok: true },
           algoCandidateType: algoSignalType,
           algoCandidateConfidence: algoConfidence,
           // ratifiedType holds the same buy/sell/hold value the production
@@ -382,16 +390,21 @@ Rate this signal's validity and provide your reasoning in 2-3 sentences.`;
           verdictKind,
           llmModel: fellBackToAlgo ? null : RATIFICATION_MODEL_ID,
           algoCandidate: signal,
-          ratified: verdictKind
-            ? { type: algoSignalType, confidence: ratifiedConfidence, reasoning, verdictKind }
-            : null,
+          // Production convention: only real verdicts (ratify/downgrade/reject)
+          // get a non-null `ratified`. Fallback rows have `ratified: null`,
+          // `validation.ok: false`, `fellBackToAlgo: true` so downstream
+          // consumers can't mistake a Bedrock failure for a successful verdict.
+          ratified:
+            verdictKind === "ratify" || verdictKind === "downgrade" || verdictKind === "reject"
+              ? { type: algoSignalType, confidence: ratifiedConfidence, reasoning, verdictKind }
+              : null,
           llmRequest: {
             model: RATIFICATION_MODEL_ID,
             systemHash: createHash("sha256").update(systemPrompt).digest("hex").slice(0, 16),
             userJsonHash: createHash("sha256").update(userContent).digest("hex").slice(0, 16),
           },
           llmRawResponse: rawResponse,
-          ttl: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+          ttl: Math.floor(Date.now() / 1000) + RATIFICATION_TTL_SECONDS,
         },
       }),
     );
@@ -794,7 +807,9 @@ export async function injectSentimentShock(
     costUsd: 0,
     cacheHit: false,
     fellBackToAlgo: false,
-    validationOk: true,
+    // Canonical schema (matches ingestion/src/lib/ratification-store.ts) so
+    // toRatificationRow() in admin.service.ts surfaces these correctly.
+    validation: { ok: true },
     algoCandidateType: null,
     algoCandidateConfidence: null,
     ratifiedType: null,
@@ -813,7 +828,9 @@ export async function injectSentimentShock(
     ratified: null,
     llmRequest: null,
     llmRawResponse: null,
-    ttl: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
+    // 30-day TTL aligned with production ratifications table convention so
+    // debug-injected rows don't expire earlier than real ratifications.
+    ttl: Math.floor(Date.now() / 1000) + RATIFICATION_TTL_SECONDS,
   };
 
   try {
