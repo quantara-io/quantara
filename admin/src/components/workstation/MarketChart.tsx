@@ -195,9 +195,34 @@ export function MarketChart({ candles, height = 380 }: MarketChartProps) {
 
     const upColor = getCss("--up");
     const downColor = getCss("--down");
-    const volData: HistogramData<Time>[] = deduped.map(([t, c]) => ({
+
+    // Volume display transform.
+    //
+    // Real per-candle volume on dev is highly skewed — most 1m bars on
+    // binance.us BTC/USDT are 0 or fractional dust, with the occasional
+    // ~1 BTC outlier. A linear scale renders that as one tall spike with
+    // 50+ invisible bars next to it, which makes the histogram look broken
+    // (issue #245-adjacent screenshot).
+    //
+    // We compress the displayed value with a square root and floor it at
+    // ~3% of the visible max, so:
+    //   - Every candle has a perceptible bar (matching the mockup feel
+    //     where each bar reads as "this is volume").
+    //   - Relative magnitude is preserved — a true outlier is still the
+    //     tallest bar; small bars are visibly smaller, not zero.
+    //   - True zero volumes still get a thin baseline stub instead of
+    //     vanishing into the time axis.
+    //
+    // Y-axis values are intentionally hidden (`lastValueVisible: false`,
+    // axis label suppressed via the `volume` price-format) so this
+    // transform doesn't mislead anyone reading numeric ticks.
+    const sqrtVols = deduped.map(([, c]) => Math.sqrt(Math.max(c.volume, 0)));
+    const maxSqrt = sqrtVols.reduce((m, v) => Math.max(m, v), 0) || 1;
+    const minHeight = maxSqrt * 0.03;
+
+    const volData: HistogramData<Time>[] = deduped.map(([t, c], i) => ({
       time: t as UTCTimestamp,
-      value: c.volume,
+      value: Math.max(sqrtVols[i], minHeight),
       color: c.close >= c.open ? upColor : downColor,
     }));
 

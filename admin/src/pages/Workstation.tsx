@@ -9,6 +9,7 @@ import {
   SymbolHeader,
   type SymbolStats,
   type Timeframe,
+  TIMEFRAME_TO_API,
 } from "../components/workstation/SymbolHeader";
 import { WatchlistRail } from "../components/workstation/WatchlistRail";
 import { DEFAULT_EXCHANGE, DEFAULT_PAIR, metaForPair } from "../components/workstation/symbols";
@@ -31,8 +32,9 @@ export function Workstation() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      const apiTf = TIMEFRAME_TO_API[timeframe];
       const res = await apiFetch<MarketData>(
-        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}`,
+        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=80`,
       );
       if (cancelled) return;
       if (res.success && res.data) {
@@ -48,7 +50,7 @@ export function Workstation() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [activePair]);
+  }, [activePair, timeframe]);
 
   const meta = useMemo(() => metaForPair(activePair), [activePair]);
   const stats = useMemo(() => deriveStats(data, activePair), [data, activePair]);

@@ -4,7 +4,7 @@ import { ChangePct, formatPrice, MonoNum } from "../ui/MonoNum";
 import { AssetGlyph } from "./AssetGlyph";
 import type { SymbolMeta } from "./symbols";
 
-export type Timeframe = "1H" | "4H" | "1D" | "1W";
+export type Timeframe = "15m" | "1H" | "4H" | "1D" | "1W";
 
 export interface SymbolStats {
   price: number | null;
@@ -15,7 +15,16 @@ export interface SymbolStats {
   fundingPct: number | null;
 }
 
-const TIMEFRAMES: Timeframe[] = ["1H", "4H", "1D", "1W"];
+const TIMEFRAMES: Timeframe[] = ["15m", "1H", "4H", "1D", "1W"];
+
+/** Map UI timeframe label → backend `?timeframe=` value the candles table understands. */
+export const TIMEFRAME_TO_API: Record<Timeframe, string> = {
+  "15m": "15m",
+  "1H": "1h",
+  "4H": "4h",
+  "1D": "1d",
+  "1W": "1w",
+};
 
 export function SymbolHeader({
   meta,
