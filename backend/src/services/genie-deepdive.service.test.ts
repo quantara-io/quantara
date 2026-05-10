@@ -12,6 +12,7 @@ vi.mock("@aws-sdk/client-dynamodb", () => ({
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   DynamoDBDocumentClient: { from: () => ({ send: dynamoSend }) },
   QueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Query", input })),
+  BatchGetCommand: vi.fn().mockImplementation((input) => ({ __cmd: "BatchGet", input })),
 }));
 
 vi.mock("@quantara/shared", () => ({
@@ -346,32 +347,29 @@ describe("computeByVolatility", () => {
   });
 
   it("computes win rate per bucket", () => {
-    // Two signals in the highest ATR quartile: 1 win, 1 loss → 50%.
-    // ATR values need to span full range so bucket assignment is unambiguous.
-    const t1 = 100;
-    const t2 = 200;
-    const t3 = 300;
-    const t4 = 400;
-    const t5 = 500;
-    const signals = [t1, t2, t3, t4, t5].map((t, i) => sig(`s${i}`, 0.7, [], t));
-    // ATRs: 5, 10, 15, 40, 45 → q25=5, q50=10, q75=15 → bucket 3 gets s3 and s4
-    const atrMap = new Map<string, number | null>([
-      [`BTC/USDT#1h#${t1}`, 5],
-      [`BTC/USDT#1h#${t2}`, 10],
-      [`BTC/USDT#1h#${t3}`, 15],
-      [`BTC/USDT#1h#${t4}`, 40],
-      [`BTC/USDT#1h#${t5}`, 45],
-    ]);
+    // 8 ATR samples evenly spread; with nearest-rank percentile (ceil(p/100*n)-1)
+    // q25=values[1], q50=values[3], q75=values[5]. Top quartile ( atr > q75 )
+    // holds 2 samples: 1 win + 1 loss → 50%.
+    const times = [100, 200, 300, 400, 500, 600, 700, 800];
+    const atrs = [5, 10, 15, 20, 25, 30, 40, 50];
+    const signals = times.map((t, i) => sig(`s${i}`, 0.7, [], t));
+    const atrMap = new Map<string, number | null>(
+      times.map((t, i) => [`BTC/USDT#1h#${t}`, atrs[i]]),
+    );
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([
       ["s0", "correct"],
       ["s1", "correct"],
       ["s2", "correct"],
       ["s3", "correct"],
-      ["s4", "incorrect"],
+      ["s4", "correct"],
+      ["s5", "correct"],
+      ["s6", "correct"], // top quartile: win
+      ["s7", "incorrect"], // top quartile: loss
     ]);
     const result = computeByVolatility(signals, outcomes, atrMap);
     const highBucket = result.find((b) => b.atrPercentile === 75)!;
     expect(highBucket).toBeDefined();
+    expect(highBucket.signalCount).toBe(2);
     expect(highBucket.winRate).toBeCloseTo(0.5);
   });
 });
@@ -479,17 +477,143 @@ describe("getGenieDeepDive — DDB fetch layer", () => {
     expect(names["#sk"]).toBe("sk");
   });
 
-  it("queries signal_outcomes with createdAt filter", async () => {
-    dynamoSend.mockResolvedValue({ Items: [] });
+  it("reads signal_outcomes via BatchGetItem keyed on (pair, signalId)", async () => {
+    const closeMs = Date.parse("2026-04-15T00:00:00.000Z");
+    dynamoSend.mockImplementation((cmd: { input: Record<string, unknown> }) => {
+      // Signals query — return one signal so a BatchGet is issued.
+      if (cmd.input.TableName === "quantara-dev-signals-v2") {
+        return Promise.resolve({
+          Items: [
+            {
+              pair: "BTC/USDT",
+              signalId: "sig-abc",
+              confidence: 0.7,
+              rulesFired: ["r1"],
+              closeTime: closeMs,
+            },
+          ],
+        });
+      }
+      // Indicator state — empty.
+      if (cmd.input.TableName === "quantara-dev-indicator-state") {
+        return Promise.resolve({ Items: [] });
+      }
+      // BatchGet on signal-outcomes — return Responses map.
+      if (cmd.input.RequestItems !== undefined) {
+        return Promise.resolve({
+          Responses: { "quantara-dev-signal-outcomes": [] },
+        });
+      }
+      return Promise.resolve({ Items: [] });
+    });
 
     const { getGenieDeepDive } = await import("./genie-deepdive.service.js");
     await getGenieDeepDive("2026-04-01T00:00:00.000Z", "BTC/USDT", "1h");
 
-    const outcomesCall = dynamoSend.mock.calls.find(
-      (c) => (c[0].input as Record<string, unknown>).TableName === "quantara-dev-signal-outcomes",
+    const batchGetCall = dynamoSend.mock.calls.find(
+      (c) => (c[0].input as Record<string, unknown>).RequestItems !== undefined,
     );
-    expect(outcomesCall).toBeDefined();
-    const input = outcomesCall![0].input as Record<string, unknown>;
-    expect(input.FilterExpression).toBe("#createdAt BETWEEN :since AND :until");
+    expect(batchGetCall).toBeDefined();
+    const input = batchGetCall![0].input as Record<string, unknown>;
+    const requestItems = input.RequestItems as Record<
+      string,
+      { Keys: { pair: string; signalId: string }[] }
+    >;
+    const tableEntry = requestItems["quantara-dev-signal-outcomes"];
+    expect(tableEntry).toBeDefined();
+    expect(tableEntry.Keys).toEqual([{ pair: "BTC/USDT", signalId: "sig-abc" }]);
+  });
+
+  it("skips signals_v2 rows missing a non-empty signalId", async () => {
+    const closeMs = Date.parse("2026-04-15T00:00:00.000Z");
+    dynamoSend.mockImplementation((cmd: { input: Record<string, unknown> }) => {
+      if (cmd.input.TableName === "quantara-dev-signals-v2") {
+        return Promise.resolve({
+          Items: [
+            // Valid row.
+            {
+              pair: "BTC/USDT",
+              signalId: "good",
+              confidence: 0.7,
+              rulesFired: ["r1"],
+              closeTime: closeMs,
+            },
+            // Empty signalId — must be skipped.
+            {
+              pair: "BTC/USDT",
+              signalId: "",
+              confidence: 0.7,
+              rulesFired: ["r1"],
+              closeTime: closeMs,
+            },
+            // Missing signalId attribute — must be skipped.
+            {
+              pair: "BTC/USDT",
+              confidence: 0.7,
+              rulesFired: ["r1"],
+              closeTime: closeMs,
+            },
+          ],
+        });
+      }
+      if (cmd.input.RequestItems !== undefined) {
+        return Promise.resolve({ Responses: { "quantara-dev-signal-outcomes": [] } });
+      }
+      return Promise.resolve({ Items: [] });
+    });
+
+    const { getGenieDeepDive } = await import("./genie-deepdive.service.js");
+    await getGenieDeepDive("2026-04-01T00:00:00.000Z", "BTC/USDT", "1h");
+
+    const batchGetCall = dynamoSend.mock.calls.find(
+      (c) => (c[0].input as Record<string, unknown>).RequestItems !== undefined,
+    );
+    expect(batchGetCall).toBeDefined();
+    const input = batchGetCall![0].input as Record<string, unknown>;
+    const requestItems = input.RequestItems as Record<
+      string,
+      { Keys: { pair: string; signalId: string }[] }
+    >;
+    // Only the "good" signalId should reach BatchGet.
+    expect(requestItems["quantara-dev-signal-outcomes"].Keys).toEqual([
+      { pair: "BTC/USDT", signalId: "good" },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Percentile boundary regression
+// ---------------------------------------------------------------------------
+
+describe("computeByVolatility — nearest-rank percentile", () => {
+  it("places n=4 ATR samples one per quartile bucket", () => {
+    // Pre-fix Math.floor((p/100)*n) put p=25,n=4 at index 1 (= 20), shifting
+    // boundaries so the 10-ATR sample landed in bucket 1 instead of bucket 0.
+    // Nearest-rank ceil((p/100)*n)-1 puts q25 at index 0 (= 10), q50 at 1 (= 20),
+    // q75 at 2 (= 30), exactly one sample per bucket.
+    const times = [1000, 2000, 3000, 4000];
+    const atrs = [10, 20, 30, 40];
+    const signals = times.map((t, i) => sig(`s${i}`, 0.7, [], t));
+    const atrMap = new Map(times.map((t, i) => [`BTC/USDT#1h#${t}`, atrs[i]]));
+    const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
+      signals.map((s) => [s.signalId, "correct"]),
+    );
+    const result = computeByVolatility(signals, outcomes, atrMap);
+    // Expect 4 buckets, one signal each.
+    expect(result.map((b) => b.signalCount)).toEqual([1, 1, 1, 1]);
+  });
+
+  it("places n=100 ATR samples evenly across quartiles", () => {
+    // 100 distinct ATR values 1..100. Nearest-rank gives q25=25, q50=50, q75=75.
+    // With `<=` boundaries each bucket gets exactly 25 samples.
+    const times = Array.from({ length: 100 }, (_, i) => i + 1);
+    const atrs = times; // ATR equals time index for simplicity
+    const signals = times.map((t, i) => sig(`s${i}`, 0.7, [], t));
+    const atrMap = new Map(times.map((t, i) => [`BTC/USDT#1h#${t}`, atrs[i]]));
+    const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
+      signals.map((s) => [s.signalId, "correct"]),
+    );
+    const result = computeByVolatility(signals, outcomes, atrMap);
+    expect(result.map((b) => b.signalCount)).toEqual([25, 25, 25, 25]);
   });
 });

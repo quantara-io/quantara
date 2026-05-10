@@ -208,9 +208,13 @@ export function computeByVolatility(
   if (atrValues.length === 0) return [];
 
   atrValues.sort((a, b) => a - b);
+  // Nearest-rank percentile: for p% of n samples, return the value at index
+  // ceil(p/100 * n) - 1. Floor(p/100 * n) is off-by-one (e.g. n=4, p=25 →
+  // index 1 instead of 0), shifting quartile boundaries.
   const pct = (p: number) => {
-    const idx = Math.floor((p / 100) * atrValues.length);
-    return atrValues[Math.min(idx, atrValues.length - 1)];
+    const n = atrValues.length;
+    const idx = Math.max(0, Math.ceil((p / 100) * n) - 1);
+    return atrValues[Math.min(idx, n - 1)];
   };
   const q25 = pct(25);
   const q50 = pct(50);
@@ -228,7 +232,10 @@ export function computeByVolatility(
     const atr = atrMap.get(key);
     if (typeof atr !== "number") continue;
 
-    const bucketIdx = atr < q25 ? 0 : atr < q50 ? 1 : atr < q75 ? 2 : 3;
+    // <= so that values exactly equal to a percentile cutoff land in the
+    // "lower" bucket. This pairs with the nearest-rank percentile helper to
+    // give the intended 0-25 / 25-50 / 50-75 / 75-100 bucket distribution.
+    const bucketIdx = atr <= q25 ? 0 : atr <= q50 ? 1 : atr <= q75 ? 2 : 3;
     const outcome = outcomeBySignalId.get(sig.signalId);
     buckets[bucketIdx].count++;
     if (outcome === "correct" || outcome === "incorrect") {
