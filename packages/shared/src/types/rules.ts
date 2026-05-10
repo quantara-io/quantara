@@ -16,6 +16,22 @@ import type { SignalTag } from "./signal-tags.js";
 export type GateReason = "vol" | "dispersion" | "stale";
 
 /**
+ * Inputs that drove a gate's decision — surfaced in the Genie HOLD rationale
+ * so users can see *why* the gate suppressed the signal (issue #216).
+ *
+ * `gate` mirrors GateReason ("vol", "dispersion", "stale").
+ * `inputs` is a free-form map of the numeric/string values the gate read at
+ * decision time (e.g. `{ vol: 2.4, cap: 2.0, timeframe: "15m" }`).
+ *
+ * Optional everywhere — old rows that lack this field fall back to the short
+ * gate label.
+ */
+export interface GateContext {
+  gate: GateReason;
+  inputs: Record<string, string | number>;
+}
+
+/**
  * Result produced by evaluateGates() (gates.ts). scoreTimeframe accepts this
  * as an optional parameter; when fired=true the vote is forced to type="hold".
  *
@@ -25,6 +41,8 @@ export type GateReason = "vol" | "dispersion" | "stale";
 export interface GateResult {
   fired: boolean;
   reason: GateReason | null;
+  /** Populated when fired=true — the inputs the gate read to reach its decision. */
+  context?: GateContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +136,12 @@ export interface TimeframeVote {
    * "stale"      — ≥2 of 3 exchanges are stale
    */
   gateReason: "vol" | "dispersion" | "stale" | null;
+  /**
+   * Detailed inputs that drove the gate's decision (issue #216).
+   * Populated when gateReason is non-null; absent on old rows and non-gated votes.
+   * Clients that can't find this field fall back to the short gateReason label.
+   */
+  gateContext?: GateContext;
   /**
    * Human-readable reasoning string populated on every emission.
    * Added in v2 Phase 2 (#253) — includes holds, gates, and below-threshold cases.

@@ -1,4 +1,4 @@
-import type { TimeframeVote } from "./rules.js";
+import type { TimeframeVote, GateContext } from "./rules.js";
 import type { Timeframe } from "./ingestion.js";
 import type { RiskRecommendation } from "./risk.js";
 import type { SignalTag } from "./signal-tags.js";
@@ -92,6 +92,11 @@ export interface BlendedSignal {
   confidence: number; // ordinal in v1; calibrated in Phase 8
   volatilityFlag: boolean;
   gateReason: "vol" | "dispersion" | "stale" | null;
+  /**
+   * Inputs that drove the gate's decision — populated on HOLD signals when a gate fired (issue #216).
+   * Absent on old rows and when no gate fired. Clients fall back to the short gateReason label.
+   */
+  gateContext?: GateContext | null;
   rulesFired: string[]; // union across all contributing TFs
 
   // Transparency for reasoning string + UI breakdown

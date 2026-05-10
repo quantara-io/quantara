@@ -9,7 +9,7 @@
  * belong to Phase 4 (out of scope here).
  */
 
-import type { TimeframeVote, BlendedSignal, Timeframe } from "@quantara/shared";
+import type { TimeframeVote, BlendedSignal, Timeframe, GateContext } from "@quantara/shared";
 import { TIMEFRAMES } from "@quantara/shared";
 
 /**
@@ -125,6 +125,24 @@ export function blendTimeframeVotes(
       "1d": perTimeframeVotes["1d"],
     };
 
+    // Pick the gateContext from the highest-priority gate's vote (issue #216).
+    // GATE_PRIORITY: vol > dispersion > stale. The winning gate reason is in
+    // highestGateReason; find a vote that carries a matching gateContext.
+    let gateContext: GateContext | null = null;
+    if (highestGateReason !== null) {
+      for (const tf of TIMEFRAMES) {
+        const vote = perTimeframeVotes[tf];
+        if (
+          vote !== null &&
+          vote.gateReason === highestGateReason &&
+          vote.gateContext !== undefined
+        ) {
+          gateContext = vote.gateContext;
+          break;
+        }
+      }
+    }
+
     return {
       pair,
       type: "hold",
@@ -132,6 +150,7 @@ export function blendTimeframeVotes(
       // volatilityFlag is true only for vol gates; dispersion/stale use their own UI copy.
       volatilityFlag: highestGateReason === "vol",
       gateReason: highestGateReason,
+      gateContext,
       rulesFired: Array.from(rulesFiredSet),
       perTimeframe,
       weightsUsed,

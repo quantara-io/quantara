@@ -330,6 +330,7 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
           confidence: stage1Signal.confidence,
           volatilityFlag: stage1Signal.volatilityFlag,
           gateReason: stage1Signal.gateReason,
+          gateContext: stage1Signal.gateContext ?? null,
           rulesFired: stage1Signal.rulesFired,
           perTimeframe: stage1Signal.perTimeframe,
           weightsUsed: stage1Signal.weightsUsed,

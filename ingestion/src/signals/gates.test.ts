@@ -72,7 +72,8 @@ describe("gateVolatility", () => {
     // BTC/USDT threshold = 1.50
     const state = makeState({ realizedVolAnnualized: 1.51 });
     const result = gateVolatility(state, "BTC/USDT");
-    expect(result).toEqual({ fired: true, reason: "vol" });
+    expect(result.fired).toBe(true);
+    expect(result.reason).toBe("vol");
   });
 
   it("does not fire when vol equals the threshold exactly", () => {
@@ -88,8 +89,10 @@ describe("gateVolatility", () => {
   it("uses the correct per-pair threshold (DOGE/USDT = 3.50)", () => {
     const below = makeState({ realizedVolAnnualized: 3.49 });
     const above = makeState({ realizedVolAnnualized: 3.51 });
+    const aboveResult = gateVolatility(above, "DOGE/USDT");
     expect(gateVolatility(below, "DOGE/USDT").fired).toBe(false);
-    expect(gateVolatility(above, "DOGE/USDT")).toEqual({ fired: true, reason: "vol" });
+    expect(aboveResult.fired).toBe(true);
+    expect(aboveResult.reason).toBe("vol");
   });
 
   it("does not fire when realizedVolAnnualized is null", () => {
@@ -128,7 +131,9 @@ describe("gateDispersion", () => {
 
   it("fires when all 3 most-recent history values exceed 1%", () => {
     const state = makeState({ dispersion: 0.02 });
-    expect(gateDispersion(state, ABOVE)).toEqual({ fired: true, reason: "dispersion" });
+    const result = gateDispersion(state, ABOVE);
+    expect(result.fired).toBe(true);
+    expect(result.reason).toBe("dispersion");
   });
 
   it("does not fire when any of the 3 most-recent values is at or below 1%", () => {
@@ -184,12 +189,16 @@ describe("gateDispersion", () => {
 describe("gateStale", () => {
   it("fires when exactly 2 of 3 exchanges are stale", () => {
     const map = { binanceus: true, coinbase: true, kraken: false };
-    expect(gateStale(map)).toEqual({ fired: true, reason: "stale" });
+    const result = gateStale(map);
+    expect(result.fired).toBe(true);
+    expect(result.reason).toBe("stale");
   });
 
   it("fires when all 3 exchanges are stale", () => {
     const map = { binanceus: true, coinbase: true, kraken: true };
-    expect(gateStale(map)).toEqual({ fired: true, reason: "stale" });
+    const result = gateStale(map);
+    expect(result.fired).toBe(true);
+    expect(result.reason).toBe("stale");
   });
 
   it("does not fire when only 1 exchange is stale", () => {
@@ -234,10 +243,9 @@ describe("evaluateGates", () => {
 
   it("returns { fired: false, reason: null } when no gate fires", () => {
     const state = makeState({ realizedVolAnnualized: 0.5, dispersion: 0.001 });
-    expect(evaluateGates(state, "BTC/USDT", DISPERSION_BELOW, STALE_3)).toEqual({
-      fired: false,
-      reason: null,
-    });
+    const result = evaluateGates(state, "BTC/USDT", DISPERSION_BELOW, STALE_3);
+    expect(result.fired).toBe(false);
+    expect(result.reason).toBeNull();
   });
 
   it("returns vol gate first when vol fires", () => {
@@ -245,7 +253,8 @@ describe("evaluateGates", () => {
     const state = makeState({ realizedVolAnnualized: 1.51, dispersion: 0.02 });
     const staleMap = { binanceus: true, coinbase: true, kraken: false };
     const result = evaluateGates(state, "BTC/USDT", DISPERSION_ABOVE, staleMap);
-    expect(result).toEqual({ fired: true, reason: "vol" });
+    expect(result.fired).toBe(true);
+    expect(result.reason).toBe("vol");
   });
 
   it("returns dispersion gate when vol does not fire but dispersion does", () => {
@@ -253,14 +262,16 @@ describe("evaluateGates", () => {
     const state = makeState({ realizedVolAnnualized: 0.5, dispersion: 0.02 });
     const staleMap = { binanceus: true, coinbase: true, kraken: false };
     const result = evaluateGates(state, "BTC/USDT", DISPERSION_ABOVE, staleMap);
-    expect(result).toEqual({ fired: true, reason: "dispersion" });
+    expect(result.fired).toBe(true);
+    expect(result.reason).toBe("dispersion");
   });
 
   it("returns stale gate when vol and dispersion do not fire", () => {
     const state = makeState({ realizedVolAnnualized: 0.5, dispersion: 0.001 });
     const staleMap = { binanceus: true, coinbase: true, kraken: false };
     const result = evaluateGates(state, "BTC/USDT", DISPERSION_BELOW, staleMap);
-    expect(result).toEqual({ fired: true, reason: "stale" });
+    expect(result.fired).toBe(true);
+    expect(result.reason).toBe("stale");
   });
 
   it("propagates the gateStale throw on bad arity", () => {
@@ -271,5 +282,85 @@ describe("evaluateGates", () => {
         coinbase: false,
       }),
     ).toThrow(/exactly 3/);
+  });
+});
+
+// ─── gateContext shape tests (issue #216) ─────────────────────────────────────
+
+describe("gateContext — gateVolatility", () => {
+  it("emits context with gate=vol, vol, and cap when fired", () => {
+    const state = makeState({ realizedVolAnnualized: 1.51 });
+    const result = gateVolatility(state, "BTC/USDT");
+    expect(result.fired).toBe(true);
+    expect(result.context).toBeDefined();
+    expect(result.context?.gate).toBe("vol");
+    expect(result.context?.inputs).toMatchObject({ vol: 1.51, cap: 1.5 });
+  });
+
+  it("does not emit context when gate does not fire", () => {
+    const state = makeState({ realizedVolAnnualized: 0.5 });
+    const result = gateVolatility(state, "BTC/USDT");
+    expect(result.fired).toBe(false);
+    expect(result.context).toBeUndefined();
+  });
+
+  it("rounds vol to 3 decimal places in context inputs", () => {
+    const state = makeState({ realizedVolAnnualized: 1.512345 });
+    const result = gateVolatility(state, "BTC/USDT");
+    expect(result.context?.inputs.vol).toBe(1.512);
+  });
+
+  it("records the correct per-pair cap for ETH/USDT", () => {
+    const state = makeState({ realizedVolAnnualized: 2.1 });
+    const result = gateVolatility(state, "ETH/USDT");
+    expect(result.context?.inputs.cap).toBe(2.0);
+  });
+});
+
+describe("gateContext — gateDispersion", () => {
+  const ABOVE = [0.02, 0.03, 0.015];
+
+  it("emits context with gate=dispersion and the 3 recent history values", () => {
+    const state = makeState({ dispersion: 0.02 });
+    const result = gateDispersion(state, ABOVE);
+    expect(result.fired).toBe(true);
+    expect(result.context?.gate).toBe("dispersion");
+    expect(result.context?.inputs).toMatchObject({
+      d0: 0.02,
+      d1: 0.03,
+      d2: 0.015,
+      threshold: 0.01,
+    });
+  });
+
+  it("does not emit context when gate does not fire", () => {
+    const state = makeState({ dispersion: 0.02 });
+    const result = gateDispersion(state, [0.02, 0.005, 0.015]);
+    expect(result.fired).toBe(false);
+    expect(result.context).toBeUndefined();
+  });
+});
+
+describe("gateContext — gateStale", () => {
+  it("emits context with gate=stale, staleCount, totalExchanges, staleExchanges when fired", () => {
+    const map = { binanceus: true, coinbase: true, kraken: false };
+    const result = gateStale(map);
+    expect(result.fired).toBe(true);
+    expect(result.context?.gate).toBe("stale");
+    expect(result.context?.inputs.staleCount).toBe(2);
+    expect(result.context?.inputs.totalExchanges).toBe(3);
+    // staleExchanges is a comma-joined string of stale exchange names
+    expect(typeof result.context?.inputs.staleExchanges).toBe("string");
+    const staleStr = result.context?.inputs.staleExchanges as string;
+    expect(staleStr).toContain("binanceus");
+    expect(staleStr).toContain("coinbase");
+    expect(staleStr).not.toContain("kraken");
+  });
+
+  it("does not emit context when gate does not fire", () => {
+    const map = { binanceus: false, coinbase: false, kraken: false };
+    const result = gateStale(map);
+    expect(result.fired).toBe(false);
+    expect(result.context).toBeUndefined();
   });
 });

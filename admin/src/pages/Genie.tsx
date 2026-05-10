@@ -188,7 +188,9 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
         <TypeBadge type={signal.type} />
         <span className="text-sm text-ink2 font-mono">{Math.round(signal.confidence * 100)}%</span>
         {signal.volatilityFlag && <VolatilityChip />}
-        {signal.gateReason != null && <GateChip reason={signal.gateReason} />}
+        {signal.gateReason != null && (
+          <GateChip reason={signal.gateReason} inputs={signal.gateContext?.inputs ?? undefined} />
+        )}
       </div>
 
       {/* Timestamps */}
@@ -328,10 +330,21 @@ function VolatilityChip() {
   );
 }
 
-function GateChip({ reason }: { reason: "vol" | "dispersion" | "stale" }) {
+function GateChip({
+  reason,
+  inputs,
+}: {
+  reason: "vol" | "dispersion" | "stale";
+  inputs?: Record<string, string | number>;
+}) {
+  const label = inputs
+    ? `gate: ${reason} → ${Object.entries(inputs)
+        .map(([k, v]) => `${k}=${typeof v === "number" ? v : v}`)
+        .join(" ")}`
+    : `gate: ${reason}`;
   return (
     <span className="px-1.5 py-0.5 rounded bg-warn-soft text-warn border border-warn/30 text-[11px]">
-      gate: {reason}
+      {label}
     </span>
   );
 }

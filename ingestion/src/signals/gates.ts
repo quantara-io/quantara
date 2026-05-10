@@ -1,11 +1,12 @@
-import type { IndicatorState, GateResult } from "@quantara/shared";
+import type { IndicatorState, GateResult, GateContext } from "@quantara/shared";
 import type { TradingPair } from "@quantara/shared";
 import { PAIRS, VOL_GATE_THRESHOLDS } from "@quantara/shared";
 
-// GateResult and GateReason are declared in @quantara/shared (packages/shared/src/types/rules.ts).
+// GateResult, GateReason, and GateContext are declared in @quantara/shared (packages/shared/src/types/rules.ts).
 // Re-exported here so callers that import directly from gates.ts get the same types.
 export type { GateResult } from "@quantara/shared";
 export type { GateReason } from "@quantara/shared";
+export type { GateContext } from "@quantara/shared";
 
 const NOT_FIRED: GateResult = { fired: false, reason: null };
 
@@ -45,7 +46,14 @@ export function gateVolatility(state: IndicatorState, pair: TradingPair): GateRe
   }
 
   if (vol > threshold) {
-    return { fired: true, reason: "vol" };
+    const context: GateContext = {
+      gate: "vol",
+      inputs: {
+        vol: Math.round(vol * 1000) / 1000,
+        cap: threshold,
+      },
+    };
+    return { fired: true, reason: "vol", context };
   }
 
   return NOT_FIRED;
@@ -78,7 +86,16 @@ export function gateDispersion(state: IndicatorState, dispersionHistory: number[
   // Fire only if ALL of the 3 most recent values exceed the threshold (most-recent-first ordering)
   const recentThree = dispersionHistory.slice(0, 3);
   if (recentThree.every((v) => v > DISPERSION_THRESHOLD)) {
-    return { fired: true, reason: "dispersion" };
+    const context: GateContext = {
+      gate: "dispersion",
+      inputs: {
+        d0: Math.round(recentThree[0] * 10000) / 10000,
+        d1: Math.round(recentThree[1] * 10000) / 10000,
+        d2: Math.round(recentThree[2] * 10000) / 10000,
+        threshold: DISPERSION_THRESHOLD,
+      },
+    };
+    return { fired: true, reason: "dispersion", context };
   }
 
   return NOT_FIRED;
@@ -99,7 +116,15 @@ export function gateStale(exchangeStaleness: Record<string, boolean>): GateResul
 
   const staleCount = keys.filter((k) => exchangeStaleness[k]).length;
   if (staleCount >= 2) {
-    return { fired: true, reason: "stale" };
+    const context: GateContext = {
+      gate: "stale",
+      inputs: {
+        staleCount,
+        totalExchanges: keys.length,
+        staleExchanges: keys.filter((k) => exchangeStaleness[k]).join(","),
+      },
+    };
+    return { fired: true, reason: "stale", context };
   }
 
   return NOT_FIRED;
