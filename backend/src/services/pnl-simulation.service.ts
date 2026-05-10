@@ -138,42 +138,51 @@ async function queryOutcomeItems(
   const targetPairs = pairFilter ? [pairFilter] : pairs;
   const results: OutcomeItem[] = [];
 
+  // Push the optional timeframe filter into FilterExpression so DynamoDB drops
+  // non-matching rows server-side, instead of returning them and discarding in JS.
+  const baseFilter =
+    "#resolvedAt BETWEEN :since AND :until" +
+    " AND #invalidatedExcluded <> :true_val" +
+    " AND #type <> :hold";
+  const filterExpression = timeframeFilter
+    ? `${baseFilter} AND #emittingTimeframe = :emittingTimeframe`
+    : baseFilter;
+  const expressionAttributeNames: Record<string, string> = {
+    "#pair": "pair",
+    "#resolvedAt": "resolvedAt",
+    "#invalidatedExcluded": "invalidatedExcluded",
+    "#type": "type",
+  };
+  if (timeframeFilter) {
+    expressionAttributeNames["#emittingTimeframe"] = "emittingTimeframe";
+  }
+
   await Promise.all(
     targetPairs.map(async (pair) => {
       let lastKey: Record<string, unknown> | undefined;
       do {
+        const expressionAttributeValues: Record<string, unknown> = {
+          ":pair": pair,
+          ":since": sinceIso,
+          ":until": untilIso,
+          ":true_val": true,
+          ":hold": "hold",
+        };
+        if (timeframeFilter) {
+          expressionAttributeValues[":emittingTimeframe"] = timeframeFilter;
+        }
         const result = await client.send(
           new QueryCommand({
             TableName: SIGNAL_OUTCOMES_TABLE,
             KeyConditionExpression: "#pair = :pair",
-            // Filter on resolvedAt to stay within the requested window.
-            // Also exclude invalidated records, hold signals (no direction),
-            // and pending outcomes (no priceAtResolution yet).
-            FilterExpression:
-              "#resolvedAt BETWEEN :since AND :until" +
-              " AND #invalidatedExcluded <> :true_val" +
-              " AND #type <> :hold",
-            ExpressionAttributeNames: {
-              "#pair": "pair",
-              "#resolvedAt": "resolvedAt",
-              "#invalidatedExcluded": "invalidatedExcluded",
-              "#type": "type",
-            },
-            ExpressionAttributeValues: {
-              ":pair": pair,
-              ":since": sinceIso,
-              ":until": untilIso,
-              ":true_val": true,
-              ":hold": "hold",
-            },
+            FilterExpression: filterExpression,
+            ExpressionAttributeNames: expressionAttributeNames,
+            ExpressionAttributeValues: expressionAttributeValues,
             ExclusiveStartKey: lastKey,
           }),
         );
         for (const item of result.Items ?? []) {
-          const row = item as OutcomeItem;
-          // Apply optional timeframe filter post-query.
-          if (timeframeFilter && row.emittingTimeframe !== timeframeFilter) continue;
-          results.push(row);
+          results.push(item as OutcomeItem);
         }
         lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
       } while (lastKey !== undefined);

@@ -751,6 +751,7 @@ describe("GET /pnl-simulation", () => {
       timeframe: undefined,
       positionSizeUsd: undefined,
       feeBps: undefined,
+      direction: undefined,
     });
   });
 
@@ -759,7 +760,7 @@ describe("GET /pnl-simulation", () => {
     const app = await loadApp();
     const since = "2026-04-01T00:00:00.000Z";
     const res = await app.request(
-      `/pnl-simulation?since=${encodeURIComponent(since)}&pair=BTC%2FUSDT&timeframe=1h&positionSize=250&feeBps=10`,
+      `/pnl-simulation?since=${encodeURIComponent(since)}&pair=BTC%2FUSDT&timeframe=1h&positionSize=250&feeBps=10&direction=long`,
     );
     expect(res.status).toBe(200);
     expect(getPnlSimulationMock).toHaveBeenCalledWith({
@@ -768,7 +769,17 @@ describe("GET /pnl-simulation", () => {
       timeframe: "1h",
       positionSizeUsd: 250,
       feeBps: 10,
+      direction: "long",
     });
+  });
+
+  it("returns 400 when direction is not one of both|long|short", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pnl-simulation?direction=sideways");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPnlSimulationMock).not.toHaveBeenCalled();
   });
 
   it("returns 400 when since is not a valid ISO date", async () => {
