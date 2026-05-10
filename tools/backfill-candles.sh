@@ -55,6 +55,6 @@ aws lambda invoke \
   --profile "$AWS_PROFILE" \
   --region  "$AWS_REGION" \
   --function-name "$FUNCTION_NAME" \
-  --payload "$(echo "$PAYLOAD" | base64)" \
+  --payload "$PAYLOAD" \
   --cli-binary-format raw-in-base64-out \
   /dev/stdout
