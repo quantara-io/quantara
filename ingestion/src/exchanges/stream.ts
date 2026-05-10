@@ -25,6 +25,27 @@ const KRAKEN_SYNTHESIS_DELAY_MS = 2_000;
 const KRAKEN_1M_MS = 60_000;
 
 /**
+ * Maximum consecutive synthesized candles emitted per pair before falling back
+ * to the downstream "stream stale" gate. Configurable via env var so tests and
+ * production can tune the cap without a code change.
+ *
+ * Default: 5 minutes. After the cap is reached the synthesis timer stops
+ * re-arming and logs a "Cap reached" message; the stale gate in
+ * `ingestion/src/signals/gates.ts` then handles the long-silence case.
+ */
+const KRAKEN_MAX_CONSECUTIVE_SYNTH = (() => {
+  const raw = process.env.KRAKEN_MAX_CONSECUTIVE_SYNTH;
+  const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+})();
+
+/**
+ * Namespace for CloudWatch Embedded Metric Format (EMF) metrics emitted by the
+ * Kraken synthesis path.
+ */
+const KRAKEN_SYNTH_CW_NAMESPACE = "Quantara/Ingestion";
+
+/**
  * Shape of a single OHLCV row returned by ccxt's `fetchOHLCV` / `watchOHLCV`.
  * ts (open-timestamp ms) is reliably a number across adapters; the numeric
  * slots (open/high/low/close/volume) are typed as `string | number | null`
@@ -69,15 +90,31 @@ export class MarketStreamManager {
   /**
    * Kraken zero-volume synthesis state, keyed by "kraken:<pair>".
    *
-   * `lastClose`    — close price from the most-recently-seen real Kraken candle.
-   *                  Used as open/high/low/close for synthesized candles.
-   * `lastCloseTime`— closeTime (ms) of the most-recently-written candle for this
-   *                  pair (real or synthesized). The synthesis timer computes the
-   *                  next expected closeTime from this baseline.
+   * `lastClose`          — close price from the most-recently-seen real Kraken candle.
+   *                        Used as open/high/low/close for synthesized candles.
+   * `lastCloseTime`      — closeTime (ms) of the most-recently-written candle for this
+   *                        pair (real or synthesized). The synthesis timer computes the
+   *                        next expected closeTime from this baseline.
+   * `consecutiveSynths`  — running count of consecutive synthesized candles emitted
+   *                        without an intervening real candle. Reset to 0 when a real
+   *                        candle arrives via updateKrakenSynthState. Used to enforce
+   *                        KRAKEN_MAX_CONSECUTIVE_SYNTH cap.
    */
-  private krakenSynthState: Map<string, { lastClose: number; lastCloseTime: number }> = new Map();
-  /** Active synthesis timers keyed by "kraken:<pair>". Cleared on stop(). */
-  private krakenSynthTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private krakenSynthState: Map<
+    string,
+    { lastClose: number; lastCloseTime: number; consecutiveSynths: number }
+  > = new Map();
+  /**
+   * Active synthesis timers keyed by "kraken:<pair>".
+   * Stores both the timer handle and the `expectedNextCloseTime` that timer is
+   * targeting, so the skipped-window check in updateKrakenSynthState can
+   * detect and log gaps when a real candle leaps over the pending slot.
+   * Cleared on stop().
+   */
+  private krakenSynthTimers: Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; expectedNextCloseTime: number }
+  > = new Map();
   /** DynamoDB document client — created per-instance so mocks are applied correctly in tests. */
   private readonly ddbClient: DynamoDBDocumentClient;
 
@@ -166,8 +203,8 @@ export class MarketStreamManager {
     }
 
     // Clear all pending Kraken synthesis timers so shutdown is prompt.
-    for (const timer of this.krakenSynthTimers.values()) {
-      clearTimeout(timer);
+    for (const entry of this.krakenSynthTimers.values()) {
+      clearTimeout(entry.timer);
     }
     this.krakenSynthTimers.clear();
 
@@ -279,7 +316,14 @@ export class MarketStreamManager {
               // synthesis timer. If no real candle arrives for the following
               // window, the timer fires a zero-volume carry-forward instead.
               if (exchangeId === "kraken") {
-                this.updateKrakenSynthState(key, symbol, pair, candle.close, candle.closeTime);
+                this.updateKrakenSynthState(
+                  key,
+                  symbol,
+                  pair,
+                  candle.close,
+                  candle.closeTime,
+                  true /* fromRealCandle */,
+                );
               }
             }
           }
@@ -311,6 +355,25 @@ export class MarketStreamManager {
    * Calling this again before the timer fires cancels the pending timer and
    * arms a fresh one — this handles the case where Kraken sends a burst of
    * two consecutive closed candles in one watchOHLCV response.
+   *
+   * Fix 1 — skipped-window detection: before cancelling an existing timer,
+   * check whether its `expectedNextCloseTime` lies before `prevCloseTime`. If
+   * it does, a real candle skipped over that slot; we log one line per missed
+   * window so silent drops surface in CloudWatch Logs without emitting a noisy
+   * synthetic series.
+   *
+   * Fix 2 — storeCandles retry: the timer callback wraps the store call in a
+   * 3-attempt exponential-backoff loop (100ms / 200ms / 400ms) before giving
+   * up, preventing a transient DDB throttle from silently dropping a minute.
+   * On full failure an EMF metric `KrakenSynthDropped` is emitted to
+   * CloudWatch so the gap is visible in Health.
+   *
+   * Fix 3 — consecutive-synth cap: a per-pair `consecutiveSynths` counter
+   * (stored in krakenSynthState) enforces KRAKEN_MAX_CONSECUTIVE_SYNTH (env-
+   * configurable, default 5). After the cap is reached the timer stops re-
+   * arming and logs "Cap reached — falling back to stale gate". The counter is
+   * reset to 0 whenever a real candle triggers updateKrakenSynthState from the
+   * OHLCV stream path (distinguished by `fromRealCandle = true`).
    */
   private updateKrakenSynthState(
     key: string,
@@ -318,12 +381,37 @@ export class MarketStreamManager {
     pair: TradingPair,
     prevClose: number,
     prevCloseTime: number,
+    fromRealCandle = false,
   ): void {
-    // Cancel any existing timer for this pair before arming a new one.
-    const existing = this.krakenSynthTimers.get(key);
-    if (existing !== undefined) clearTimeout(existing);
+    // --- Fix 1: skipped-window detection -----------------------------------
+    // If there is an existing pending timer and the new prevCloseTime jumps
+    // past the slot that timer was targeting, the slot was skipped by a
+    // non-consecutive real candle arrival. Log each missed slot so it surfaces
+    // in CloudWatch Logs without silently dropping the window.
+    const existingEntry = this.krakenSynthTimers.get(key);
+    if (existingEntry !== undefined) {
+      clearTimeout(existingEntry.timer);
 
-    this.krakenSynthState.set(key, { lastClose: prevClose, lastCloseTime: prevCloseTime });
+      // Log any slot(s) that the incoming candle leapt over.
+      let missedSlot = existingEntry.expectedNextCloseTime;
+      while (missedSlot < prevCloseTime) {
+        console.warn(
+          `[KrakenSynth] Skipped synthesis for ${key} slot ${new Date(missedSlot).toISOString()} — real candle arrived at ${new Date(prevCloseTime).toISOString()}`,
+        );
+        missedSlot += KRAKEN_1M_MS;
+      }
+    }
+
+    // When a real candle arrives, reset the consecutive-synth counter so the
+    // cap does not bleed across genuine-silence windows.
+    const existingState = this.krakenSynthState.get(key);
+    const consecutiveSynths = fromRealCandle ? 0 : (existingState?.consecutiveSynths ?? 0);
+
+    this.krakenSynthState.set(key, {
+      lastClose: prevClose,
+      lastCloseTime: prevCloseTime,
+      consecutiveSynths,
+    });
 
     const expectedNextCloseTime = prevCloseTime + KRAKEN_1M_MS;
     const fireAt = expectedNextCloseTime + KRAKEN_SYNTHESIS_DELAY_MS;
@@ -340,6 +428,16 @@ export class MarketStreamManager {
       // expected boundary, no synthesis needed.
       if (synthState.lastCloseTime >= expectedNextCloseTime) return;
 
+      // --- Fix 3: consecutive-synth cap -------------------------------------
+      // If we have already emitted the maximum allowed consecutive synths,
+      // stop re-arming and defer to the downstream stale gate.
+      if (synthState.consecutiveSynths >= KRAKEN_MAX_CONSECUTIVE_SYNTH) {
+        console.warn(
+          `[KrakenSynth] Cap reached for ${key} (${KRAKEN_MAX_CONSECUTIVE_SYNTH} consecutive synths) — falling back to "stream stale" gate`,
+        );
+        return;
+      }
+
       // Synthesize the missing minute and re-arm for the minute after.
       const openTime = prevCloseTime; // openTime of the missed window = prevCloseTime
       const synth = synthesizeCandle("kraken", symbol, pair, "1m", openTime, synthState.lastClose);
@@ -348,10 +446,13 @@ export class MarketStreamManager {
         `[KrakenSynth] No trade for ${key} by ${new Date(expectedNextCloseTime).toISOString()} — emitting zero-volume carry-forward`,
       );
 
-      storeCandles([synth]).catch((err: Error) => {
-        console.error(
-          `[KrakenSynth] Failed to store synthesized candle for ${key}: ${err.message}`,
-        );
+      // --- Fix 2: storeCandles retry with exponential backoff ---------------
+      // Wrap storeCandles in a small retry loop to survive transient DDB
+      // throttles. On full failure emit an EMF metric so the drop surfaces in
+      // CloudWatch Health rather than being silently swallowed.
+      storeCandlesWithRetry(key, [synth]).catch(() => {
+        // storeCandlesWithRetry already logs each attempt; emit EMF on final failure.
+        emitKrakenSynthDroppedMetric(pair);
       });
 
       // Treat a synthesized candle as freshness for the watchdog: the stream
@@ -364,12 +465,18 @@ export class MarketStreamManager {
       const streamState = this.streams.get(key);
       if (streamState) streamState.lastDataAt = Date.now();
 
-      // Advance lastCloseTime and arm the timer for the next window so
-      // consecutive silent minutes each get a synthesized candle.
+      // Advance lastCloseTime and consecutiveSynths, then arm the timer for
+      // the next window so consecutive silent minutes each get a synthesized
+      // candle (up to the cap).
+      this.krakenSynthState.set(key, {
+        lastClose: synthState.lastClose,
+        lastCloseTime: expectedNextCloseTime,
+        consecutiveSynths: synthState.consecutiveSynths + 1,
+      });
       this.updateKrakenSynthState(key, symbol, pair, synthState.lastClose, expectedNextCloseTime);
     }, delay);
 
-    this.krakenSynthTimers.set(key, timer);
+    this.krakenSynthTimers.set(key, { timer, expectedNextCloseTime });
   }
 
   /**
@@ -571,6 +678,72 @@ export class MarketStreamManager {
       }
     }
   }
+}
+
+/**
+ * Attempt storeCandles up to 3 times with fixed exponential delays:
+ * attempt 1 → 100ms, attempt 2 → 200ms, attempt 3 → 400ms.
+ * On every failure after the first, logs a warning. Throws after the final
+ * attempt so callers can emit a metric / log the final failure.
+ *
+ * Mirrors the retry pattern used in `news/news-store.ts` and
+ * `scripts/backfill-published-day.ts`.
+ */
+async function storeCandlesWithRetry(
+  key: string,
+  candles: Parameters<typeof storeCandles>[0],
+): Promise<void> {
+  const delays = [100, 200, 400];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    try {
+      await storeCandles(candles);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const isLastAttempt = attempt === delays.length - 1;
+      if (isLastAttempt) {
+        console.error(
+          `[KrakenSynth] Failed to store synthesized candle for ${key} after ${delays.length} attempts: ${(err as Error).message}`,
+        );
+      } else {
+        console.warn(
+          `[KrakenSynth] storeCandles attempt ${attempt + 1}/${delays.length} failed for ${key}: ${(err as Error).message} — retrying in ${delays[attempt]}ms`,
+        );
+        await sleep(delays[attempt]!);
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Emit a CloudWatch `KrakenSynthDropped` metric via the Embedded Metric Format
+ * (EMF). Writing a JSON line to stdout causes CloudWatch Logs to extract the
+ * metric automatically — no @aws-sdk/client-cloudwatch package needed.
+ *
+ * This mirrors the pattern established in
+ * `ingestion/src/handlers/close-quorum-monitor.ts`.
+ */
+function emitKrakenSynthDroppedMetric(pair: string): void {
+  const emf = {
+    _aws: {
+      Timestamp: Date.now(),
+      CloudWatchMetrics: [
+        {
+          Namespace: KRAKEN_SYNTH_CW_NAMESPACE,
+          Dimensions: [["pair"]],
+          Metrics: [{ Name: "KrakenSynthDropped", Unit: "Count" }],
+        },
+      ],
+    },
+    pair,
+    KrakenSynthDropped: 1,
+  };
+  process.stdout.write(JSON.stringify(emf) + "\n");
+  console.error(
+    `[KrakenSynth] KrakenSynthDropped metric emitted for pair=${pair} — synthesized candle permanently lost`,
+  );
 }
 
 function sleep(ms: number): Promise<void> {
