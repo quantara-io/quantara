@@ -14,11 +14,12 @@ interface BackfillOptions {
   pair: TradingPair;
   timeframe: Timeframe;
   days: number;
+  force?: boolean;
   archiveToS3?: boolean;
 }
 
 export async function backfillCandles(options: BackfillOptions): Promise<number> {
-  const { exchangeId, pair, timeframe, days, archiveToS3 = true } = options;
+  const { exchangeId, pair, timeframe, days, force = false, archiveToS3 = true } = options;
 
   const metaKey = `backfill:${exchangeId}:${pair}:${timeframe}`;
   const cursor = await getCursor(metaKey);
@@ -35,7 +36,13 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
 
   const symbol = getSymbol(exchangeId, pair);
   const now = Date.now();
-  const since = cursor ? new Date(cursor.lastTimestamp).getTime() : now - days * 86400 * 1000;
+
+  if (force && cursor) {
+    console.log(`[Backfill] force=true: ignoring saved cursor`);
+  }
+
+  const since =
+    !force && cursor ? new Date(cursor.lastTimestamp).getTime() : now - days * 86400 * 1000;
 
   let fetchSince = since;
   let totalFetched = 0;

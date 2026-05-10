@@ -43,6 +43,108 @@ beforeEach(() => {
   fetchOHLCVMock.mockReset();
 });
 
+describe("backfillCandles — force flag", () => {
+  it("ignores the saved cursor and uses days lookback when force=true", async () => {
+    const now = Date.now();
+    // Cursor was saved at "yesterday" — without force, since would start from there.
+    const cursorTs = new Date(now - 24 * 3600 * 1000).toISOString();
+    getCursorMock.mockResolvedValue({
+      lastTimestamp: cursorTs,
+      status: "complete",
+      updatedAt: new Date().toISOString(),
+      metadata: {},
+    });
+
+    // Return one row on the first fetch, then empty to end the loop.
+    const openTime = now - 91 * 86400 * 1000;
+    fetchOHLCVMock
+      .mockResolvedValueOnce([[openTime, "100", "110", "90", "105", "5"]])
+      .mockResolvedValueOnce([]);
+
+    const { backfillCandles } = await import("./backfill.js");
+    await backfillCandles({
+      exchangeId: "kraken",
+      pair: "BTC/USDT",
+      timeframe: "1m",
+      days: 90,
+      force: true,
+      archiveToS3: false,
+    });
+
+    // fetchOHLCV should have been called with a `since` ≈ now - 90d, NOT the cursor.
+    const firstCallSince = fetchOHLCVMock.mock.calls[0][2] as number;
+    const expectedSince = now - 90 * 86400 * 1000;
+
+    // Allow 5 s of clock drift between when `now` was captured in the test vs the SUT.
+    expect(Math.abs(firstCallSince - expectedSince)).toBeLessThan(5_000);
+    // Confirm it is NOT starting from the cursor timestamp.
+    const cursorSince = new Date(cursorTs).getTime();
+    expect(firstCallSince).toBeLessThan(cursorSince);
+  });
+
+  it("uses the saved cursor normally when force is absent", async () => {
+    const now = Date.now();
+    const cursorTs = new Date(now - 3600 * 1000).toISOString(); // 1 hour ago
+    getCursorMock.mockResolvedValue({
+      lastTimestamp: cursorTs,
+      status: "complete",
+      updatedAt: new Date().toISOString(),
+      metadata: {},
+    });
+
+    // Return empty immediately so the loop exits fast.
+    fetchOHLCVMock.mockResolvedValue([]);
+
+    const { backfillCandles } = await import("./backfill.js");
+    await backfillCandles({
+      exchangeId: "kraken",
+      pair: "BTC/USDT",
+      timeframe: "1m",
+      days: 90,
+      archiveToS3: false,
+    });
+
+    const firstCallSince = fetchOHLCVMock.mock.calls[0][2] as number;
+    const cursorSince = new Date(cursorTs).getTime();
+
+    // Should start from the cursor, not from now - 90d.
+    expect(Math.abs(firstCallSince - cursorSince)).toBeLessThan(5_000);
+  });
+
+  it("updates the cursor after a force run (regular cursor-save behavior)", async () => {
+    const now = Date.now();
+    const cursorTs = new Date(now - 24 * 3600 * 1000).toISOString();
+    getCursorMock.mockResolvedValue({
+      lastTimestamp: cursorTs,
+      status: "complete",
+      updatedAt: new Date().toISOString(),
+      metadata: {},
+    });
+
+    const openTime = now - 91 * 86400 * 1000;
+    fetchOHLCVMock
+      .mockResolvedValueOnce([[openTime, "100", "110", "90", "105", "5"]])
+      .mockResolvedValueOnce([]);
+
+    const { backfillCandles } = await import("./backfill.js");
+    await backfillCandles({
+      exchangeId: "kraken",
+      pair: "BTC/USDT",
+      timeframe: "1m",
+      days: 90,
+      force: true,
+      archiveToS3: false,
+    });
+
+    // saveCursor must have been called (cursor updated after the run).
+    expect(saveCursorMock).toHaveBeenCalled();
+    const lastCall = saveCursorMock.mock.calls[saveCursorMock.mock.calls.length - 1][0] as {
+      status: string;
+    };
+    expect(lastCall.status).toBe("complete");
+  });
+});
+
 describe("backfillCandles — OHLCV numeric coercion", () => {
   it("stores candles with number-typed fields when CCXT returns string values (Kraken pattern)", async () => {
     const now = Date.now();
