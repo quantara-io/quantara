@@ -34,7 +34,7 @@ import type { TimeframeVote } from "@quantara/shared";
 import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
-import { putIndicatorState } from "./lib/indicator-state-store.js";
+import { putIndicatorState, getLatestIndicatorState } from "./lib/indicator-state-store.js";
 import { makeSignalId, updateSignalRatification } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
@@ -494,16 +494,6 @@ async function persistVote(
   );
 }
 
-async function readLatestVote(pair: string, tf: SignalTimeframe): Promise<TimeframeVote | null> {
-  const result = await client.send(
-    new GetCommand({
-      TableName: METADATA_TABLE,
-      Key: { metaKey: voteKey(pair, tf) },
-    }),
-  );
-  return (result.Item?.["vote"] as TimeframeVote | null | undefined) ?? null;
-}
-
 async function getFearGreed(): Promise<number | null> {
   const result = await client.send(
     new GetCommand({
@@ -649,10 +639,39 @@ async function computeBlendedSignal(
   );
 
   // Blend all 4 TF votes for this pair.
+  //
+  // Fix (#278): for non-emitting timeframes, re-score from the stored
+  // IndicatorState rather than reading the previously-persisted TimeframeVote.
+  // The stored TimeframeVote has pre-baked bullishScore/bearishScore derived
+  // from whatever rule strengths were in effect when that TF last closed.
+  // After a calibration change (e.g. Phase 1 #254), those baked-in scores are
+  // stale — the emitting TF uses current RULES while other TFs use old RULES,
+  // producing contradictory perTimeframe snapshots in the written signal.
+  //
+  // IndicatorState is a pure sensor snapshot (candle → indicator numerics)
+  // that is independent of rule calibration. Re-running scoreTimeframe on a
+  // stored IndicatorState with the current RULES produces scores that reflect
+  // the latest calibration on every emission, not just when that TF's own bar
+  // closes. If no IndicatorState is available for a TF (first boot, cold start)
+  // we fall back to the stored vote (null if never scored) — same as before.
   const votes = await Promise.all(
     SIGNAL_TIMEFRAMES.map(async (t) => {
-      const v = await readLatestVote(pair, t);
-      return [t, v] as const;
+      // Emitting TF: vote was freshly computed and persisted above — use it directly.
+      if (t === tf) {
+        return [t, vote] as const;
+      }
+
+      // Non-emitting TF: re-score from stored IndicatorState so scores always
+      // reflect current RULES regardless of when that TF's bar last closed.
+      const storedState = await getLatestIndicatorState(pair, "consensus", t);
+      if (storedState !== null) {
+        const tfLastFireBars = await getLastFireBars(pair, t);
+        const recomputedVote = scoreTimeframe(storedState, RULES, tfLastFireBars);
+        return [t, recomputedVote] as const;
+      }
+
+      // Fallback: no IndicatorState yet for this TF (cold start). Treat as null.
+      return [t, null] as const;
     }),
   );
 
