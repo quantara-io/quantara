@@ -11,8 +11,8 @@
 #
 # This file also adds:
 #   - Producer Put grants on `pipeline_events` for indicator-handler,
-#     aggregator-handler, enrichment, and the API Lambda (ratify path
-#     via WebSocket-emit shares the API Lambda's role).
+#     aggregator-handler, enrichment, close-quorum-monitor, and the API
+#     Lambda (ratify path via WebSocket-emit shares the API Lambda's role).
 #   - signals-fanout & ws-connect IAM grants extended for the new
 #     channel-index GSI on connection-registry.
 # ---------------------------------------------------------------------------
@@ -183,6 +183,20 @@ resource "aws_iam_role_policy" "aggregator_pipeline_events" {
 resource "aws_iam_role_policy" "enrichment_pipeline_events" {
   name = "${local.prefix}-enrichment-pipeline-events"
   role = aws_iam_role.enrichment_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:PutItem"]
+      Resource = [aws_dynamodb_table.pipeline_events.arn]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "close_quorum_monitor_pipeline_events" {
+  name = "${local.prefix}-close-quorum-monitor-pipeline-events"
+  role = aws_iam_role.close_quorum_monitor_lambda.id
 
   policy = jsonencode({
     Version = "2012-10-17"

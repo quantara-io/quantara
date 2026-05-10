@@ -248,4 +248,57 @@ describe("events-fanout handler", () => {
     expect(ddbSend).toHaveBeenCalledTimes(1); // Query only — no Delete (no Gone)
     expect(postToConnectionMock).not.toHaveBeenCalled();
   });
+
+  it("queries the subscriber registry once per batch, not once per record", async () => {
+    // Single subscriber — verifies the loop runs N times for postToConnection
+    // but findEventSubscribers is hoisted to a single Query.
+    ddbSend.mockResolvedValue({
+      Items: [{ connectionId: "c1", userId: "u1" }],
+      LastEvaluatedKey: undefined,
+    });
+    postToConnectionMock.mockResolvedValue({});
+
+    const { handler } = await import("./events-fanout.js");
+    await handler(
+      {
+        Records: [
+          makeInsertRecord({
+            eventId: "evt-1",
+            ts: "2026-05-09T12:00:01Z",
+            type: "signal-emitted",
+            pair: "BTC/USDT",
+            timeframe: "15m",
+            signalType: "buy",
+            confidence: 0.8,
+            closeTime: "2026-05-09T12:00:00Z",
+          }),
+          makeInsertRecord({
+            eventId: "evt-2",
+            ts: "2026-05-09T12:00:02Z",
+            type: "signal-emitted",
+            pair: "ETH/USDT",
+            timeframe: "1h",
+            signalType: "sell",
+            confidence: 0.7,
+            closeTime: "2026-05-09T12:00:00Z",
+          }),
+          makeInsertRecord({
+            eventId: "evt-3",
+            ts: "2026-05-09T12:00:03Z",
+            type: "quorum-failed",
+            pair: "SOL/USDT",
+            timeframe: "15m",
+            closeTime: "2026-05-09T12:00:00Z",
+          }),
+        ],
+      } as Parameters<typeof handler>[0],
+      {} as Parameters<typeof handler>[1],
+      () => undefined,
+    );
+
+    // One Query for the whole batch (hoisted), not one per record.
+    expect(ddbSend).toHaveBeenCalledTimes(1);
+    // 3 records × 1 subscriber = 3 postToConnection calls.
+    expect(postToConnectionMock).toHaveBeenCalledTimes(3);
+  });
 });

@@ -137,9 +137,12 @@ async function deleteStaleConnection(connectionId: string): Promise<void> {
 // Process a single DDB stream record
 // ---------------------------------------------------------------------------
 
-async function processRecord(record: DynamoDBRecord): Promise<void> {
-  // Only care about new events (INSERT), not TTL deletes (REMOVE).
-  if (record.eventName !== "INSERT") return;
+async function processRecord(
+  record: DynamoDBRecord,
+  subscribers: EventsRegistryRow[],
+): Promise<void> {
+  // Caller pre-filtered to INSERTs; guard NewImage anyway in case the
+  // stream payload is malformed.
   if (!record.dynamodb?.NewImage) return;
 
   const item = unmarshall(record.dynamodb.NewImage as Parameters<typeof unmarshall>[0]);
@@ -151,19 +154,6 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     { eventType: event.type, eventId: item["eventId"], ts: event.ts },
     "events-fanout: processing event",
   );
-
-  let subscribers: EventsRegistryRow[];
-  try {
-    subscribers = await findEventSubscribers();
-  } catch (err) {
-    logger.error({ err }, "events-fanout: registry scan failed, skipping record");
-    return;
-  }
-
-  if (subscribers.length === 0) {
-    logger.info({ eventType: event.type }, "events-fanout: no events subscribers, skipping");
-    return;
-  }
 
   // Omit DDB-internal fields before forwarding to clients.
   const { eventId: _eventId, ttl: _ttl, ...clientPayload } = event;
@@ -198,11 +188,40 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export const handler: DynamoDBStreamHandler = async (event) => {
-  logger.info({ recordCount: event.Records.length }, "events-fanout: batch received");
+  // Filter to INSERTs first — TTL deletes (REMOVE) and updates (MODIFY) need
+  // no fanout, and skipping them upfront lets us avoid the registry Query
+  // entirely on batches that contain only non-INSERT noise.
+  const insertRecords = event.Records.filter((r) => r.eventName === "INSERT");
 
-  for (const record of event.Records) {
+  logger.info(
+    { recordCount: event.Records.length, insertCount: insertRecords.length },
+    "events-fanout: batch received",
+  );
+
+  if (insertRecords.length === 0) return;
+
+  // Hoist subscriber lookup out of the per-record loop — the subscriber set
+  // is identical for every record in the batch, so a Query-per-record was
+  // O(N) DDB reads when O(1) suffices.
+  let subscribers: EventsRegistryRow[];
+  try {
+    subscribers = await findEventSubscribers();
+  } catch (err) {
+    logger.error({ err }, "events-fanout: registry scan failed, skipping batch");
+    return;
+  }
+
+  if (subscribers.length === 0) {
+    logger.info(
+      { insertCount: insertRecords.length },
+      "events-fanout: no events subscribers, skipping batch",
+    );
+    return;
+  }
+
+  for (const record of insertRecords) {
     try {
-      await processRecord(record);
+      await processRecord(record, subscribers);
     } catch (err) {
       logger.error({ eventId: record.eventID, err }, "events-fanout: unhandled record error");
     }

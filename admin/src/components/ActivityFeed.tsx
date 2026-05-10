@@ -25,6 +25,12 @@ import { getAccessToken } from "../lib/auth";
 const WS_BASE = (import.meta.env.VITE_WS_BASE as string | undefined) ?? "wss://ws.dev.quantara.io";
 const MAX_EVENTS = 500;
 
+// API Gateway WebSocket connections drop on idle/timeout, so reconnect with
+// exponential backoff (mirrors Genie.tsx) and surface "disconnected" once
+// retries are exhausted so the user knows to refresh.
+const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // Event type metadata
 // ---------------------------------------------------------------------------
@@ -125,6 +131,10 @@ export function ActivityFeed() {
   const queueRef = useRef<FeedEntry[]>([]);
   const pausedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const intentionalCloseRef = useRef(false);
 
   // Keep pausedRef in sync so the WS message handler can read it without
   // closing over stale state.
@@ -148,47 +158,80 @@ export function ActivityFeed() {
     }
   }, [allEntries, autoScroll]);
 
-  // WebSocket connection
+  // WebSocket connection — auto-reconnects with exponential backoff up to
+  // MAX_RECONNECT_ATTEMPTS, then surfaces "disconnected" permanently.
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) {
-      setStatus("disconnected");
-      return;
-    }
+    intentionalCloseRef.current = false;
 
-    const url = `${WS_BASE}?channel=events&token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(url);
-
-    ws.onopen = () => setStatus("connected");
-    ws.onclose = () => setStatus("disconnected");
-    ws.onerror = () => setStatus("disconnected");
-
-    ws.onmessage = (msg: MessageEvent<string>) => {
-      let event: PipelineEvent;
-      try {
-        event = JSON.parse(msg.data) as PipelineEvent;
-      } catch {
-        return; // ignore malformed messages
+    function connect() {
+      const token = getAccessToken();
+      if (!token) {
+        setStatus("disconnected");
+        return;
       }
 
-      const entry: FeedEntry = {
-        id: nextId++,
-        receivedAt: new Date().toISOString(),
-        event,
+      setStatus("connecting");
+      const url = `${WS_BASE}?channel=events&token=${encodeURIComponent(token)}`;
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        reconnectAttemptRef.current = 0;
+        setStatus("connected");
       };
 
-      if (pausedRef.current) {
-        queueRef.current = [...queueRef.current, entry].slice(-MAX_EVENTS);
-      } else {
-        setAllEntries((prev) => {
-          const next = [...prev, entry];
-          return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
-        });
-      }
-    };
+      ws.onmessage = (msg: MessageEvent<string>) => {
+        let event: PipelineEvent;
+        try {
+          event = JSON.parse(msg.data) as PipelineEvent;
+        } catch {
+          return; // ignore malformed messages
+        }
+
+        const entry: FeedEntry = {
+          id: nextId++,
+          receivedAt: new Date().toISOString(),
+          event,
+        };
+
+        if (pausedRef.current) {
+          queueRef.current = [...queueRef.current, entry].slice(-MAX_EVENTS);
+        } else {
+          setAllEntries((prev) => {
+            const next = [...prev, entry];
+            return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
+          });
+        }
+      };
+
+      ws.onclose = () => {
+        if (intentionalCloseRef.current) return;
+        const attempt = reconnectAttemptRef.current++;
+        if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+          setStatus("disconnected");
+          return;
+        }
+        setStatus("connecting");
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s.
+        const delay = Math.min(1000 * 2 ** attempt, MAX_RECONNECT_DELAY_MS);
+        reconnectTimerRef.current = window.setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        // onerror is followed by onclose — let onclose drive the reconnect.
+      };
+    }
+
+    connect();
 
     return () => {
-      ws.close();
+      intentionalCloseRef.current = true;
+      if (reconnectTimerRef.current != null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      wsRef.current?.close();
+      wsRef.current = null;
     };
   }, []);
 
