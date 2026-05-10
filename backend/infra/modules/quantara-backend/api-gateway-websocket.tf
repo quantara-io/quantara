@@ -63,12 +63,25 @@ resource "aws_apigatewayv2_route" "ws_connect" {
   target    = "integrations/${aws_apigatewayv2_integration.ws_connect.id}"
 }
 
+# depends_on + replace_triggered_by mirror the pattern established in
+# lambda-higher-tf-poller.tf (issues #260 and #289): when the Lambda is
+# replaced (its replace_triggered_by = [terraform_data.ingestion_build] in
+# lambda-websocket.tf:91-96 will cycle the function on every source-hash
+# change), the old resource policy is wiped; both this permission and the
+# Lambda must be destroyed and recreated in the same apply to keep API
+# Gateway invoke access intact, otherwise WebSocket clients see 5xx.
 resource "aws_lambda_permission" "ws_connect_api_gateway" {
   statement_id  = "AllowWebSocketConnectAPIGateway"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.ws_connect.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.websocket.execution_arn}/*/*"
+
+  depends_on = [aws_lambda_function.ws_connect]
+
+  lifecycle {
+    replace_triggered_by = [aws_lambda_function.ws_connect]
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -88,12 +101,21 @@ resource "aws_apigatewayv2_route" "ws_disconnect" {
   target    = "integrations/${aws_apigatewayv2_integration.ws_disconnect.id}"
 }
 
+# Same depends_on + replace_triggered_by pattern as ws_connect_api_gateway
+# above. lambda-websocket.tf:164-169 replaces ws_disconnect on every source
+# hash change; the permission must cycle in lockstep.
 resource "aws_lambda_permission" "ws_disconnect_api_gateway" {
   statement_id  = "AllowWebSocketDisconnectAPIGateway"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.ws_disconnect.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.websocket.execution_arn}/*/*"
+
+  depends_on = [aws_lambda_function.ws_disconnect]
+
+  lifecycle {
+    replace_triggered_by = [aws_lambda_function.ws_disconnect]
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -101,8 +123,8 @@ resource "aws_lambda_permission" "ws_disconnect_api_gateway" {
 # ---------------------------------------------------------------------------
 
 resource "aws_apigatewayv2_route" "ws_default" {
-  api_id             = aws_apigatewayv2_api.websocket.id
-  route_key          = "$default"
+  api_id                              = aws_apigatewayv2_api.websocket.id
+  route_key                           = "$default"
   route_response_selection_expression = "$default"
-  target             = "integrations/${aws_apigatewayv2_integration.ws_connect.id}"
+  target                              = "integrations/${aws_apigatewayv2_integration.ws_connect.id}"
 }

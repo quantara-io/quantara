@@ -143,10 +143,20 @@ resource "aws_cloudwatch_event_target" "aggregator_lambda" {
   arn  = aws_lambda_function.aggregator.arn
 }
 
+# depends_on + replace_triggered_by mirror the pattern established in
+# lambda-higher-tf-poller.tf (issues #260 and #289): when the Lambda is
+# replaced the old resource policy is wiped; both resources must be destroyed
+# and recreated in the same apply to keep EventBridge invoke access intact.
 resource "aws_lambda_permission" "aggregator_eventbridge" {
   statement_id  = "AllowEventBridge"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.aggregator.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.aggregator_schedule.arn
+
+  depends_on = [aws_lambda_function.aggregator]
+
+  lifecycle {
+    replace_triggered_by = [aws_lambda_function.aggregator]
+  }
 }
