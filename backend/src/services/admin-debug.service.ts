@@ -81,23 +81,28 @@ const INGESTION_METADATA_TABLE =
 // Sonnet 4.6 input/output pricing as of 2026-Q1: $3 / $15 per 1M tokens.
 // ---------------------------------------------------------------------------
 
-// Bedrock cross-region inference profile id for Sonnet 4.6. The bare
-// foundation-model id `anthropic.claude-sonnet-4-6` resolves in the Bedrock
-// catalog but **cannot be invoked on-demand** — Bedrock returns:
+// Bedrock cross-region inference profile id for the ratification model.
+// Default = Sonnet 4.6 (production behavior). Dev overrides via the
+// `RATIFICATION_MODEL_ID` env var to use Haiku 4.5 (~12x cheaper) so
+// debug iteration doesn't burn the Sonnet budget.
+//
+// Bedrock requires the inference-profile id, not the bare foundation-model
+// id, for on-demand invocation of newer Anthropic models — a foundation-model
+// id like `anthropic.claude-sonnet-4-6` resolves in the catalog but returns:
 //
 //   ValidationException: Invocation of model ID anthropic.claude-sonnet-4-6
 //     with on-demand throughput isn't supported. Retry your request with
 //     the ID or ARN of an inference profile that contains this model.
-//
-// (Verified live in dev after PR #217 deployed.) Newer Anthropic models on
-// Bedrock are inference-profile-only — direct foundation-model invocation
-// is reserved for provisioned-throughput contracts.
-//
-// `us.anthropic.claude-sonnet-4-6` is the cross-region (US) inference
-// profile that wraps the same model, callable on-demand.
-const RATIFICATION_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
-const SONNET_INPUT_COST_PER_1K = 0.003;
-const SONNET_OUTPUT_COST_PER_1K = 0.015;
+const DEFAULT_RATIFICATION_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
+const RATIFICATION_MODEL_ID = process.env.RATIFICATION_MODEL_ID ?? DEFAULT_RATIFICATION_MODEL_ID;
+
+// Per-1K-token pricing keyed off the model family so cost accounting stays
+// correct regardless of dev/prod override.
+//   Sonnet 4.x: $3 in  / $15 out  per 1M tokens
+//   Haiku 4.5:  $0.25 in / $1.25 out per 1M tokens (~12x cheaper)
+const IS_HAIKU_MODEL = RATIFICATION_MODEL_ID.includes("haiku");
+const RATIFICATION_INPUT_COST_PER_1K = IS_HAIKU_MODEL ? 0.00025 : 0.003;
+const RATIFICATION_OUTPUT_COST_PER_1K = IS_HAIKU_MODEL ? 0.00125 : 0.015;
 
 // Daily cap on debug-driven LLM calls — applied PER-PAIR (the cap query
 // uses pair as the partition key). With 5 trading pairs this is up to 1000
@@ -358,8 +363,8 @@ Rate this signal's validity and provide your reasoning in 2-3 sentences.`;
 
   const latencyMs = Date.now() - startMs;
   const costUsd =
-    (inputTokens / 1000) * SONNET_INPUT_COST_PER_1K +
-    (outputTokens / 1000) * SONNET_OUTPUT_COST_PER_1K;
+    (inputTokens / 1000) * RATIFICATION_INPUT_COST_PER_1K +
+    (outputTokens / 1000) * RATIFICATION_OUTPUT_COST_PER_1K;
 
   // --- Persist ratification record ---
   const recordId = randomUUID();
