@@ -132,16 +132,10 @@ export function Market() {
                       <td className="py-1 text-muted">
                         {new Date(c.openTime).toLocaleTimeString()}
                       </td>
-                      <td className="py-1 text-ink2">
-                        {c.open?.toFixed?.(c.open < 1 ? 6 : 2)}
-                      </td>
-                      <td className="py-1 text-up">
-                        {c.high?.toFixed?.(c.high < 1 ? 6 : 2)}
-                      </td>
+                      <td className="py-1 text-ink2">{c.open?.toFixed?.(c.open < 1 ? 6 : 2)}</td>
+                      <td className="py-1 text-up">{c.high?.toFixed?.(c.high < 1 ? 6 : 2)}</td>
                       <td className="py-1 text-down">{c.low?.toFixed?.(c.low < 1 ? 6 : 2)}</td>
-                      <td className="py-1 text-ink2">
-                        {c.close?.toFixed?.(c.close < 1 ? 6 : 2)}
-                      </td>
+                      <td className="py-1 text-ink2">{c.close?.toFixed?.(c.close < 1 ? 6 : 2)}</td>
                       <td className="py-1 text-muted2">{c.volume?.toFixed?.(2)}</td>
                     </tr>
                   ))}

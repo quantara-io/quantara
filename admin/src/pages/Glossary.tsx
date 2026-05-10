@@ -223,9 +223,7 @@ export function Glossary() {
                     <a
                       href={`#${key}`}
                       className={`block px-2 py-1 rounded text-xs transition-colors ${
-                        activeKey === key
-                          ? "bg-sunken text-brand"
-                          : "text-muted hover:text-ink"
+                        activeKey === key ? "bg-sunken text-brand" : "text-muted hover:text-ink"
                       }`}
                     >
                       {GLOSSARY[key].label}
@@ -266,11 +264,7 @@ export function Glossary() {
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {keys.map((key) => (
-                      <a
-                        key={key}
-                        href={`#${key}`}
-                        className="text-xs text-muted hover:text-ink"
-                      >
+                      <a key={key} href={`#${key}`} className="text-xs text-muted hover:text-ink">
                         {GLOSSARY[key].label}
                       </a>
                     ))}

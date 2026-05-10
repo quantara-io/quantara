@@ -61,8 +61,8 @@ export function Whitelist() {
       <div>
         <h1 className="text-base font-semibold text-ink">Docs IP Allowlist</h1>
         <p className="text-xs text-muted2 mt-1">
-          Controls who can access <code className="text-muted">/api/docs/*</code>. Accepts
-          single IPs or CIDR blocks (IPv4 or IPv6). Cached 5 min on the Lambda.
+          Controls who can access <code className="text-muted">/api/docs/*</code>. Accepts single
+          IPs or CIDR blocks (IPv4 or IPv6). Cached 5 min on the Lambda.
         </p>
       </div>
 
@@ -83,9 +83,7 @@ export function Whitelist() {
         <>
           <div className="rounded-lg border border-line bg-surface p-3 space-y-2">
             {ips.length === 0 && (
-              <p className="text-xs text-muted2">
-                No entries — list is empty (denies everyone).
-              </p>
+              <p className="text-xs text-muted2">No entries — list is empty (denies everyone).</p>
             )}
             {ips.map((ip) => (
               <div key={ip} className="flex items-center justify-between text-sm">

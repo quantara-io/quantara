@@ -323,9 +323,7 @@ function Stat({ label, value, valueClass }: { label: string; value: string; valu
   return (
     <div>
       <div className="text-[10px] uppercase tracking-widest text-muted2">{label}</div>
-      <div className={`text-lg font-semibold mt-0.5 ${valueClass ?? "text-ink"}`}>
-        {value}
-      </div>
+      <div className={`text-lg font-semibold mt-0.5 ${valueClass ?? "text-ink"}`}>{value}</div>
     </div>
   );
 }

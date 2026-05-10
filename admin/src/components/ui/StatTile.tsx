@@ -16,13 +16,7 @@ const toneMap = {
   brand: "text-brand",
 };
 
-export function StatTile({
-  label,
-  value,
-  sub,
-  tone = "default",
-  align = "left",
-}: StatTileProps) {
+export function StatTile({ label, value, sub, tone = "default", align = "left" }: StatTileProps) {
   return (
     <div
       className={`rounded-md border border-line bg-surface px-4 py-3 ${

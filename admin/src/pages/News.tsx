@@ -141,9 +141,7 @@ function SentimentChip({ item }: { item: NewsItem }) {
     );
   }
   return (
-    <span className="px-1.5 py-0.5 rounded bg-sunken text-muted text-[11px]">
-      neutral{magStr}
-    </span>
+    <span className="px-1.5 py-0.5 rounded bg-sunken text-muted text-[11px]">neutral{magStr}</span>
   );
 }
 
@@ -176,9 +174,7 @@ function UsageCard({ usage }: { usage: NewsUsage }) {
           <div className="text-[11px] text-muted2 mt-0.5">Output tokens</div>
         </div>
         <div>
-          <div className="text-xl font-semibold text-up">
-            ${usage.estimatedCostUsd.toFixed(4)}
-          </div>
+          <div className="text-xl font-semibold text-up">${usage.estimatedCostUsd.toFixed(4)}</div>
           <div className="text-[11px] text-muted2 mt-0.5">Est. cost (USD)</div>
         </div>
       </div>

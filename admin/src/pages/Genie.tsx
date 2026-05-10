@@ -186,9 +186,7 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-base font-semibold text-ink">{signal.pair}</h2>
         <TypeBadge type={signal.type} />
-        <span className="text-sm text-ink2 font-mono">
-          {Math.round(signal.confidence * 100)}%
-        </span>
+        <span className="text-sm text-ink2 font-mono">{Math.round(signal.confidence * 100)}%</span>
         {signal.volatilityFlag && <VolatilityChip />}
         {signal.gateReason != null && <GateChip reason={signal.gateReason} />}
       </div>
@@ -333,9 +331,7 @@ function PerTimeframeTable({
 }) {
   return (
     <div>
-      <p className="text-[11px] text-muted2 uppercase tracking-widest mb-1">
-        Timeframe breakdown
-      </p>
+      <p className="text-[11px] text-muted2 uppercase tracking-widest mb-1">Timeframe breakdown</p>
       <table className="w-full text-xs">
         <thead>
           <tr className="text-muted2">
@@ -408,9 +404,7 @@ function RiskBlock({ risk }: { risk: RiskRecommendation }) {
                 <tr key={i} className="border-t border-line/60">
                   <td className="py-0.5 text-muted2">TP{i + 1}</td>
                   <td className="py-0.5 text-up font-mono">{formatPrice(tp.price)}</td>
-                  <td className="py-0.5 text-ink2 font-mono">
-                    {(tp.closePct * 100).toFixed(0)}%
-                  </td>
+                  <td className="py-0.5 text-ink2 font-mono">{(tp.closePct * 100).toFixed(0)}%</td>
                   <td className="py-0.5 text-ink2 font-mono">{tp.rMultiple.toFixed(1)}R</td>
                 </tr>
               ))}

@@ -1,12 +1,6 @@
 import type { ReactNode } from "react";
 
-export function MonoNum({
-  children,
-  className = "",
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
+export function MonoNum({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <span className={`num ${className}`}>{children}</span>;
 }
 

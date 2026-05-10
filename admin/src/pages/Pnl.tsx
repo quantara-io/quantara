@@ -206,8 +206,8 @@ export function Pnl() {
               <HelpTooltip label="Simulation assumptions" position="bottom">
                 <ul className="space-y-1 list-disc list-inside text-muted">
                   <li>
-                    Signals are executed at{" "}
-                    <span className="text-ink2">emit-bar close price</span> (priceAtSignal).
+                    Signals are executed at <span className="text-ink2">emit-bar close price</span>{" "}
+                    (priceAtSignal).
                   </li>
                   <li>No slippage, no partial fills, no order-book effects.</li>
                   <li>Fixed position size per trade — no real risk sizing.</li>

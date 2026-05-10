@@ -489,9 +489,7 @@ export function Ratifications() {
                     {row.cacheHit ? "HIT" : "MISS"}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-muted text-right tabular-nums">
-                  {row.latencyMs}ms
-                </td>
+                <td className="px-3 py-2 text-muted text-right tabular-nums">{row.latencyMs}ms</td>
                 <td className="px-3 py-2 text-muted text-right tabular-nums">
                   ${row.costUsd.toFixed(5)}
                 </td>

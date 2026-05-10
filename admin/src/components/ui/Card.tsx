@@ -28,10 +28,7 @@ export function Card({
   ...rest
 }: CardProps) {
   return (
-    <div
-      className={`rounded-md ${toneMap[tone]} ${paddingMap[padding]} ${className}`}
-      {...rest}
-    >
+    <div className={`rounded-md ${toneMap[tone]} ${paddingMap[padding]} ${className}`} {...rest}>
       {children}
     </div>
   );

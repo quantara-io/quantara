@@ -48,10 +48,7 @@ export function DataTable<T>({
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td
-                colSpan={columns.length}
-                className={`${cellPad} text-center text-sm text-muted2`}
-              >
+              <td colSpan={columns.length} className={`${cellPad} text-center text-sm text-muted2`}>
                 {empty}
               </td>
             </tr>

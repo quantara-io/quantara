@@ -161,9 +161,7 @@ function Stat({
         {label}
         {tooltip}
       </span>
-      <span
-        className={`text-[11px] font-mono tabular-nums truncate ${valueClass ?? "text-ink2"}`}
-      >
+      <span className={`text-[11px] font-mono tabular-nums truncate ${valueClass ?? "text-ink2"}`}>
         {value}
       </span>
     </div>
@@ -376,9 +374,7 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
                 Cancel
               </button>
             )}
-            {ratError && (
-              <p className="text-xs text-down bg-down-soft rounded p-2">{ratError}</p>
-            )}
+            {ratError && <p className="text-xs text-down bg-down-soft rounded p-2">{ratError}</p>}
             {ratResult && (
               <div className="text-[11px] bg-surface rounded p-2 space-y-1">
                 <div className="flex items-center gap-2">
@@ -471,9 +467,7 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
 
         {/* Sentiment detail */}
         <section>
-          <h3 className="text-xs uppercase tracking-widest text-muted2 mb-2">
-            Sentiment Detail
-          </h3>
+          <h3 className="text-xs uppercase tracking-widest text-muted2 mb-2">Sentiment Detail</h3>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-muted2">
@@ -552,10 +546,7 @@ function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void
       <div className="fixed inset-x-4 top-1/4 max-w-sm mx-auto bg-surface border border-line rounded-xl shadow-2xl z-40 p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink">Inject Sentiment Shock</h2>
-          <button
-            onClick={onClose}
-            className="text-muted2 hover:text-ink text-lg leading-none"
-          >
+          <button onClick={onClose} className="text-muted2 hover:text-ink text-lg leading-none">
             &times;
           </button>
         </div>
