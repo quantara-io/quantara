@@ -9,11 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  computeTradePnl,
-  buildEquityCurve,
-  computeDrawdown,
-} from "./pnl-simulation.service.js";
+import { computeTradePnl, buildEquityCurve, computeDrawdown } from "./pnl-simulation.service.js";
 
 // ---------------------------------------------------------------------------
 // Mock DynamoDB at the SDK boundary so getPnlSimulation doesn't need real AWS.
@@ -182,7 +178,7 @@ describe("computeDrawdown", () => {
       { ts: "2026-01-03T00:00:00.000Z", cumulativeUsd: 30 }, // peak
       { ts: "2026-01-04T00:00:00.000Z", cumulativeUsd: 20 },
       { ts: "2026-01-05T00:00:00.000Z", cumulativeUsd: 10 },
-      { ts: "2026-01-06T00:00:00.000Z", cumulativeUsd: 5 },  // trough
+      { ts: "2026-01-06T00:00:00.000Z", cumulativeUsd: 5 }, // trough
     ];
     const dd = computeDrawdown(curve);
     expect(dd.maxUsd).toBeCloseTo(25, 4);
@@ -212,5 +208,77 @@ describe("computeDrawdown", () => {
     const dd = computeDrawdown(curve);
     expect(dd.maxUsd).toBeCloseTo(5, 4);
     expect(dd.durationDays).toBeCloseTo(0.5, 4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getPnlSimulation — direction filter
+// ---------------------------------------------------------------------------
+
+describe("getPnlSimulation direction filter", () => {
+  // Mixed fixture: 1 winning long (buy 100→110) and 1 winning short (sell 100→90).
+  // Both trade $100 position, 5 bps fee → ~$9.95 net each.
+  const mixedItems = [
+    {
+      pair: "BTC/USDT",
+      signalId: "s1",
+      type: "buy",
+      outcome: "correct",
+      priceAtSignal: 100,
+      priceAtResolution: 110,
+      resolvedAt: "2026-01-01T00:00:00.000Z",
+      emittingTimeframe: "1h",
+    },
+    {
+      pair: "BTC/USDT",
+      signalId: "s2",
+      type: "sell",
+      outcome: "correct",
+      priceAtSignal: 100,
+      priceAtResolution: 90,
+      resolvedAt: "2026-01-02T00:00:00.000Z",
+      emittingTimeframe: "1h",
+    },
+  ];
+
+  // Stub Query: first call for BTC returns mixed items, all other pair queries
+  // return empty (mimics single-pair test without imposing a pair filter).
+  // QueryCommand is mocked to return its input directly (see vi.mock above),
+  // so the cmd passed to send() is the QueryCommand input shape.
+  function stubMixedThenEmpty() {
+    sendMock.mockImplementation((cmd: { ExpressionAttributeValues?: { ":pair"?: string } }) => {
+      const pair = cmd.ExpressionAttributeValues?.[":pair"];
+      if (pair === "BTC/USDT") {
+        return Promise.resolve({ Items: mixedItems, LastEvaluatedKey: undefined });
+      }
+      return Promise.resolve({ Items: [], LastEvaluatedKey: undefined });
+    });
+  }
+
+  it("'long' keeps only buy trades — different equity curve from 'both'", async () => {
+    stubMixedThenEmpty();
+    const { getPnlSimulation } = await import("./pnl-simulation.service.js");
+
+    const both = await getPnlSimulation({ direction: "both" });
+    const longOnly = await getPnlSimulation({ direction: "long" });
+
+    expect(both.trades.count).toBe(2);
+    expect(longOnly.trades.count).toBe(1);
+    // Long-only equity curve must differ: 1 point vs 2.
+    expect(longOnly.equityCurve.length).toBeLessThan(both.equityCurve.length);
+    expect(longOnly.pnl.totalUsd).toBeCloseTo(9.95, 6);
+  });
+
+  it("'short' keeps only sell trades — different equity curve from 'both'", async () => {
+    stubMixedThenEmpty();
+    const { getPnlSimulation } = await import("./pnl-simulation.service.js");
+
+    const both = await getPnlSimulation({ direction: "both" });
+    const shortOnly = await getPnlSimulation({ direction: "short" });
+
+    expect(both.trades.count).toBe(2);
+    expect(shortOnly.trades.count).toBe(1);
+    expect(shortOnly.equityCurve.length).toBeLessThan(both.equityCurve.length);
+    expect(shortOnly.pnl.totalUsd).toBeCloseTo(9.95, 6);
   });
 });

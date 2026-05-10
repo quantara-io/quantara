@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { PAIRS } from "@quantara/shared";
 import { apiFetch } from "../lib/api";
 
 // ---------------------------------------------------------------------------
@@ -39,7 +40,6 @@ interface PnlResult {
 
 type DirectionFilter = "both" | "long" | "short";
 
-const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
 const TIMEFRAMES = ["15m", "1h", "4h", "1d"];
 const WINDOWS = [
   { label: "7d", days: 7 },
@@ -68,28 +68,39 @@ export function Pnl() {
   const [pairSort, setPairSort] = useState<"pnl" | "winRate" | "trades">("pnl");
   const [tfSort, setTfSort] = useState<"pnl" | "winRate" | "trades">("pnl");
 
+  const abortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
-    let cancelled = false;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     setError("");
 
     const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-    const qs = new URLSearchParams({ since, positionSize: String(positionSize), feeBps: String(feeBps) });
+    const qs = new URLSearchParams({
+      since,
+      positionSize: String(positionSize),
+      feeBps: String(feeBps),
+      direction,
+    });
     if (pair !== "all") qs.set("pair", pair);
     if (timeframe !== "all") qs.set("timeframe", timeframe);
 
-    void apiFetch<PnlResult>(`/api/admin/pnl-simulation?${qs.toString()}`).then((res) => {
-      if (cancelled) return;
+    void apiFetch<PnlResult>(`/api/admin/pnl-simulation?${qs.toString()}`, {
+      signal: controller.signal,
+    }).then((res) => {
+      if (controller.signal.aborted) return;
       setLoading(false);
       if (res.success && res.data) {
         setData(res.data);
-      } else {
+      } else if (res.error?.code !== "ABORTED") {
         setError(res.error?.message ?? "Failed to load simulation");
       }
     });
 
-    return () => { cancelled = true; };
-  }, [windowDays, pair, timeframe, positionSize, feeBps]);
+    return () => controller.abort();
+  }, [windowDays, pair, timeframe, positionSize, feeBps, direction]);
 
   return (
     <div className="space-y-4">
@@ -97,18 +108,30 @@ export function Pnl() {
       <div className="flex flex-wrap gap-3 items-end">
         <FilterRow label="Window">
           {WINDOWS.map((w) => (
-            <ToggleBtn key={w.days} active={windowDays === w.days} onClick={() => setWindowDays(w.days)}>
+            <ToggleBtn
+              key={w.days}
+              active={windowDays === w.days}
+              onClick={() => setWindowDays(w.days)}
+            >
               {w.label}
             </ToggleBtn>
           ))}
         </FilterRow>
 
         <FilterRow label="Pair">
-          <Selector value={pair} onChange={setPair} options={[["all", "All pairs"], ...PAIRS.map((p) => [p, p] as [string, string])]} />
+          <Selector
+            value={pair}
+            onChange={setPair}
+            options={[["all", "All pairs"], ...PAIRS.map((p) => [p, p] as [string, string])]}
+          />
         </FilterRow>
 
         <FilterRow label="Timeframe">
-          <Selector value={timeframe} onChange={setTimeframe} options={[["all", "All TFs"], ...TIMEFRAMES.map((t) => [t, t] as [string, string])]} />
+          <Selector
+            value={timeframe}
+            onChange={setTimeframe}
+            options={[["all", "All TFs"], ...TIMEFRAMES.map((t) => [t, t] as [string, string])]}
+          />
         </FilterRow>
 
         <FilterRow label="Direction">
@@ -127,10 +150,6 @@ export function Pnl() {
           <NumInput value={feeBps} min={0} onChange={setFeeBps} />
         </FilterRow>
       </div>
-
-      {/* Note: direction filter is client-side only — the backend returns both long and short
-          trades, so the equity curve is based on the full result. Direction affects the per-pair/TF
-          tables displayed but not the headline equity curve fetched from the server. */}
 
       {error && (
         <div className="p-3 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
@@ -159,10 +178,7 @@ export function Pnl() {
               sub={`${(data.drawdown.maxPct * 100).toFixed(1)}%`}
               valueClass="text-orange-400"
             />
-            <Hero
-              label="DD Duration"
-              value={`${data.drawdown.durationDays.toFixed(1)}d`}
-            />
+            <Hero label="DD Duration" value={`${data.drawdown.durationDays.toFixed(1)}d`} />
           </div>
 
           {/* Secondary hero row */}
@@ -214,7 +230,8 @@ export function Pnl() {
           </div>
 
           <p className="text-xs text-slate-600">
-            Window: {new Date(data.windowStart).toLocaleDateString()} – {new Date(data.windowEnd).toLocaleDateString()}
+            Window: {new Date(data.windowStart).toLocaleDateString()} –{" "}
+            {new Date(data.windowEnd).toLocaleDateString()}
             {" · "}Position: ${positionSize} · Fee: {feeBps} bps round-trip
           </p>
         </>
@@ -266,7 +283,9 @@ function EquityCurveChart({ curve }: { curve: EquityCurvePoint[] }) {
   const toY = (v: number) => PAD.top + innerH - ((v - minVal) / range) * innerH;
 
   // Build polyline points.
-  const points = curve.map((p, i) => `${toX(i).toFixed(1)},${toY(p.cumulativeUsd).toFixed(1)}`).join(" ");
+  const points = curve
+    .map((p, i) => `${toX(i).toFixed(1)},${toY(p.cumulativeUsd).toFixed(1)}`)
+    .join(" ");
 
   // Zero line Y position.
   const zeroY = toY(0).toFixed(1);
@@ -275,8 +294,14 @@ function EquityCurveChart({ curve }: { curve: EquityCurvePoint[] }) {
   const ticks = [minVal, (minVal + maxVal) / 2, maxVal];
 
   // X-axis: show first and last date labels.
-  const firstDate = new Date(curve[0].ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const lastDate = new Date(curve[curve.length - 1].ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const firstDate = new Date(curve[0].ts).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  const lastDate = new Date(curve[curve.length - 1].ts).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 
   const lineColor = values[values.length - 1] >= 0 ? "#34d399" : "#f87171";
 
@@ -284,9 +309,13 @@ function EquityCurveChart({ curve }: { curve: EquityCurvePoint[] }) {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Equity curve">
       {/* Zero line */}
       <line
-        x1={PAD.left} y1={zeroY}
-        x2={W - PAD.right} y2={zeroY}
-        stroke="#475569" strokeWidth="1" strokeDasharray="4 3"
+        x1={PAD.left}
+        y1={zeroY}
+        x2={W - PAD.right}
+        y2={zeroY}
+        stroke="#475569"
+        strokeWidth="1"
+        strokeDasharray="4 3"
       />
 
       {/* Y-axis ticks */}
@@ -295,8 +324,14 @@ function EquityCurveChart({ curve }: { curve: EquityCurvePoint[] }) {
         return (
           <g key={i}>
             <line x1={PAD.left - 4} y1={y} x2={PAD.left} y2={y} stroke="#475569" strokeWidth="1" />
-            <text x={PAD.left - 6} y={y} textAnchor="end" dominantBaseline="middle"
-              fontSize="10" fill="#64748b">
+            <text
+              x={PAD.left - 6}
+              y={y}
+              textAnchor="end"
+              dominantBaseline="middle"
+              fontSize="10"
+              fill="#64748b"
+            >
               {fmt$(v)}
             </text>
           </g>
@@ -311,11 +346,21 @@ function EquityCurveChart({ curve }: { curve: EquityCurvePoint[] }) {
       />
 
       {/* Equity curve line */}
-      <polyline points={points} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={lineColor}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
 
       {/* X-axis labels */}
-      <text x={PAD.left} y={H - 4} fontSize="10" fill="#64748b">{firstDate}</text>
-      <text x={W - PAD.right} y={H - 4} fontSize="10" fill="#64748b" textAnchor="end">{lastDate}</text>
+      <text x={PAD.left} y={H - 4} fontSize="10" fill="#64748b">
+        {firstDate}
+      </text>
+      <text x={W - PAD.right} y={H - 4} fontSize="10" fill="#64748b" textAnchor="end">
+        {lastDate}
+      </text>
     </svg>
   );
 }
@@ -342,7 +387,9 @@ function SliceTable({
       <thead>
         <tr className="text-slate-500">
           {["Name", "Trades", "PnL (USD)", "Win Rate"].map((h) => (
-            <th key={h} className="text-left font-medium pb-2">{h}</th>
+            <th key={h} className="text-left font-medium pb-2">
+              {h}
+            </th>
           ))}
         </tr>
       </thead>
@@ -351,7 +398,9 @@ function SliceTable({
           <tr key={name} className="border-t border-slate-800">
             <td className="py-1.5 text-slate-300 font-mono">{name}</td>
             <td className="py-1.5 text-slate-400">{s.trades}</td>
-            <td className={`py-1.5 font-mono font-semibold ${s.pnlUsd >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+            <td
+              className={`py-1.5 font-mono font-semibold ${s.pnlUsd >= 0 ? "text-emerald-400" : "text-red-400"}`}
+            >
               {fmt$(s.pnlUsd)}
             </td>
             <td className="py-1.5 text-slate-300">
@@ -400,7 +449,10 @@ function CaveatTooltip() {
         <div className="absolute left-0 top-full mt-1 z-20 w-72 rounded border border-slate-700 bg-slate-950 p-3 text-xs text-slate-300 shadow-lg">
           <p className="font-semibold mb-1 text-slate-200">Simulation assumptions</p>
           <ul className="space-y-1 list-disc list-inside text-slate-400">
-            <li>Signals are executed at <span className="text-slate-300">emit-bar close price</span> (priceAtSignal).</li>
+            <li>
+              Signals are executed at <span className="text-slate-300">emit-bar close price</span>{" "}
+              (priceAtSignal).
+            </li>
             <li>No slippage, no partial fills, no order-book effects.</li>
             <li>Fixed position size per trade — no real risk sizing.</li>
             <li>Round-trip fee is applied flat (feeBps) regardless of price impact.</li>
@@ -503,8 +555,6 @@ function NumInput({
 function fmt$(v: number): string {
   const abs = Math.abs(v);
   const formatted =
-    abs >= 1000
-      ? abs.toLocaleString(undefined, { maximumFractionDigits: 0 })
-      : abs.toFixed(2);
+    abs >= 1000 ? abs.toLocaleString(undefined, { maximumFractionDigits: 0 }) : abs.toFixed(2);
   return `${v < 0 ? "-" : ""}$${formatted}`;
 }

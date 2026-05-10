@@ -46,7 +46,9 @@ export interface DrawdownResult {
   maxUsd: number;
   /**
    * Maximum drawdown as a fraction of the peak equity reached before the
-   * trough (0–1). Zero when there were no winning streaks at all.
+   * trough. Typically 0–1, but can exceed 1 when equity falls below zero
+   * (peak=$5, trough=-$2 → drawdown $7 / peak $5 = 1.4). Zero when there
+   * were no winning streaks at all.
    */
   maxPct: number;
   /**
@@ -92,6 +94,11 @@ export interface PnlSimulationParams {
   positionSizeUsd?: number;
   /** Round-trip fee in basis points. Default: 5. */
   feeBps?: number;
+  /**
+   * Trade-direction filter. `both` (default) includes longs and shorts;
+   * `long` keeps only buy signals; `short` keeps only sell signals.
+   */
+  direction?: "both" | "long" | "short";
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +279,7 @@ export function computeDrawdown(curve: EquityCurvePoint[]): DrawdownResult {
 
   const peakMs = new Date(bestPeakTs).getTime();
   const troughMs = new Date(bestTroughTs).getTime();
-  maxDrawdownDurationDays = Math.max(0, (troughMs - peakMs) / (86_400_000));
+  maxDrawdownDurationDays = Math.max(0, (troughMs - peakMs) / 86_400_000);
 
   return {
     maxUsd: maxDrawdownUsd,
@@ -292,14 +299,14 @@ export function computeDrawdown(curve: EquityCurvePoint[]): DrawdownResult {
  */
 export async function getPnlSimulation(params: PnlSimulationParams): Promise<PnlSimulationResult> {
   const windowEnd = new Date().toISOString();
-  const windowStart =
-    params.since ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const windowStart = params.since ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
   const positionSizeUsd = params.positionSizeUsd ?? 100;
   const feeBps = params.feeBps ?? 5;
+  const direction = params.direction ?? "both";
 
   // Fetch all directional resolved outcomes in the window.
-  const items = await queryOutcomeItems(
+  const rawItems = await queryOutcomeItems(
     PAIRS,
     windowStart,
     windowEnd,
@@ -307,11 +314,26 @@ export async function getPnlSimulation(params: PnlSimulationParams): Promise<Pnl
     params.timeframe,
   );
 
+  // Apply direction filter BEFORE computing trades/equity/aggregates so
+  // every downstream metric (curve, drawdown, per-pair, per-tf) reflects
+  // the filter consistently.
+  const items =
+    direction === "both"
+      ? rawItems
+      : rawItems.filter((it) => (direction === "long" ? it.type === "buy" : it.type === "sell"));
+
   // Sort by resolvedAt (ascending) so the equity curve is time-ordered.
   items.sort((a, b) => a.resolvedAt.localeCompare(b.resolvedAt));
 
   // Compute per-trade PnL.
-  const tradePnls: Array<{ ts: string; pnlUsd: number; isWin: boolean; isLoss: boolean; pair: string; timeframe: string }> = [];
+  const tradePnls: Array<{
+    ts: string;
+    pnlUsd: number;
+    isWin: boolean;
+    isLoss: boolean;
+    pair: string;
+    timeframe: string;
+  }> = [];
 
   for (const item of items) {
     // Skip rows without valid prices (shouldn't happen but be defensive).
@@ -326,7 +348,13 @@ export async function getPnlSimulation(params: PnlSimulationParams): Promise<Pnl
     const type = item.type as "buy" | "sell";
     if (type !== "buy" && type !== "sell") continue;
 
-    const trade = computeTradePnl(type, item.priceAtSignal, item.priceAtResolution, positionSizeUsd, feeBps);
+    const trade = computeTradePnl(
+      type,
+      item.priceAtSignal,
+      item.priceAtResolution,
+      positionSizeUsd,
+      feeBps,
+    );
     tradePnls.push({
       ts: item.resolvedAt,
       pnlUsd: trade.pnlUsd,
@@ -366,7 +394,10 @@ export async function getPnlSimulation(params: PnlSimulationParams): Promise<Pnl
   for (const [pair, stats] of Object.entries(perPair)) {
     const pairTrades = tradePnls.filter((t) => t.pair === pair);
     const directional = pairTrades.filter((t) => t.isWin || t.isLoss);
-    stats.winRate = directional.length > 0 ? directional.filter((t) => t.isWin).length / directional.length : null;
+    stats.winRate =
+      directional.length > 0
+        ? directional.filter((t) => t.isWin).length / directional.length
+        : null;
     perPair[pair] = stats;
   }
 
@@ -382,7 +413,10 @@ export async function getPnlSimulation(params: PnlSimulationParams): Promise<Pnl
   for (const [tf, stats] of Object.entries(perTimeframe)) {
     const tfTrades = tradePnls.filter((t) => t.timeframe === tf);
     const directional = tfTrades.filter((t) => t.isWin || t.isLoss);
-    stats.winRate = directional.length > 0 ? directional.filter((t) => t.isWin).length / directional.length : null;
+    stats.winRate =
+      directional.length > 0
+        ? directional.filter((t) => t.isWin).length / directional.length
+        : null;
     perTimeframe[tf] = stats;
   }
 

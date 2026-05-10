@@ -297,7 +297,10 @@ admin.get("/pnl-simulation", async (c) => {
     const parsed = new Date(sinceRaw);
     if (isNaN(parsed.getTime())) {
       return c.json(
-        { success: false, error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" } },
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
         400,
       );
     }
@@ -308,16 +311,28 @@ admin.get("/pnl-simulation", async (c) => {
   const pairRaw = c.req.query("pair");
   if (pairRaw !== undefined && !(PAIRS as readonly string[]).includes(pairRaw)) {
     return c.json(
-      { success: false, error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` } },
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
       400,
     );
   }
 
   // --- timeframe ---
   const timeframeRaw = c.req.query("timeframe");
-  if (timeframeRaw !== undefined && !(VALID_TIMEFRAMES as readonly string[]).includes(timeframeRaw)) {
+  if (
+    timeframeRaw !== undefined &&
+    !(VALID_TIMEFRAMES as readonly string[]).includes(timeframeRaw)
+  ) {
     return c.json(
-      { success: false, error: { code: "BAD_REQUEST", message: `timeframe must be one of: ${VALID_TIMEFRAMES.join(", ")}` } },
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_TIMEFRAMES.join(", ")}`,
+        },
+      },
       400,
     );
   }
@@ -329,7 +344,10 @@ admin.get("/pnl-simulation", async (c) => {
     positionSizeUsd = parseFloat(positionSizeRaw);
     if (!isFinite(positionSizeUsd) || positionSizeUsd <= 0) {
       return c.json(
-        { success: false, error: { code: "BAD_REQUEST", message: "positionSize must be a positive number" } },
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "positionSize must be a positive number" },
+        },
         400,
       );
     }
@@ -342,10 +360,29 @@ admin.get("/pnl-simulation", async (c) => {
     feeBps = parseFloat(feeBpsRaw);
     if (!isFinite(feeBps) || feeBps < 0) {
       return c.json(
-        { success: false, error: { code: "BAD_REQUEST", message: "feeBps must be a non-negative number" } },
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "feeBps must be a non-negative number" },
+        },
         400,
       );
     }
+  }
+
+  // --- direction ---
+  const directionRaw = c.req.query("direction");
+  let direction: "both" | "long" | "short" | undefined;
+  if (directionRaw !== undefined) {
+    if (directionRaw !== "both" && directionRaw !== "long" && directionRaw !== "short") {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "direction must be one of: both, long, short" },
+        },
+        400,
+      );
+    }
+    direction = directionRaw;
   }
 
   const result = await getPnlSimulation({
@@ -354,6 +391,7 @@ admin.get("/pnl-simulation", async (c) => {
     timeframe: timeframeRaw,
     positionSizeUsd,
     feeBps,
+    direction,
   });
   return c.json({ success: true, data: result });
 });
