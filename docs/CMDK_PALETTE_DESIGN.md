@@ -20,14 +20,14 @@ Library: [`cmdk`](https://cmdk.paco.me/). Headless, accessible, ~10kb gz, used b
 
 ## Sections (display order, recency-weighted within each)
 
-| Section    | Source                                          | Empty-state visible?         | Max rows  |
-| ---------- | ----------------------------------------------- | ---------------------------- | --------- |
-| Recent     | localStorage last-5 symbols                     | yes                          | 5         |
-| Markets    | hard-coded `PAIRS` constant                     | no (only when query matches) | 6         |
-| Signals    | `GET /api/admin/signals?symbol=X&limit=10`      | no                           | 5         |
-| Alerts     | future `/api/alerts` endpoint                   | no                           | 3         |
-| Commands   | client-side registry                            | when query starts with `/`   | unlimited |
-| Jump-to    | static nav routes                               | yes                          | 4         |
+| Section  | Source                                     | Empty-state visible?         | Max rows  |
+| -------- | ------------------------------------------ | ---------------------------- | --------- |
+| Recent   | localStorage last-5 symbols                | yes                          | 5         |
+| Markets  | hard-coded `PAIRS` constant                | no (only when query matches) | 6         |
+| Signals  | `GET /api/admin/signals?symbol=X&limit=10` | no                           | 5         |
+| Alerts   | future `/api/alerts` endpoint              | no                           | 3         |
+| Commands | client-side registry                       | when query starts with `/`   | unlimited |
+| Jump-to  | static nav routes                          | yes                          | 4         |
 
 ## Visual states
 
@@ -127,12 +127,12 @@ The 0.4 weight on recency is what makes `⌘K → b → ↵` land on BTC even th
 
 ## Data wiring (minimal first pass)
 
-| Need                      | Source today                                | Gap                                         |
-| ------------------------- | ------------------------------------------- | ------------------------------------------- |
-| Markets list              | `packages/shared/src/constants/pairs.ts`    | none — static import                        |
-| Recent signals            | `/api/admin/signals?symbol=X`               | filter param already supported              |
-| Current prices for rows   | existing `/api/admin/market` poll           | none — lift to Workstation context          |
-| Alerts list               | n/a                                         | future — placeholder section, hide if empty |
+| Need                    | Source today                             | Gap                                         |
+| ----------------------- | ---------------------------------------- | ------------------------------------------- |
+| Markets list            | `packages/shared/src/constants/pairs.ts` | none — static import                        |
+| Recent signals          | `/api/admin/signals?symbol=X`            | filter param already supported              |
+| Current prices for rows | existing `/api/admin/market` poll        | none — lift to Workstation context          |
+| Alerts list             | n/a                                      | future — placeholder section, hide if empty |
 
 ## Rollout
 
