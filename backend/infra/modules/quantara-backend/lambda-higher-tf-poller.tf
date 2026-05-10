@@ -99,6 +99,15 @@ resource "aws_cloudwatch_event_target" "higher_tf_poller" {
   arn  = aws_lambda_function.higher_tf_poller.arn
 }
 
+# Resource-based policy granting EventBridge permission to invoke this Lambda.
+#
+# Without this block, EventBridge can wire a rule target but silently fail
+# every invocation (Lambda rejects unauthenticated callers; CloudWatch Logs
+# show zero invocations and no error). A Terraform replace of the
+# aws_lambda_function resource (triggered by ingestion_build) also replaces
+# the function's resource policy — this managed resource ensures Terraform
+# always re-creates the grant in the same apply. See issue #260 for the
+# incident that confirmed this pattern is load-bearing.
 resource "aws_lambda_permission" "allow_eventbridge_higher_tf_poller" {
   statement_id  = "AllowEventBridgeInvokeHigherTfPoller"
   action        = "lambda:InvokeFunction"
