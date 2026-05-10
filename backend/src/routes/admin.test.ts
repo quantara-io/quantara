@@ -657,7 +657,7 @@ describe("GET /pipeline-health", () => {
     },
     quorum: {
       successRate: 0.95,
-      perPair: { "BTC/USDT": { perTf: { "15m": 0.95, "1h": 0.97, "4h": 0.90 } } },
+      perPair: { "BTC/USDT": { perTf: { "15m": 0.95, "1h": 0.97, "4h": 0.9 } } },
     },
     lambdas: {
       api: { invocations: 1200, errors: 3, errorRate: 0.0025, avgDurationMs: 85, throttles: 0 },

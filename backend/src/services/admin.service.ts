@@ -17,6 +17,7 @@ import {
 } from "@aws-sdk/client-cloudwatch-logs";
 import { LambdaClient, GetFunctionCommand } from "@aws-sdk/client-lambda";
 import { SSMClient, GetParameterCommand, PutParameterCommand } from "@aws-sdk/client-ssm";
+import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
 
 const REGION = process.env.AWS_REGION ?? "us-west-2";
 const PREFIX = (process.env.TABLE_PREFIX ?? "quantara-dev-").replace(/-$/, "");
@@ -36,6 +37,7 @@ const sqs = new SQSClient({ region: REGION });
 const cwLogs = new CloudWatchLogsClient({ region: REGION });
 const lambda = new LambdaClient({ region: REGION });
 const ssm = new SSMClient({ region: REGION });
+const cloudwatch = new CloudWatchClient({ region: REGION });
 
 const TABLES = [
   "prices",
@@ -1373,18 +1375,26 @@ export interface PipelineHealth {
   fargate: FargateHealth;
 }
 
+// Stream writers (ingestion/src/exchanges/stream.ts) push 1m candles continuously,
+// so 1m is the canonical freshness signal for "is this exchange streaming?".
+const HEALTH_FRESHNESS_TIMEFRAME = "1m";
+
 /** Fetch the latest candle sk per exchange from the candles GSI.
- *  The GSI `exchange-index` uses `exchange` as hash key and `sk` as range key.
- *  We query it with ScanIndexForward=false, Limit=1 to get the most-recent write. */
+ *  The GSI `exchange-index` uses `exchange` as hash key and `sk` as range key
+ *  where sk = `exchange#timeframe#iso`. Without a `begins_with` prefix the
+ *  ScanIndexForward=false query would return the lexicographically-largest sk
+ *  across timeframes, which can blend higher-tf backfills into the freshness
+ *  measurement. Constrain to the streaming timeframe so we measure live data. */
 async function getExchangeLastDataAt(exchange: Exchange): Promise<string | null> {
   try {
+    const skPrefix = `${exchange}#${HEALTH_FRESHNESS_TIMEFRAME}#`;
     const result = await dynamo.send(
       new QueryCommand({
         TableName: `${PREFIX}-candles`,
         IndexName: "exchange-index",
-        KeyConditionExpression: "#exchange = :exchange",
-        ExpressionAttributeNames: { "#exchange": "exchange" },
-        ExpressionAttributeValues: { ":exchange": exchange },
+        KeyConditionExpression: "#exchange = :exchange AND begins_with(#sk, :skPrefix)",
+        ExpressionAttributeNames: { "#exchange": "exchange", "#sk": "sk" },
+        ExpressionAttributeValues: { ":exchange": exchange, ":skPrefix": skPrefix },
         ScanIndexForward: false,
         Limit: 1,
       }),
@@ -1407,55 +1417,88 @@ function toStreamHealth(
   nowMs: number,
 ): { streamHealth: ExchangeHealth["streamHealth"]; stalenessSec: number | null } {
   if (!lastDataAt) return { streamHealth: "down", stalenessSec: null };
-  const stalenessSec = Math.round((nowMs - new Date(lastDataAt).getTime()) / 1000);
+  const lastMs = new Date(lastDataAt).getTime();
+  // Malformed ISO → NaN. Treat as "down" rather than letting NaN propagate
+  // through the threshold comparisons (every comparison with NaN is false,
+  // which would silently report "healthy").
+  if (!Number.isFinite(lastMs)) return { streamHealth: "down", stalenessSec: null };
+  const stalenessSec = Math.round((nowMs - lastMs) / 1000);
   if (stalenessSec > DOWN_THRESHOLD_S) return { streamHealth: "down", stalenessSec };
   if (stalenessSec > STALE_THRESHOLD_S) return { streamHealth: "stale", stalenessSec };
   return { streamHealth: "healthy", stalenessSec };
 }
 
+/** Page through enough indicator-state rows to cover the window without
+ *  truncating. Hard cap on pages prevents a runaway query on a partition with
+ *  unexpectedly many rows. */
+const QUORUM_QUERY_PAGE_SIZE = 500;
+const QUORUM_QUERY_MAX_PAGES = 10; // 5,000 rows max per pair+tf — well above 168h × 15m bars (672)
+
 /** Count quorum bar-closes: a bar-close has quorum when ≥2 of 3 exchanges
  *  had fresh data for that pair+timeframe within the window.
  *  We read from indicator_state records (exchange=consensus) and compare the
- *  dispersion field — when dispersion is non-null a quorum was achieved. */
+ *  dispersion field — when dispersion is non-null a quorum was achieved.
+ *  Returns raw counts so the aggregate can be a weighted (not naive) average. */
 async function computeQuorumForPairTf(
   pair: string,
   timeframe: string,
   windowStart: string,
-): Promise<number | null> {
+): Promise<{ totalBars: number; barsWithQuorum: number } | null> {
   try {
     const pk = `${pair}#consensus#${timeframe}`;
-    const result = await dynamo.send(
-      new QueryCommand({
-        TableName: INDICATOR_STATE_TABLE,
-        KeyConditionExpression: "#pk = :pk AND #sk >= :start",
-        ExpressionAttributeNames: { "#pk": "pk", "#sk": "sk" },
-        ExpressionAttributeValues: { ":pk": pk, ":start": windowStart },
-        ScanIndexForward: false,
-        Limit: 500,
-      }),
-    );
-    const items = result.Items ?? [];
-    if (items.length === 0) return null;
-    const withQuorum = items.filter(
-      (it) => (it.dispersion as number | null) !== null,
-    ).length;
-    return withQuorum / items.length;
+    let totalBars = 0;
+    let barsWithQuorum = 0;
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+
+    for (let page = 0; page < QUORUM_QUERY_MAX_PAGES; page++) {
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: INDICATOR_STATE_TABLE,
+          KeyConditionExpression: "#pk = :pk AND #asOf >= :start",
+          ExpressionAttributeNames: { "#pk": "pk", "#asOf": "asOf" },
+          ExpressionAttributeValues: { ":pk": pk, ":start": windowStart },
+          ScanIndexForward: false,
+          Limit: QUORUM_QUERY_PAGE_SIZE,
+          ExclusiveStartKey: exclusiveStartKey,
+        }),
+      );
+      const items = result.Items ?? [];
+      totalBars += items.length;
+      for (const it of items) {
+        if ((it.dispersion as number | null) !== null) barsWithQuorum += 1;
+      }
+      if (!result.LastEvaluatedKey) break;
+      exclusiveStartKey = result.LastEvaluatedKey;
+    }
+
+    if (totalBars === 0) return null;
+    return { totalBars, barsWithQuorum };
   } catch {
     return null;
   }
 }
 
+/** CloudWatch GetMetricStatistics constraints we care about:
+ *  - Period must be a multiple of 60 (when ≥60).
+ *  - For windows up to 15 days, max Period is 86_400 s (1 day).
+ *  - Total returned datapoints capped at 1,440 per call.
+ *  Setting Period = full window seconds (the previous behaviour) breaks for
+ *  any window longer than 24h. Clamp to ≤86_400 and snap to a 60s multiple
+ *  that yields a sensible bucket count (target ~24 buckets so dashboards are
+ *  legible: small windows → fine grain, large windows → 1h buckets). */
+function clampPeriod(windowSec: number): number {
+  const TARGET_BUCKETS = 24;
+  const MAX_PERIOD = 86_400;
+  const MIN_PERIOD = 60;
+  const raw = Math.max(MIN_PERIOD, Math.round(windowSec / TARGET_BUCKETS));
+  const clamped = Math.min(MAX_PERIOD, raw);
+  // Snap up to the nearest 60s multiple so CloudWatch accepts the value.
+  return Math.ceil(clamped / 60) * 60;
+}
+
 /**
  * Fetch CloudWatch metric statistics for a Lambda function over the given window.
- *
- * NOTE: This function requires `@aws-sdk/client-cloudwatch` which is not yet
- * listed in package.json. The IAM permission (`cloudwatch:GetMetricStatistics`)
- * must be added via Terraform (see `lambda_admin_ops` policy). Until both the
- * dependency and IAM are in place this function returns null-filled metrics
- * gracefully instead of throwing.
- *
- * To activate: add `"@aws-sdk/client-cloudwatch": "^3.750.0"` to the
- * `dependencies` block in `backend/package.json` and run `npm install`.
+ * Returns null-filled metrics on failure (e.g. IAM denied, no datapoints).
  */
 async function fetchLambdaMetrics(
   functionName: string,
@@ -1471,22 +1514,13 @@ async function fetchLambdaMetrics(
   };
 
   try {
-    // Dynamic import so the module resolves at call-time; if the package is not
-    // installed Node throws MODULE_NOT_FOUND which we catch below.
-    const { CloudWatchClient, GetMetricStatisticsCommand } = await import(
-      "@aws-sdk/client-cloudwatch"
-    );
-    const cw = new CloudWatchClient({ region: REGION });
-
-    const periodSec = Math.round((windowEnd.getTime() - windowStart.getTime()) / 1000);
+    const windowSec = Math.round((windowEnd.getTime() - windowStart.getTime()) / 1000);
+    const periodSec = clampPeriod(windowSec);
     const dims = [{ Name: "FunctionName", Value: functionName }];
 
-    async function stat(
-      metricName: string,
-      stat: "Sum" | "Average",
-    ): Promise<number | null> {
+    async function stat(metricName: string, statName: "Sum" | "Average"): Promise<number | null> {
       try {
-        const res = await cw.send(
+        const res = await cloudwatch.send(
           new GetMetricStatisticsCommand({
             Namespace: "AWS/Lambda",
             MetricName: metricName,
@@ -1494,10 +1528,10 @@ async function fetchLambdaMetrics(
             StartTime: windowStart,
             EndTime: windowEnd,
             Period: periodSec,
-            Statistics: [stat],
+            Statistics: [statName],
           }),
         );
-        return res.Datapoints?.[0]?.[stat] ?? null;
+        return res.Datapoints?.[0]?.[statName] ?? null;
       } catch {
         return null;
       }
@@ -1511,49 +1545,40 @@ async function fetchLambdaMetrics(
     ]);
 
     const errorRate =
-      invocations !== null && errors !== null && invocations > 0
-        ? errors / invocations
-        : null;
+      invocations !== null && errors !== null && invocations > 0 ? errors / invocations : null;
 
     return { invocations, errors, errorRate, avgDurationMs, throttles };
   } catch {
-    // Package not installed or IAM denied — return graceful nulls.
     return nullMetrics;
   }
 }
 
 /** Fetch Fargate ECS service state + CloudWatch utilization metrics. */
-async function getFargateHealth(
-  windowStart: Date,
-  windowEnd: Date,
-): Promise<FargateHealth> {
+async function getFargateHealth(windowStart: Date, windowEnd: Date): Promise<FargateHealth> {
   const cluster = `${PREFIX}-ingestion`;
 
   // ECS service state
   let runningCount = 0;
   let desiredCount = 0;
   try {
-    const svcRes = await ecs.send(
-      new DescribeServicesCommand({ cluster, services: [cluster] }),
-    );
+    const svcRes = await ecs.send(new DescribeServicesCommand({ cluster, services: [cluster] }));
     const svc = svcRes.services?.[0];
     if (svc) {
       runningCount = svc.runningCount ?? 0;
       desiredCount = svc.desiredCount ?? 0;
     }
-  } catch { /* graceful */ }
+  } catch {
+    /* graceful */
+  }
 
-  // CloudWatch ECS utilization (requires @aws-sdk/client-cloudwatch)
+  // CloudWatch ECS utilization
   let cpuUtilizationPct: number | null = null;
   let memoryUtilizationPct: number | null = null;
   let lastRestartAt: string | null = null;
 
   try {
-    const { CloudWatchClient, GetMetricStatisticsCommand } = await import(
-      "@aws-sdk/client-cloudwatch"
-    );
-    const cw = new CloudWatchClient({ region: REGION });
-    const periodSec = Math.round((windowEnd.getTime() - windowStart.getTime()) / 1000);
+    const windowSec = Math.round((windowEnd.getTime() - windowStart.getTime()) / 1000);
+    const periodSec = clampPeriod(windowSec);
     const dims = [
       { Name: "ClusterName", Value: cluster },
       { Name: "ServiceName", Value: cluster },
@@ -1561,7 +1586,7 @@ async function getFargateHealth(
 
     async function ecsStat(metricName: string): Promise<number | null> {
       try {
-        const res = await cw.send(
+        const res = await cloudwatch.send(
           new GetMetricStatisticsCommand({
             Namespace: "AWS/ECS",
             MetricName: metricName,
@@ -1582,7 +1607,9 @@ async function getFargateHealth(
       ecsStat("CPUUtilization"),
       ecsStat("MemoryUtilization"),
     ]);
-  } catch { /* package not yet installed */ }
+  } catch {
+    /* IAM denied or transient — fall through to nulls */
+  }
 
   // Attempt to find last restart time from CloudWatch Logs
   try {
@@ -1597,7 +1624,9 @@ async function getFargateHealth(
     );
     const createdAt = streams.logStreams?.[0]?.creationTime;
     if (createdAt) lastRestartAt = new Date(createdAt).toISOString();
-  } catch { /* graceful */ }
+  } catch {
+    /* graceful */
+  }
 
   return { runningCount, desiredCount, lastRestartAt, cpuUtilizationPct, memoryUtilizationPct };
 }
@@ -1617,6 +1646,10 @@ export async function getPipelineHealth(windowHours = 24): Promise<PipelineHealt
   const exchanges = Object.fromEntries(exchangeEntries) as Record<Exchange, ExchangeHealth>;
 
   // --- Quorum ---
+  // Aggregate is a weighted average: sum(barsWithQuorum) / sum(totalBars)
+  // across pair×tf, so a high-bar-density timeframe (e.g. 15m) contributes
+  // proportionally to its actual bar count rather than being one-row-equivalent
+  // to a low-density timeframe (4h).
   let totalBars = 0;
   let barsWithQuorum = 0;
   const perPair: QuorumHealth["perPair"] = {};
@@ -1624,15 +1657,15 @@ export async function getPipelineHealth(windowHours = 24): Promise<PipelineHealt
   for (const pair of PAIRS) {
     perPair[pair] = { perTf: {} };
     for (const tf of QUORUM_TIMEFRAMES) {
-      const rate = await computeQuorumForPairTf(pair, tf, windowStart.toISOString());
-      perPair[pair].perTf[tf] = rate;
-      // Accumulate global rate only when data is available
-      if (rate !== null) {
-        // rate already represents the fraction in range [0,1]
-        // We weight each pair+tf equally for the aggregate
-        totalBars += 1;
-        barsWithQuorum += rate;
+      const counts = await computeQuorumForPairTf(pair, tf, windowStart.toISOString());
+      if (counts === null) {
+        perPair[pair].perTf[tf] = null;
+        continue;
       }
+      perPair[pair].perTf[tf] =
+        counts.totalBars > 0 ? counts.barsWithQuorum / counts.totalBars : null;
+      totalBars += counts.totalBars;
+      barsWithQuorum += counts.barsWithQuorum;
     }
   }
 

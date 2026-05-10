@@ -71,13 +71,23 @@ vi.mock("@quantara/shared", async (importOriginal) => {
     PAIRS: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"],
     HAIKU_INPUT_PRICE_PER_M: orig.HAIKU_INPUT_PRICE_PER_M ?? 0.8,
     HAIKU_OUTPUT_PRICE_PER_M: orig.HAIKU_OUTPUT_PRICE_PER_M ?? 4.0,
-    HAIKU_MODEL_TAG: (orig as Record<string, unknown>).HAIKU_MODEL_TAG ?? "anthropic.claude-haiku-4-5",
+    HAIKU_MODEL_TAG:
+      (orig as Record<string, unknown>).HAIKU_MODEL_TAG ?? "anthropic.claude-haiku-4-5",
   };
 });
 
 beforeEach(() => {
   vi.resetModules();
-  for (const m of [dynamoSend, dynamoRawSend, ecsSend, sqsSend, cwLogsSend, cwSend, lambdaSend, ssmSend]) {
+  for (const m of [
+    dynamoSend,
+    dynamoRawSend,
+    ecsSend,
+    sqsSend,
+    cwLogsSend,
+    cwSend,
+    lambdaSend,
+    ssmSend,
+  ]) {
     m.mockReset();
   }
   process.env.TABLE_PREFIX = "quantara-dev-";
@@ -956,12 +966,14 @@ describe("getPipelineHealth — exchange staleness", () => {
 
   it("marks an exchange healthy when its most-recent candle sk is within 5 min", async () => {
     const recentIso = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 min ago
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
-      if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
-        return { Items: [{ sk: `binanceus#1m#${recentIso}`, exchange: "binanceus" }] };
-      }
-      return { Items: [] };
-    });
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          return { Items: [{ sk: `binanceus#1m#${recentIso}`, exchange: "binanceus" }] };
+        }
+        return { Items: [] };
+      },
+    );
 
     const { getPipelineHealth } = await importService();
     const result = await getPipelineHealth(24);
@@ -973,12 +985,14 @@ describe("getPipelineHealth — exchange staleness", () => {
 
   it("marks an exchange stale when its most-recent candle is 6-14 min old", async () => {
     const staleIso = new Date(Date.now() - 8 * 60 * 1000).toISOString(); // 8 min ago
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
-      if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
-        return { Items: [{ sk: `kraken#15m#${staleIso}`, exchange: "kraken" }] };
-      }
-      return { Items: [] };
-    });
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          return { Items: [{ sk: `kraken#15m#${staleIso}`, exchange: "kraken" }] };
+        }
+        return { Items: [] };
+      },
+    );
 
     const { getPipelineHealth } = await importService();
     const result = await getPipelineHealth(24);
@@ -1001,12 +1015,14 @@ describe("getPipelineHealth — exchange staleness", () => {
 
   it("marks an exchange down when its most-recent candle is older than 15 min", async () => {
     const oldIso = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20 min ago
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
-      if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
-        return { Items: [{ sk: `binanceus#1m#${oldIso}`, exchange: "binanceus" }] };
-      }
-      return { Items: [] };
-    });
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          return { Items: [{ sk: `binanceus#1m#${oldIso}`, exchange: "binanceus" }] };
+        }
+        return { Items: [] };
+      },
+    );
 
     const { getPipelineHealth } = await importService();
     const result = await getPipelineHealth(24);
@@ -1033,14 +1049,11 @@ describe("getPipelineHealth — quorum success rate", () => {
   it("computes 100% quorum rate when all indicator-state items have dispersion set", async () => {
     dynamoSend.mockImplementation(
       async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
-        if (
-          cmd.__cmd === "Query" &&
-          (cmd.input?.TableName ?? "").includes("indicator-state")
-        ) {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
           return {
             Items: [
-              { dispersion: 0.001, pk: "BTC/USDT#consensus#1h", sk: "2026-05-09T00:00:00Z" },
-              { dispersion: 0.002, pk: "BTC/USDT#consensus#1h", sk: "2026-05-08T23:00:00Z" },
+              { dispersion: 0.001, pk: "BTC/USDT#consensus#1h", asOf: "2026-05-09T00:00:00Z" },
+              { dispersion: 0.002, pk: "BTC/USDT#consensus#1h", asOf: "2026-05-08T23:00:00Z" },
             ],
           };
         }
@@ -1059,10 +1072,7 @@ describe("getPipelineHealth — quorum success rate", () => {
   it("computes fractional quorum rate when some items lack dispersion (null)", async () => {
     dynamoSend.mockImplementation(
       async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
-        if (
-          cmd.__cmd === "Query" &&
-          (cmd.input?.TableName ?? "").includes("indicator-state")
-        ) {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
           // 3 items: 2 with dispersion, 1 without → 2/3 quorum for this tf
           return {
             Items: [
@@ -1080,6 +1090,168 @@ describe("getPipelineHealth — quorum success rate", () => {
     const result = await getPipelineHealth(24);
     // At least one tf populated with fractional quorum; rate must be in (0, 1)
     expect(result.quorum.successRate).not.toBeNull();
+  });
+
+  it("queries indicator-state by asOf, not sk", async () => {
+    const indicatorStateQueries: Array<{
+      KeyConditionExpression?: string;
+      ExpressionAttributeNames?: Record<string, string>;
+    }> = [];
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: {
+          TableName?: string;
+          KeyConditionExpression?: string;
+          ExpressionAttributeNames?: Record<string, string>;
+        };
+      }) => {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
+          indicatorStateQueries.push({
+            KeyConditionExpression: cmd.input?.KeyConditionExpression,
+            ExpressionAttributeNames: cmd.input?.ExpressionAttributeNames,
+          });
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    await getPipelineHealth(24);
+
+    expect(indicatorStateQueries.length).toBeGreaterThan(0);
+    for (const q of indicatorStateQueries) {
+      expect(q.KeyConditionExpression).toContain("#asOf");
+      expect(q.KeyConditionExpression).not.toContain("#sk");
+      expect(q.ExpressionAttributeNames).toMatchObject({ "#asOf": "asOf" });
+    }
+  });
+
+  it("aggregates quorum success rate as a weighted average across pair×tf", async () => {
+    // First call (BTC/USDT × 15m): 1000 bars, all with quorum.
+    // Second call (BTC/USDT × 1h): 10 bars, 0 with quorum.
+    // Naive (per-tf) average: (1.0 + 0.0) / 2 = 0.5
+    // Weighted (per-bar) average: 1000 / 1010 ≈ 0.99
+    let queryIdx = 0;
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
+          queryIdx += 1;
+          if (queryIdx === 1) {
+            return {
+              Items: Array.from({ length: 1000 }, (_, i) => ({
+                dispersion: 0.001,
+                pk: "BTC/USDT#consensus#15m",
+                asOf: `2026-05-09T${String(i).padStart(2, "0")}:00:00Z`,
+              })),
+            };
+          }
+          if (queryIdx === 2) {
+            return {
+              Items: Array.from({ length: 10 }, (_, i) => ({
+                dispersion: null,
+                pk: "BTC/USDT#consensus#1h",
+                asOf: `2026-05-09T${String(i).padStart(2, "0")}:00:00Z`,
+              })),
+            };
+          }
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    // Weighted: 1000/1010 ≈ 0.99, NOT the unweighted 0.5
+    expect(result.quorum.successRate).toBeGreaterThan(0.95);
+  });
+});
+
+describe("getPipelineHealth — exchange query shape", () => {
+  beforeEach(() => {
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+  });
+
+  it("constrains the candles GSI query with a timeframe-prefixed begins_with on sk", async () => {
+    const exchangeQueries: Array<{
+      KeyConditionExpression?: string;
+      ExpressionAttributeValues?: Record<string, unknown>;
+    }> = [];
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: {
+          IndexName?: string;
+          KeyConditionExpression?: string;
+          ExpressionAttributeValues?: Record<string, unknown>;
+        };
+      }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          exchangeQueries.push({
+            KeyConditionExpression: cmd.input?.KeyConditionExpression,
+            ExpressionAttributeValues: cmd.input?.ExpressionAttributeValues,
+          });
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    await getPipelineHealth(24);
+
+    expect(exchangeQueries.length).toBe(3); // one per HEALTH_EXCHANGES entry
+    for (const q of exchangeQueries) {
+      expect(q.KeyConditionExpression).toContain("begins_with");
+      const prefix = q.ExpressionAttributeValues?.[":skPrefix"] as string | undefined;
+      expect(prefix).toMatch(/#1m#$/);
+    }
+  });
+
+  it("returns 'down' when lastDataAt is a malformed timestamp (NaN guard)", async () => {
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          // sk[2] is non-ISO garbage → new Date(...).getTime() === NaN
+          return { Items: [{ sk: "binanceus#1m#not-a-date", exchange: "binanceus" }] };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.binanceus.streamHealth).toBe("down");
+    expect(result.exchanges.binanceus.stalenessSec).toBeNull();
+  });
+});
+
+describe("getPipelineHealth — CloudWatch period clamping", () => {
+  beforeEach(() => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+  });
+
+  it("uses a Period ≤86400 and a multiple of 60, even for 168h (7d) windows", async () => {
+    const periods: number[] = [];
+    cwSend.mockImplementation(async (cmd: { __cmd: string; input?: { Period?: number } }) => {
+      if (cmd.input?.Period !== undefined) periods.push(cmd.input.Period);
+      return { Datapoints: [] };
+    });
+
+    const { getPipelineHealth } = await importService();
+    await getPipelineHealth(168);
+
+    expect(periods.length).toBeGreaterThan(0);
+    for (const p of periods) {
+      expect(p).toBeLessThanOrEqual(86_400);
+      expect(p % 60).toBe(0);
+      expect(p).toBeGreaterThanOrEqual(60);
+    }
   });
 });
 

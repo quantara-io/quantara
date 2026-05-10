@@ -285,9 +285,7 @@ function FargatePanel({ fargate }: { fargate: FargateHealth }) {
         <Stat
           label="Memory util"
           value={
-            fargate.memoryUtilizationPct !== null
-              ? `${num(fargate.memoryUtilizationPct, 1)}%`
-              : "—"
+            fargate.memoryUtilizationPct !== null ? `${num(fargate.memoryUtilizationPct, 1)}%` : "—"
           }
           valueClass={
             fargate.memoryUtilizationPct !== null && fargate.memoryUtilizationPct > 85
@@ -301,15 +299,7 @@ function FargatePanel({ fargate }: { fargate: FargateHealth }) {
   );
 }
 
-function Stat({
-  label,
-  value,
-  valueClass,
-}: {
-  label: string;
-  value: string;
-  valueClass?: string;
-}) {
+function Stat({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
   return (
     <div>
       <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
@@ -362,16 +352,12 @@ export function Health() {
   const healthyCount = exchangeList.filter((e) => e.streamHealth === "healthy").length;
   const totalExchanges = exchangeList.length;
 
-  const lambdaErrors = Object.values(data.lambdas).reduce(
-    (sum, l) => sum + (l.errors ?? 0),
-    0,
-  );
+  const lambdaErrors = Object.values(data.lambdas).reduce((sum, l) => sum + (l.errors ?? 0), 0);
   const lambdaInvocations = Object.values(data.lambdas).reduce(
     (sum, l) => sum + (l.invocations ?? 0),
     0,
   );
-  const overallErrorRate =
-    lambdaInvocations > 0 ? lambdaErrors / lambdaInvocations : null;
+  const overallErrorRate = lambdaInvocations > 0 ? lambdaErrors / lambdaInvocations : null;
 
   return (
     <div className="space-y-4">
