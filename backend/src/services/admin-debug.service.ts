@@ -38,6 +38,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { randomUUID, createHash } from "crypto";
 
@@ -51,6 +52,7 @@ import { logger } from "../lib/logger.js";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const bedrock = new BedrockRuntimeClient({});
+const lambdaClient = new LambdaClient({});
 
 // ---------------------------------------------------------------------------
 // Table names
@@ -983,4 +985,185 @@ export async function injectSentimentShock(
   }
 
   return { decision: "fired", reasons, shockRecord };
+}
+
+// ---------------------------------------------------------------------------
+// 4. Force indicators — recompute IndicatorState via Lambda invoke
+//
+// Triggers the indicator-handler Lambda with a synthetic DynamoDBStreamEvent
+// so it refreshes IndicatorState without waiting for the next live bar close.
+// This is the only viable path across the monorepo boundary (issue #209):
+// the backend Lambda cannot import ingestion modules directly.
+//
+// For the synthetic record to pass the handler's source filter
+// (`source === "live" || source === "live-synthesized"`), NewImage.source
+// is set to "live". The quorum check in the handler (Step 2) will see the
+// close-quorum entry from when the real candle landed — if quorum was never
+// reached (e.g. a fresh backfill on a new pair) the handler will stop there.
+// That is acceptable: we primarily need the IndicatorState row refreshed,
+// which happens in Step 4 AFTER quorum. For the majority of backfill cases
+// the quorum table will still have valid entries from the last live close.
+// ---------------------------------------------------------------------------
+
+// Signal timeframes supported by the indicator-handler (matches its filter).
+export const FORCE_INDICATORS_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
+export type ForceIndicatorsTimeframe = (typeof FORCE_INDICATORS_TIMEFRAMES)[number];
+
+// Supported exchanges (mirrors ingestion/src/exchanges/config.ts).
+export const FORCE_INDICATORS_EXCHANGES = ["binanceus", "coinbase", "kraken"] as const;
+export type ForceIndicatorsExchange = (typeof FORCE_INDICATORS_EXCHANGES)[number];
+
+export interface ForceIndicatorsTargetedInput {
+  pair: string;
+  exchange: ForceIndicatorsExchange;
+  timeframe: ForceIndicatorsTimeframe;
+}
+
+export type ForceIndicatorsInput = ForceIndicatorsTargetedInput | { all: true };
+
+export interface ForceIndicatorsResultItem {
+  pair: string;
+  exchange: string;
+  timeframe: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface ForceIndicatorsResult {
+  results: ForceIndicatorsResultItem[];
+}
+
+/**
+ * Build the list of (pair, exchange, timeframe) tuples to invoke.
+ * Targeted mode: single tuple. Bulk mode: cartesian product of all
+ * PAIRS × EXCHANGES × TIMEFRAMES (~5 × 3 × 4 = 60 invocations).
+ */
+function buildTuples(
+  input: ForceIndicatorsInput,
+): Array<{ pair: string; exchange: string; timeframe: string }> {
+  if ("all" in input && input.all) {
+    const tuples: Array<{ pair: string; exchange: string; timeframe: string }> = [];
+    for (const pair of PAIRS) {
+      for (const exchange of FORCE_INDICATORS_EXCHANGES) {
+        for (const timeframe of FORCE_INDICATORS_TIMEFRAMES) {
+          tuples.push({ pair, exchange, timeframe });
+        }
+      }
+    }
+    return tuples;
+  }
+
+  return [
+    {
+      pair: (input as ForceIndicatorsTargetedInput).pair,
+      exchange: (input as ForceIndicatorsTargetedInput).exchange,
+      timeframe: (input as ForceIndicatorsTargetedInput).timeframe,
+    },
+  ];
+}
+
+/**
+ * Build a synthetic DynamoDBStreamEvent that will pass the indicator-handler's
+ * source + timeframe filters. The handler reads these fields from NewImage:
+ *   pair, exchange, timeframe, closeTime, openTime, open, high, low, close, volume, symbol, source
+ *
+ * We use a synthetic closeTime = Date.now() so the handler can look up
+ * the latest real candle via getCandles() (which is keyed by pair/exchange/tf,
+ * not by closeTime from the event). The exact closeTime value does not need
+ * to match the latest bar's closeTime because computeBlendedSignal() fetches
+ * the 250 most-recent candles and picks the one closest to closeTime — for
+ * a backfill scenario the stored candles are fresh and the handler will pick
+ * up the head candle. If no exact match exists, the exchange is treated as
+ * stale, which is benign (the canonicalize step handles it).
+ */
+function buildSyntheticEvent(pair: string, exchange: string, timeframe: string): string {
+  const closeTime = Date.now();
+  const event = {
+    Records: [
+      {
+        eventName: "INSERT",
+        dynamodb: {
+          Keys: {
+            pair: { S: pair },
+            sk: { S: `${timeframe}#${closeTime}` },
+          },
+          NewImage: {
+            pair: { S: pair },
+            exchange: { S: exchange },
+            timeframe: { S: timeframe },
+            closeTime: { N: String(closeTime) },
+            openTime: { N: String(closeTime - 60_000) },
+            open: { N: "0" },
+            high: { N: "0" },
+            low: { N: "0" },
+            close: { N: "0" },
+            volume: { N: "0" },
+            symbol: { S: pair },
+            source: { S: "live" },
+          },
+        },
+      },
+    ],
+  };
+  return JSON.stringify(event);
+}
+
+/**
+ * Invoke the indicator-handler Lambda once for a single (pair, exchange, tf) tuple.
+ * Uses RequestResponse so the caller waits for completion and can surface errors.
+ */
+async function invokeIndicatorHandler(
+  pair: string,
+  exchange: string,
+  timeframe: string,
+): Promise<ForceIndicatorsResultItem> {
+  const fnName =
+    process.env.INDICATOR_HANDLER_FUNCTION_NAME ??
+    `${(process.env.TABLE_PREFIX ?? "quantara-dev-").replace(/-$/, "")}-indicator-handler`;
+
+  const payload = buildSyntheticEvent(pair, exchange, timeframe);
+
+  try {
+    const response = await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: fnName,
+        InvocationType: "RequestResponse",
+        Payload: Buffer.from(payload),
+      }),
+    );
+
+    // FunctionError is set when the Lambda itself threw (unhandled exception).
+    if (response.FunctionError) {
+      const errorBody = response.Payload
+        ? new TextDecoder().decode(response.Payload)
+        : "no payload";
+      return { pair, exchange, timeframe, ok: false, error: `Lambda error: ${errorBody}` };
+    }
+
+    return { pair, exchange, timeframe, ok: true };
+  } catch (err) {
+    const message = (err as Error).message ?? String(err);
+    logger.warn({ err, pair, exchange, timeframe }, "[AdminDebug] force-indicators invoke failed");
+    return { pair, exchange, timeframe, ok: false, error: message };
+  }
+}
+
+/**
+ * Force an immediate recompute of IndicatorState for one or more
+ * (pair, exchange, timeframe) tuples by invoking the indicator-handler Lambda
+ * with a synthetic DynamoDBStreamEvent.
+ *
+ * Targeted: `{ pair, exchange, timeframe }` → 1 invocation.
+ * Bulk:     `{ all: true }` → up to 60 invocations (5 pairs × 3 exchanges × 4 TFs).
+ *
+ * Each invocation runs in parallel. Results include per-tuple ok/error.
+ */
+export async function forceIndicators(input: ForceIndicatorsInput): Promise<ForceIndicatorsResult> {
+  const tuples = buildTuples(input);
+  const results = await Promise.all(
+    tuples.map(({ pair, exchange, timeframe }) =>
+      invokeIndicatorHandler(pair, exchange, timeframe),
+    ),
+  );
+  return { results };
 }
