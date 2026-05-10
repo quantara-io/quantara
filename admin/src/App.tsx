@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import type { ReactNode } from "react";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import { AuthGate } from "./components/AuthGate";
 import { Layout } from "./components/Layout";
@@ -7,14 +8,28 @@ import { Genie } from "./pages/Genie";
 import { Glossary } from "./pages/Glossary";
 import { Health } from "./pages/Health";
 import { Login } from "./pages/Login";
-import { Overview } from "./pages/Overview";
 import { Market } from "./pages/Market";
 import { News } from "./pages/News";
+import { Ops } from "./pages/Ops";
 import { Performance } from "./pages/Performance";
 import { Pipeline } from "./pages/Pipeline";
-import { Whitelist } from "./pages/Whitelist";
-import { Ratifications } from "./pages/Ratifications";
 import { Pnl } from "./pages/Pnl";
+import { Ratifications } from "./pages/Ratifications";
+import { Whitelist } from "./pages/Whitelist";
+import { Workstation } from "./pages/Workstation";
+
+interface PageProps {
+  children: ReactNode;
+  bleed?: boolean;
+}
+
+function Page({ children, bleed }: PageProps) {
+  return (
+    <AuthGate>
+      <Layout bleed={bleed}>{children}</Layout>
+    </AuthGate>
+  );
+}
 
 export function App() {
   return (
@@ -24,121 +39,105 @@ export function App() {
         <Route
           path="/"
           element={
-            <AuthGate>
-              <Layout>
-                <Overview />
-              </Layout>
-            </AuthGate>
+            <Page bleed>
+              <Workstation />
+            </Page>
+          }
+        />
+        <Route
+          path="/ops"
+          element={
+            <Page>
+              <Ops />
+            </Page>
           }
         />
         <Route
           path="/market"
           element={
-            <AuthGate>
-              <Layout>
-                <Market />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Market />
+            </Page>
           }
         />
         <Route
           path="/news"
           element={
-            <AuthGate>
-              <Layout>
-                <News />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <News />
+            </Page>
           }
         />
         <Route
           path="/whitelist"
           element={
-            <AuthGate>
-              <Layout>
-                <Whitelist />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Whitelist />
+            </Page>
           }
         />
         <Route
           path="/ratifications"
           element={
-            <AuthGate>
-              <Layout>
-                <Ratifications />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Ratifications />
+            </Page>
           }
         />
         <Route
           path="/genie"
           element={
-            <AuthGate>
-              <Layout>
-                <Genie />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Genie />
+            </Page>
           }
         />
         <Route
           path="/performance"
           element={
-            <AuthGate>
-              <Layout>
-                <Performance />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Performance />
+            </Page>
           }
         />
         <Route
           path="/pipeline"
           element={
-            <AuthGate>
-              <Layout>
-                <Pipeline />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Pipeline />
+            </Page>
           }
         />
         <Route
           path="/health"
           element={
-            <AuthGate>
-              <Layout>
-                <Health />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Health />
+            </Page>
           }
         />
         <Route
           path="/activity"
           element={
-            <AuthGate>
-              <Layout>
-                <Activity />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Activity />
+            </Page>
           }
         />
         <Route
           path="/pnl"
           element={
-            <AuthGate>
-              <Layout>
-                <Pnl />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Pnl />
+            </Page>
           }
         />
         <Route
           path="/admin/glossary"
           element={
-            <AuthGate>
-              <Layout>
-                <Glossary />
-              </Layout>
-            </AuthGate>
+            <Page>
+              <Glossary />
+            </Page>
           }
         />
       </Routes>
