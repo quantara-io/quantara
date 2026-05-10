@@ -5,15 +5,14 @@ on:
   push:
     branches: [main]
 
-# Serialize deploys per ref so back-to-back merges to `main` queue rather
-# than racing on `aws lambda update-function-code`. `cancel-in-progress: false`
-# is intentional — cancelling a partially-deployed run mid-flight risks
-# leaving Lambda code and infra out of sync. Latest commit deploys last,
-# which matches the desired "newest wins" semantics on `main`. PR runs are
-# scoped per-PR so they don't block each other.
+# Cancel in-progress runs on branches/PRs when a new push arrives — saves
+# Actions minutes on superseded pushes. On `main`, cancel-in-progress is
+# false to avoid cancelling a partially-deployed Lambda/ECS run mid-flight
+# (which could leave code and infra out of sync). Deploy jobs additionally
+# carry their own job-level concurrency groups.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -76,7 +75,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - run: npm ci
+      - name: Cache node_modules
+        id: cache-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            */node_modules
+            packages/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install deps (skip if cached)
+        if: steps.cache-modules.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Typecheck shared
         run: npm run typecheck --workspace=@quantara/shared
@@ -119,7 +130,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - run: npm ci
+      - name: Cache node_modules
+        id: cache-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            */node_modules
+            packages/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install deps (skip if cached)
+        if: steps.cache-modules.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Test backend (with coverage)
         run: npm run test:coverage --workspace=quantara-backend
@@ -348,7 +371,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - run: npm ci
+      - name: Cache node_modules
+        id: cache-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            */node_modules
+            packages/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install deps (skip if cached)
+        if: steps.cache-modules.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -404,24 +439,23 @@ jobs:
         with:
           platforms: arm64
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push Docker image
-        run: |
-          ECR_URL=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}
-          docker buildx build \
-            --platform linux/arm64 \
-            --provenance=false \
-            -f ingestion/Dockerfile \
-            -t ${ECR_URL}:latest \
-            -t ${ECR_URL}:${{ github.sha }} \
-            --push \
-            .
+      - name: Build and push (cached)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ingestion/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}:latest
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Force ECS redeploy
         run: |
