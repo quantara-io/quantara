@@ -296,6 +296,10 @@ resource "aws_lambda_function" "api" {
       ENVIRONMENT           = var.environment
       LOG_LEVEL             = var.log_level
       AWS_ACCOUNT_ID        = data.aws_caller_identity.current.account_id
+      # Override the ratification model in dev (Haiku 4.5 — ~12x cheaper)
+      # so debug iteration doesn't burn the Sonnet budget. Prod gets the
+      # default (Sonnet 4.6) which matches production ratification logic.
+      RATIFICATION_MODEL_ID = var.environment == "prod" ? "us.anthropic.claude-sonnet-4-6" : "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
   }
 
