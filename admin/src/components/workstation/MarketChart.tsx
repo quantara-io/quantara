@@ -12,7 +12,49 @@ import {
   type LineData,
   type Time,
   type UTCTimestamp,
+  type WhitespaceData,
 } from "lightweight-charts";
+
+// Seconds per timeframe — used by fillGaps to know the expected step size.
+const TIMEFRAME_SEC: Record<string, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "4h": 14400,
+  "1d": 86400,
+};
+
+/**
+ * Insert WhitespaceData placeholders for any gaps between consecutive data
+ * rows that are larger than one timeframe step.  Whitespace rows occupy
+ * x-axis space in lightweight-charts so the gap renders as blank space rather
+ * than a hard splice.
+ *
+ * The fill is capped at 5000 rows per gap so a months-long outage cannot OOM
+ * the chart.
+ */
+export function fillGaps<T extends { time: UTCTimestamp }>(
+  rows: T[],
+  timeframe: string,
+): (T | WhitespaceData)[] {
+  const stepSec = TIMEFRAME_SEC[timeframe];
+  if (!stepSec || rows.length < 2) return rows;
+  const out: (T | WhitespaceData)[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    out.push(rows[i]);
+    const next = rows[i + 1];
+    if (!next) continue;
+    const expectedNext = (rows[i].time as number) + stepSec;
+    if ((next.time as number) > expectedNext) {
+      const missing = Math.min(Math.floor(((next.time as number) - expectedNext) / stepSec), 5000);
+      for (let k = 0; k < missing; k++) {
+        out.push({ time: (expectedNext + k * stepSec) as UTCTimestamp });
+      }
+    }
+  }
+  return out;
+}
 
 export interface Candle {
   open: number;
@@ -25,6 +67,7 @@ export interface Candle {
 
 interface MarketChartProps {
   candles: Candle[];
+  timeframe?: string;
   height?: number;
   /**
    * Called when the user pans near the left edge of loaded data. The argument
@@ -62,7 +105,12 @@ function ema(values: number[], period: number): (number | null)[] {
   return out;
 }
 
-export function MarketChart({ candles, height = 380, onBackfillNeeded }: MarketChartProps) {
+export function MarketChart({
+  candles,
+  timeframe = "1h",
+  height = 380,
+  onBackfillNeeded,
+}: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -215,13 +263,14 @@ export function MarketChart({ candles, height = 380, onBackfillNeeded }: MarketC
     // Track oldest loaded candle time for the backfill range-change handler.
     oldestOpenTimeRef.current = sorted[0]?.openTime ?? null;
 
-    const candleData: CandlestickData<Time>[] = deduped.map(([t, c]) => ({
+    const rawCandleData: CandlestickData<UTCTimestamp>[] = deduped.map(([t, c]) => ({
       time: t as UTCTimestamp,
       open: c.open,
       high: c.high,
       low: c.low,
       close: c.close,
     }));
+    const candleData = fillGaps(rawCandleData, timeframe);
 
     const closes = deduped.map(([, c]) => c.close);
     const ema20 = ema(closes, 20);
@@ -262,11 +311,13 @@ export function MarketChart({ candles, height = 380, onBackfillNeeded }: MarketC
     const maxSqrt = sqrtVols.reduce((m, v) => Math.max(m, v), 0) || 1;
     const minHeight = maxSqrt * 0.03;
 
-    const volData: HistogramData<Time>[] = deduped.map(([t, c], i) => ({
+    const rawVolData: HistogramData<UTCTimestamp>[] = deduped.map(([t, c], i) => ({
       time: t as UTCTimestamp,
       value: Math.max(sqrtVols[i], minHeight),
       color: c.close >= c.open ? upColor : downColor,
     }));
+    // Mirror the same gap-filling so volume bars align with price bars.
+    const volData = fillGaps(rawVolData, timeframe);
 
     candleSeries.setData(candleData);
     ema20Series.setData(ema20Data);
@@ -290,7 +341,7 @@ export function MarketChart({ candles, height = 380, onBackfillNeeded }: MarketC
     if (prevCount === 0) {
       chart.timeScale().fitContent();
     }
-  }, [candles]);
+  }, [candles, timeframe]);
 
   return (
     <div className="relative">
