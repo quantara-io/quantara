@@ -14,7 +14,7 @@ interface BackfillEvent {
 export async function handler(event: BackfillEvent, _context: Context): Promise<{ total: number }> {
   console.log("[Backfill] Invoked with:", JSON.stringify(event));
 
-  const { exchange, pair, timeframe = "1h", days = 90 } = event;
+  const { exchange, pair, timeframe = "1h", days = 7 } = event;
 
   if (!exchange || !pair) {
     throw new Error("Missing required fields: exchange, pair");

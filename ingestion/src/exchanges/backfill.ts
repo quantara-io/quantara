@@ -1,7 +1,7 @@
 import ccxt from "ccxt";
 import type { Candle, Timeframe } from "@quantara/shared";
 
-import { storeCandles } from "../lib/candle-store.js";
+import { storeCandlesConditional } from "../lib/candle-store.js";
 import { archiveCandles } from "../lib/s3-archive.js";
 import { getCursor, saveCursor } from "../lib/metadata-store.js";
 
@@ -70,7 +70,7 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
         source: "backfill" as const,
       }));
 
-    await storeCandles(candles);
+    await storeCandlesConditional(candles);
     totalFetched += candles.length;
 
     if (archiveToS3) {

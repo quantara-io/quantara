@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock all external I/O dependencies before importing the SUT.
-const storeCandelsMock = vi.fn().mockResolvedValue(undefined);
+const storeCandlesConditionalMock = vi.fn().mockResolvedValue(undefined);
 const archiveCandlesMock = vi.fn().mockResolvedValue(undefined);
 const getCursorMock = vi.fn().mockResolvedValue(null);
 const saveCursorMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../lib/candle-store.js", () => ({
-  storeCandles: storeCandelsMock,
+  storeCandlesConditional: storeCandlesConditionalMock,
 }));
 
 vi.mock("../lib/s3-archive.js", () => ({
@@ -36,7 +36,7 @@ vi.mock("ccxt", () => {
 
 beforeEach(() => {
   vi.resetModules();
-  storeCandelsMock.mockReset().mockResolvedValue(undefined);
+  storeCandlesConditionalMock.mockReset().mockResolvedValue(undefined);
   archiveCandlesMock.mockReset().mockResolvedValue(undefined);
   getCursorMock.mockReset().mockResolvedValue(null);
   saveCursorMock.mockReset().mockResolvedValue(undefined);
@@ -63,8 +63,10 @@ describe("backfillCandles — OHLCV numeric coercion", () => {
       archiveToS3: false,
     });
 
-    expect(storeCandelsMock).toHaveBeenCalledOnce();
-    const [candles] = storeCandelsMock.mock.calls[0] as [import("@quantara/shared").Candle[]];
+    expect(storeCandlesConditionalMock).toHaveBeenCalledOnce();
+    const [candles] = storeCandlesConditionalMock.mock.calls[0] as [
+      import("@quantara/shared").Candle[],
+    ];
     expect(candles).toHaveLength(1);
 
     const candle = candles[0];
@@ -100,8 +102,10 @@ describe("backfillCandles — OHLCV numeric coercion", () => {
       archiveToS3: false,
     });
 
-    expect(storeCandelsMock).toHaveBeenCalledOnce();
-    const [candles] = storeCandelsMock.mock.calls[0] as [import("@quantara/shared").Candle[]];
+    expect(storeCandlesConditionalMock).toHaveBeenCalledOnce();
+    const [candles] = storeCandlesConditionalMock.mock.calls[0] as [
+      import("@quantara/shared").Candle[],
+    ];
     const candle = candles[0];
 
     expect(typeof candle.open).toBe("number");
@@ -127,7 +131,9 @@ describe("backfillCandles — OHLCV numeric coercion", () => {
       archiveToS3: false,
     });
 
-    const [candles] = storeCandelsMock.mock.calls[0] as [import("@quantara/shared").Candle[]];
+    const [candles] = storeCandlesConditionalMock.mock.calls[0] as [
+      import("@quantara/shared").Candle[],
+    ];
     const candle = candles[0];
 
     expect(candle.open).toBe(0);
