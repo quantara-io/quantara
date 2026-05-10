@@ -5,13 +5,13 @@ import { apiFetch } from "../lib/api";
 import { HelpTooltip } from "../components/HelpTooltip";
 
 // ---------------------------------------------------------------------------
-// Debug: replay enrichment result type
+// Debug: preview enrichment result type
 // ---------------------------------------------------------------------------
-interface ReplayEnrichmentResult {
+interface PreviewEnrichmentResult {
   newsId: string;
   title: string;
   storedEnrichment: Record<string, unknown> | null;
-  replayedEnrichment: {
+  previewedEnrichment: {
     mentionedPairs: string[];
     sentiment: { score: number; magnitude: number; model: string };
     enrichedAt: string;
@@ -210,34 +210,37 @@ export function News() {
   // Derived flat list of all loaded news items (first page only refreshes via polling).
   const allNews = pages.flat();
 
-  // Debug: replay enrichment state keyed by newsId
-  const [replayResults, setReplayResults] = useState<Record<string, ReplayEnrichmentResult>>({});
-  const [replayLoading, setReplayLoading] = useState<Set<string>>(new Set());
-  const [replayErrors, setReplayErrors] = useState<Record<string, string>>({});
+  // Debug: preview enrichment state keyed by newsId
+  const [previewResults, setPreviewResults] = useState<Record<string, PreviewEnrichmentResult>>({});
+  const [previewLoading, setPreviewLoading] = useState<Set<string>>(new Set());
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
 
-  async function handleReplayEnrichment(newsId: string) {
+  async function handlePreviewEnrichment(newsId: string) {
     if (!newsId) return;
-    setReplayLoading((prev) => new Set(prev).add(newsId));
-    setReplayErrors((prev) => {
+    setPreviewLoading((prev) => new Set(prev).add(newsId));
+    setPreviewErrors((prev) => {
       const n = { ...prev };
       delete n[newsId];
       return n;
     });
-    const res = await apiFetch<ReplayEnrichmentResult>("/api/admin/debug/replay-news-enrichment", {
-      method: "POST",
-      body: { newsId },
-    });
-    setReplayLoading((prev) => {
+    const res = await apiFetch<PreviewEnrichmentResult>(
+      "/api/admin/debug/preview-news-enrichment",
+      {
+        method: "POST",
+        body: { newsId },
+      },
+    );
+    setPreviewLoading((prev) => {
       const n = new Set(prev);
       n.delete(newsId);
       return n;
     });
     if (res.success && res.data) {
-      setReplayResults((prev) => ({ ...prev, [newsId]: res.data! }));
+      setPreviewResults((prev) => ({ ...prev, [newsId]: res.data! }));
     } else {
-      setReplayErrors((prev) => ({
+      setPreviewErrors((prev) => ({
         ...prev,
-        [newsId]: res.error?.message ?? "Replay enrichment failed",
+        [newsId]: res.error?.message ?? "Preview enrichment failed",
       }));
     }
   }
@@ -437,11 +440,11 @@ export function News() {
                   {n.newsId && (
                     <button
                       className="text-brand hover:text-brand underline underline-offset-2 disabled:opacity-50 disabled:no-underline"
-                      disabled={replayLoading.has(id)}
-                      onClick={() => handleReplayEnrichment(id)}
-                      title="Re-run enrichment against current prompts (read-only — does not overwrite)"
+                      disabled={previewLoading.has(id)}
+                      onClick={() => handlePreviewEnrichment(id)}
+                      title="Preview enrichment — re-runs Phase 5a in-memory against current prompts (read-only)"
                     >
-                      {replayLoading.has(id) ? "running…" : "replay enrichment"}
+                      {previewLoading.has(id) ? "running…" : "preview enrichment"}
                     </button>
                   )}
                 </div>
@@ -467,23 +470,23 @@ export function News() {
                 </pre>
               )}
 
-              {/* Replay enrichment result */}
-              {replayErrors[id] && (
+              {/* Preview enrichment result */}
+              {previewErrors[id] && (
                 <div className="mt-2 p-2 rounded bg-down-soft text-[11px] text-down">
-                  {replayErrors[id]}
+                  {previewErrors[id]}
                 </div>
               )}
-              {replayResults[id] && (
+              {previewResults[id] && (
                 <div className="mt-2 space-y-1.5">
                   <div className="text-[10px] text-muted2 uppercase tracking-widest">
-                    Replay result{" "}
+                    Preview result{" "}
                     <span className="normal-case font-normal text-muted2">
-                      (not saved · {replayResults[id].replayedEnrichment.latencyMs}ms · $
-                      {replayResults[id].replayedEnrichment.costUsd.toFixed(5)})
+                      (not saved · {previewResults[id].previewedEnrichment.latencyMs}ms · $
+                      {previewResults[id].previewedEnrichment.costUsd.toFixed(5)})
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {replayResults[id].replayedEnrichment.mentionedPairs.map((p) => (
+                    {previewResults[id].previewedEnrichment.mentionedPairs.map((p) => (
                       <span
                         key={p}
                         className="px-1.5 py-0.5 rounded bg-brand-soft text-brand text-[11px]"
@@ -493,15 +496,15 @@ export function News() {
                     ))}
                     <span
                       className={`px-1.5 py-0.5 rounded text-[11px] ${
-                        replayResults[id].replayedEnrichment.sentiment.score > 0.1
+                        previewResults[id].previewedEnrichment.sentiment.score > 0.1
                           ? "bg-up-soft text-up-strong"
-                          : replayResults[id].replayedEnrichment.sentiment.score < -0.1
+                          : previewResults[id].previewedEnrichment.sentiment.score < -0.1
                             ? "bg-down-soft text-down-strong"
                             : "bg-sunken text-muted"
                       }`}
                     >
-                      score {replayResults[id].replayedEnrichment.sentiment.score.toFixed(2)} · mag{" "}
-                      {replayResults[id].replayedEnrichment.sentiment.magnitude.toFixed(2)}
+                      score {previewResults[id].previewedEnrichment.sentiment.score.toFixed(2)} ·
+                      mag {previewResults[id].previewedEnrichment.sentiment.magnitude.toFixed(2)}
                     </span>
                   </div>
                 </div>
