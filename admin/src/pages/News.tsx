@@ -2,6 +2,23 @@ import { useEffect, useState } from "react";
 
 import { apiFetch } from "../lib/api";
 
+// ---------------------------------------------------------------------------
+// Debug: replay enrichment result type
+// ---------------------------------------------------------------------------
+interface ReplayEnrichmentResult {
+  newsId: string;
+  title: string;
+  storedEnrichment: Record<string, unknown> | null;
+  replayedEnrichment: {
+    mentionedPairs: string[];
+    sentiment: { score: number; magnitude: number; model: string };
+    enrichedAt: string;
+    latencyMs: number;
+    costUsd: number;
+  };
+  mutated: false;
+}
+
 // Active enrichment path (`ingestion/src/enrichment/bedrock.ts`) writes a
 // string-union sentiment + per-event extraction. This is what most production
 // records carry today.
@@ -195,6 +212,38 @@ export function News() {
   // Derived flat list of all loaded news items (first page only refreshes via polling).
   const allNews = pages.flat();
 
+  // Debug: replay enrichment state keyed by newsId
+  const [replayResults, setReplayResults] = useState<Record<string, ReplayEnrichmentResult>>({});
+  const [replayLoading, setReplayLoading] = useState<Set<string>>(new Set());
+  const [replayErrors, setReplayErrors] = useState<Record<string, string>>({});
+
+  async function handleReplayEnrichment(newsId: string) {
+    if (!newsId) return;
+    setReplayLoading((prev) => new Set(prev).add(newsId));
+    setReplayErrors((prev) => {
+      const n = { ...prev };
+      delete n[newsId];
+      return n;
+    });
+    const res = await apiFetch<ReplayEnrichmentResult>("/api/admin/debug/replay-news-enrichment", {
+      method: "POST",
+      body: { newsId },
+    });
+    setReplayLoading((prev) => {
+      const n = new Set(prev);
+      n.delete(newsId);
+      return n;
+    });
+    if (res.success && res.data) {
+      setReplayResults((prev) => ({ ...prev, [newsId]: res.data! }));
+    } else {
+      setReplayErrors((prev) => ({
+        ...prev,
+        [newsId]: res.error?.message ?? "Replay enrichment failed",
+      }));
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -349,21 +398,33 @@ export function News() {
                   </span>
                 ))}
 
-                {hasEnrichment && (
-                  <button
-                    className="ml-auto text-slate-500 hover:text-slate-300 underline underline-offset-2"
-                    onClick={() => {
-                      setExpanded((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(id)) next.delete(id);
-                        else next.add(id);
-                        return next;
-                      });
-                    }}
-                  >
-                    {isExpanded ? "hide" : "detail"}
-                  </button>
-                )}
+                <div className="ml-auto flex items-center gap-2">
+                  {hasEnrichment && (
+                    <button
+                      className="text-slate-500 hover:text-slate-300 underline underline-offset-2"
+                      onClick={() => {
+                        setExpanded((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(id)) next.delete(id);
+                          else next.add(id);
+                          return next;
+                        });
+                      }}
+                    >
+                      {isExpanded ? "hide" : "detail"}
+                    </button>
+                  )}
+                  {n.newsId && (
+                    <button
+                      className="text-indigo-400 hover:text-indigo-200 underline underline-offset-2 disabled:opacity-50 disabled:no-underline"
+                      disabled={replayLoading.has(id)}
+                      onClick={() => handleReplayEnrichment(id)}
+                      title="Re-run enrichment against current prompts (read-only — does not overwrite)"
+                    >
+                      {replayLoading.has(id) ? "running…" : "replay enrichment"}
+                    </button>
+                  )}
+                </div>
               </div>
 
               {isExpanded && hasEnrichment && (
@@ -384,6 +445,46 @@ export function News() {
                     2,
                   )}
                 </pre>
+              )}
+
+              {/* Replay enrichment result */}
+              {replayErrors[id] && (
+                <div className="mt-2 p-2 rounded bg-red-950/30 text-[11px] text-red-400">
+                  {replayErrors[id]}
+                </div>
+              )}
+              {replayResults[id] && (
+                <div className="mt-2 space-y-1.5">
+                  <div className="text-[10px] text-slate-500 uppercase tracking-widest">
+                    Replay result{" "}
+                    <span className="normal-case font-normal text-slate-600">
+                      (not saved · {replayResults[id].replayedEnrichment.latencyMs}ms · $
+                      {replayResults[id].replayedEnrichment.costUsd.toFixed(5)})
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {replayResults[id].replayedEnrichment.mentionedPairs.map((p) => (
+                      <span
+                        key={p}
+                        className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 text-[11px]"
+                      >
+                        {p}
+                      </span>
+                    ))}
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[11px] ${
+                        replayResults[id].replayedEnrichment.sentiment.score > 0.1
+                          ? "bg-emerald-950 text-emerald-300"
+                          : replayResults[id].replayedEnrichment.sentiment.score < -0.1
+                            ? "bg-red-950 text-red-300"
+                            : "bg-slate-800 text-slate-400"
+                      }`}
+                    >
+                      score {replayResults[id].replayedEnrichment.sentiment.score.toFixed(2)} · mag{" "}
+                      {replayResults[id].replayedEnrichment.sentiment.magnitude.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
               )}
             </div>
           );

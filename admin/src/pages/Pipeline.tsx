@@ -3,6 +3,33 @@ import { PAIRS } from "@quantara/shared";
 import { apiFetch } from "../lib/api";
 
 // ---------------------------------------------------------------------------
+// Debug result types
+// ---------------------------------------------------------------------------
+
+// Mirrors `backend/src/services/admin-debug.service.ts:ForceRatificationResult`.
+// Backend distinguishes `algoSignalType` (the algo's input verdict) from
+// `verdictKind` (the LLM's output verdict) so the UI can render
+// "Algo: buy 75% → LLM: downgrade".
+interface ForceRatificationResult {
+  algoSignalType: string | null;
+  algoConfidence: number | null;
+  verdictKind: string | null;
+  ratifiedConfidence: number | null;
+  reasoning: string | null;
+  latencyMs: number;
+  costUsd: number;
+  cacheHit: boolean;
+  fellBackToAlgo: boolean;
+  recordId: string;
+}
+
+interface InjectShockResult {
+  decision: "fired" | "gated" | "skipped";
+  reasons: string[];
+  shockRecord: Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------
 // Types (mirrors pipeline-state.service.ts)
 // ---------------------------------------------------------------------------
 
@@ -227,6 +254,32 @@ function CellCard({
 // ---------------------------------------------------------------------------
 
 function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void }) {
+  const [ratResult, setRatResult] = useState<ForceRatificationResult | null>(null);
+  const [ratError, setRatError] = useState("");
+  const [ratLoading, setRatLoading] = useState(false);
+  const [ratConfirmed, setRatConfirmed] = useState(false);
+
+  async function handleForceRatification() {
+    if (!ratConfirmed) {
+      setRatConfirmed(true);
+      return;
+    }
+    setRatLoading(true);
+    setRatError("");
+    setRatResult(null);
+    const res = await apiFetch<ForceRatificationResult>("/api/admin/debug/force-ratification", {
+      method: "POST",
+      body: { pair: cell.pair, timeframe: cell.timeframe },
+    });
+    setRatLoading(false);
+    setRatConfirmed(false);
+    if (res.success && res.data) {
+      setRatResult(res.data);
+    } else {
+      setRatError(res.error?.message ?? "Force ratification failed");
+    }
+  }
+
   return (
     <div className="fixed inset-y-0 right-0 w-full max-w-xl bg-slate-950 border-l border-slate-800 overflow-y-auto z-20 shadow-2xl">
       <div className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
@@ -244,6 +297,73 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
       </div>
 
       <div className="p-4 space-y-4">
+        {/* Debug: Force ratification */}
+        <section>
+          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">Debug Controls</h3>
+          <div className="space-y-2">
+            <button
+              onClick={handleForceRatification}
+              disabled={ratLoading}
+              className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${
+                ratConfirmed
+                  ? "bg-red-900/60 border-red-700 text-red-200 hover:bg-red-800/80"
+                  : "bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500 hover:bg-slate-700"
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+            >
+              {ratLoading
+                ? "Firing…"
+                : ratConfirmed
+                  ? "Confirm — this costs real Bedrock dollars"
+                  : "Force ratification"}
+            </button>
+            {ratConfirmed && !ratLoading && (
+              <button
+                onClick={() => setRatConfirmed(false)}
+                className="ml-2 text-xs text-slate-500 hover:text-slate-300 underline"
+              >
+                Cancel
+              </button>
+            )}
+            {ratError && (
+              <p className="text-xs text-red-400 bg-red-950/30 rounded p-2">{ratError}</p>
+            )}
+            {ratResult && (
+              <div className="text-[11px] bg-slate-900 rounded p-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500">
+                    {ratResult.algoSignalType ?? "—"}
+                    {ratResult.algoConfidence !== null
+                      ? ` ${(ratResult.algoConfidence * 100).toFixed(0)}%`
+                      : ""}
+                  </span>
+                  <span className="text-slate-600">→</span>
+                  <span
+                    className={`font-semibold ${
+                      ratResult.verdictKind === "ratify"
+                        ? "text-emerald-400"
+                        : ratResult.verdictKind === "downgrade"
+                          ? "text-yellow-400"
+                          : "text-red-400"
+                    }`}
+                  >
+                    {ratResult.verdictKind ?? "—"}
+                    {ratResult.ratifiedConfidence !== null
+                      ? ` ${(ratResult.ratifiedConfidence * 100).toFixed(0)}%`
+                      : ""}
+                  </span>
+                  <span className="ml-auto text-slate-500 font-mono">
+                    {ratResult.latencyMs}ms · ${ratResult.costUsd.toFixed(5)}
+                  </span>
+                </div>
+                {ratResult.reasoning && <p className="text-slate-400">{ratResult.reasoning}</p>}
+                {ratResult.fellBackToAlgo && (
+                  <p className="text-yellow-500">Fell back to algo signal (LLM failed)</p>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+
         {/* Interpretation text */}
         {cell.signal.interpretationText && (
           <section>
@@ -338,6 +458,152 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
 }
 
 // ---------------------------------------------------------------------------
+// Inject Shock modal
+// ---------------------------------------------------------------------------
+
+function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void }) {
+  const [deltaScore, setDeltaScore] = useState("0.5");
+  const [deltaMagnitude, setDeltaMagnitude] = useState("0.1");
+  const [confirmed, setConfirmed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<InjectShockResult | null>(null);
+  const [error, setError] = useState("");
+
+  async function handleInject() {
+    if (!confirmed) {
+      setConfirmed(true);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setResult(null);
+    const res = await apiFetch<InjectShockResult>("/api/admin/debug/inject-sentiment-shock", {
+      method: "POST",
+      body: {
+        pair,
+        deltaScore: parseFloat(deltaScore),
+        deltaMagnitude: parseFloat(deltaMagnitude),
+      },
+    });
+    setLoading(false);
+    setConfirmed(false);
+    if (res.success && res.data) {
+      setResult(res.data);
+    } else {
+      setError(res.error?.message ?? "Inject shock failed");
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-30" onClick={onClose} aria-hidden />
+      <div className="fixed inset-x-4 top-1/4 max-w-sm mx-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-40 p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-100">Inject Sentiment Shock</h2>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-200 text-lg leading-none"
+          >
+            &times;
+          </button>
+        </div>
+
+        <div className="rounded bg-amber-950/50 border border-amber-800 p-2 text-[11px] text-amber-300">
+          This writes a real <code>sentiment_shock</code> ratification record to DynamoDB. The shock
+          is observed end-to-end but does not alter the live signal output.
+        </div>
+
+        <div className="space-y-2">
+          <div>
+            <label className="block text-[11px] text-slate-400 mb-1">Pair</label>
+            <div className="text-xs font-mono text-slate-200">{pair}</div>
+          </div>
+          <div>
+            <label className="block text-[11px] text-slate-400 mb-1">
+              Delta Score{" "}
+              <span className="text-slate-600">(added to current aggregate, range [-2, 2])</span>
+            </label>
+            <input
+              type="number"
+              step="0.1"
+              min="-2"
+              max="2"
+              value={deltaScore}
+              onChange={(e) => {
+                setDeltaScore(e.target.value);
+                setConfirmed(false);
+              }}
+              className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-slate-500"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] text-slate-400 mb-1">
+              Delta Magnitude{" "}
+              <span className="text-slate-600">(added to current aggregate, range [-1, 1])</span>
+            </label>
+            <input
+              type="number"
+              step="0.1"
+              min="-1"
+              max="1"
+              value={deltaMagnitude}
+              onChange={(e) => {
+                setDeltaMagnitude(e.target.value);
+                setConfirmed(false);
+              }}
+              className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-slate-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={handleInject}
+            disabled={loading}
+            className={`flex-1 py-1.5 rounded text-xs font-medium border transition-colors ${
+              confirmed
+                ? "bg-red-900/60 border-red-700 text-red-200 hover:bg-red-800/80"
+                : "bg-indigo-700 border-indigo-600 text-white hover:bg-indigo-600"
+            } disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            {loading ? "Injecting…" : confirmed ? "Confirm — this is real" : "Inject shock"}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded text-xs border border-slate-700 text-slate-400 hover:border-slate-500"
+          >
+            Close
+          </button>
+        </div>
+
+        {error && <p className="text-xs text-red-400 bg-red-950/30 rounded p-2">{error}</p>}
+
+        {result && (
+          <div className="space-y-1">
+            <div
+              className={`text-xs font-semibold ${
+                result.decision === "fired"
+                  ? "text-emerald-400"
+                  : result.decision === "gated"
+                    ? "text-orange-400"
+                    : "text-slate-400"
+              }`}
+            >
+              {result.decision.toUpperCase()}
+            </div>
+            <ul className="text-[11px] text-slate-400 space-y-0.5">
+              {result.reasons.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -345,6 +611,7 @@ export function Pipeline() {
   const [data, setData] = useState<PipelineData | null>(null);
   const [error, setError] = useState("");
   const [selectedCell, setSelectedCell] = useState<PipelineCell | null>(null);
+  const [shockPair, setShockPair] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -428,7 +695,16 @@ export function Pipeline() {
             <tbody>
               {PAIRS.map((pair) => (
                 <tr key={pair}>
-                  <td className="text-xs font-mono text-slate-400 pr-2 align-top pt-1">{pair}</td>
+                  <td className="text-xs font-mono text-slate-400 pr-2 align-top pt-1">
+                    <div>{pair}</div>
+                    <button
+                      onClick={() => setShockPair(pair)}
+                      className="mt-1 text-[9px] px-1.5 py-0.5 rounded border border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-300 transition-colors whitespace-nowrap"
+                      title="Inject synthetic sentiment shock for this pair"
+                    >
+                      inject shock
+                    </button>
+                  </td>
                   {TIMEFRAMES.map((tf) => {
                     const cell = cellMap.get(pair)?.get(tf);
                     if (!cell) {
@@ -472,6 +748,9 @@ export function Pipeline() {
           <SidePanel cell={selectedCell} onClose={() => setSelectedCell(null)} />
         </>
       )}
+
+      {/* Inject shock modal */}
+      {shockPair && <InjectShockModal pair={shockPair} onClose={() => setShockPair(null)} />}
     </div>
   );
 }
