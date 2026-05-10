@@ -96,8 +96,15 @@ export async function findSubscribersForPair(pair: string): Promise<RegistryRow[
     const result = await ddb.send(
       new ScanCommand({
         TableName: TABLE_CONNECTION_REGISTRY,
-        FilterExpression: "contains(subscribedPairs, :pair)",
-        ExpressionAttributeValues: { ":pair": pair },
+        // Filter by channel = "signals" so this fanout doesn't push trading-
+        // signal payloads onto activity-feed connections (which the
+        // ActivityFeed client would parse as PipelineEvent and render as
+        // garbage rows). Pre-#184 connections without a channel attribute
+        // are treated as legacy "signals" subscribers — backward compatible.
+        FilterExpression:
+          "contains(subscribedPairs, :pair) AND (attribute_not_exists(#channel) OR #channel = :signals)",
+        ExpressionAttributeNames: { "#channel": "channel" },
+        ExpressionAttributeValues: { ":pair": pair, ":signals": "signals" },
         ExclusiveStartKey: lastKey,
       }),
     );

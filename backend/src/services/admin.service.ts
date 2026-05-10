@@ -28,6 +28,73 @@ const SIGNALS_V2_TABLE =
 const INDICATOR_STATE_TABLE =
   process.env.TABLE_INDICATOR_STATE ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
+const NEWS_TABLE =
+  process.env.TABLE_NEWS_EVENTS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}news-events`;
+
+/**
+ * GSI on news-events for time-ordered queries.
+ * HASH: publishedDay (YYYY-MM-DD)
+ * RANGE: publishedAt (ISO-8601)
+ * Requires the published-day-index GSI to be deployed (see backend/infra — needs-human-review).
+ */
+const NEWS_DAY_INDEX = "published-day-index";
+
+/** Maximum number of days to walk back when paginating news. */
+const NEWS_LOOKBACK_DAYS = 14;
+
+interface NewsCursor {
+  day: string;
+  lastEvaluatedKey?: Record<string, unknown>;
+}
+
+/** Encode a cursor to an opaque base64 string for the API response. */
+export function encodeNewsCursor(cursor: NewsCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+/**
+ * Validate that an unknown value is a plausible DynamoDB ExclusiveStartKey:
+ * a flat object whose values are primitives DDB accepts in keys (string,
+ * number, boolean). Anything else (nested objects, arrays, null/undefined,
+ * functions) gets rejected so a malformed `lastEvaluatedKey` from a forged
+ * or corrupted cursor doesn't reach the SDK and fail the whole request.
+ */
+function isValidLastEvaluatedKey(v: unknown): v is Record<string, string | number | boolean> {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  for (const val of Object.values(v as Record<string, unknown>)) {
+    if (typeof val !== "string" && typeof val !== "number" && typeof val !== "boolean") {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Decode an opaque cursor. Returns null if the input is invalid. If the
+ * cursor's `day` is well-formed but `lastEvaluatedKey` has the wrong shape,
+ * we drop just the `lastEvaluatedKey` field rather than rejecting the whole
+ * cursor — the caller can still resume at the day boundary.
+ */
+export function decodeNewsCursor(encoded: string): NewsCursor | null {
+  try {
+    const obj = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as unknown;
+    if (
+      typeof obj !== "object" ||
+      obj === null ||
+      !("day" in obj) ||
+      typeof (obj as { day: unknown }).day !== "string"
+    ) {
+      return null;
+    }
+    const day = (obj as { day: string }).day;
+    const rawLek = (obj as { lastEvaluatedKey?: unknown }).lastEvaluatedKey;
+    if (rawLek === undefined) return { day };
+    if (!isValidLastEvaluatedKey(rawLek)) return { day };
+    return { day, lastEvaluatedKey: rawLek };
+  } catch {
+    return null;
+  }
+}
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const dynamoRaw = new DynamoDBClient({ region: REGION });
@@ -441,20 +508,140 @@ export interface NewsUsage {
   >;
 }
 
-export async function getNews(limit = 50) {
+/**
+ * Fetch the most-recent `limit` news articles using a day-by-day GSI Query.
+ *
+ * Walks backward from `startDay` (or today) querying the `published-day-index`
+ * GSI with `ScanIndexForward: false` so results are newest-first within each
+ * day. Continues to the previous day when a day has fewer rows than needed.
+ * Stops at `NEWS_LOOKBACK_DAYS` days total.
+ *
+ * The returned `nextCursor` is an opaque base64url token that encodes the
+ * resume position (day + DynamoDB LastEvaluatedKey). Pass it as the `cursor`
+ * query param on the next request to load the next page. `nextCursor` is
+ * suppressed when the resume position would already be outside the lookback
+ * window — emitting it would just produce an empty next page.
+ *
+ * NOTE: Requires the `published-day-index` GSI to be deployed and `ACTIVE`
+ * (added in #203). The ingestion write path populates `publishedDay` on every
+ * new record (#202). Pre-existing rows must be backfilled with
+ * `ingestion/scripts/backfill-published-day.ts` before they appear in
+ * paginated results.
+ */
+export async function getNews(
+  limit = 50,
+  cursorToken?: string,
+): Promise<{
+  news: Record<string, unknown>[];
+  fearGreed: { value: number; classification: string } | null;
+  nextCursor: string | null;
+}> {
+  // Kick off the fear-greed fetch up front so it overlaps with the day-by-day
+  // Query loop instead of adding sequential latency. We `await` it just before
+  // returning. Errors are absorbed by `getFearGreed()` itself (returns null).
+  const fearGreedPromise = getFearGreed();
+
   try {
-    const [scan, fearGreed] = await Promise.all([
-      dynamo.send(new ScanCommand({ TableName: `${PREFIX}-news-events`, Limit: 200 })),
-      getFearGreed(),
-    ]);
-    const items = ((scan.Items ?? []) as Record<string, unknown>[]).sort((a, b) =>
-      String(b.publishedAt ?? "").localeCompare(String(a.publishedAt ?? "")),
-    );
-    return { news: items.slice(0, limit), fearGreed };
+    const cursor: NewsCursor = cursorToken
+      ? (decodeNewsCursor(cursorToken) ?? { day: todayUtc() })
+      : { day: todayUtc() };
+
+    const collected: Record<string, unknown>[] = [];
+    let currentDay = cursor.day;
+    let resumeKey: Record<string, unknown> | undefined = cursor.lastEvaluatedKey;
+
+    // Bound the walk by calendar distance from today, not by iteration count,
+    // so a stale/forged cursor with an old `day` doesn't escape the lookback
+    // window. Initialize from the cursor's day so a day-by-day Query loop
+    // for a cursor older than NEWS_LOOKBACK_DAYS short-circuits before
+    // issuing any reads.
+    const startDayMs = dayToMs(todayUtc());
+    let daysWalked = Math.max(0, Math.round((startDayMs - dayToMs(currentDay)) / 86400000));
+
+    while (collected.length < limit && daysWalked < NEWS_LOOKBACK_DAYS) {
+      const needed = limit - collected.length;
+
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: NEWS_TABLE,
+          IndexName: NEWS_DAY_INDEX,
+          KeyConditionExpression: "#day = :day",
+          ExpressionAttributeNames: { "#day": "publishedDay" },
+          ExpressionAttributeValues: { ":day": currentDay },
+          ScanIndexForward: false,
+          Limit: needed,
+          ...(resumeKey ? { ExclusiveStartKey: resumeKey } : {}),
+        }),
+      );
+
+      const items = (result.Items ?? []) as Record<string, unknown>[];
+      collected.push(...items);
+
+      if (result.LastEvaluatedKey) {
+        // DynamoDB Query can return fewer than `Limit` items even when more
+        // matching rows exist for the partition (1 MB response cap). When
+        // that happens with the page still unfilled, we MUST keep querying
+        // the same day with `ExclusiveStartKey` instead of moving on, or
+        // the caller will silently get a short page even though more rows
+        // are available right there. Only break out when the page is full —
+        // the cursor then resumes from this position next page.
+        resumeKey = result.LastEvaluatedKey as Record<string, unknown>;
+        if (collected.length >= limit) break;
+        continue;
+      }
+
+      // No LastEvaluatedKey → day exhausted. Advance to the previous day.
+      resumeKey = undefined;
+      currentDay = prevDay(currentDay);
+      daysWalked = Math.round((startDayMs - dayToMs(currentDay)) / 86400000);
+    }
+
+    // Build nextCursor: if we stopped mid-page (have a resumeKey) or still
+    // have more days to walk and could yield more rows, emit a cursor.
+    //
+    // When the page filled exactly on day-exhaustion, `currentDay` was already
+    // advanced to the previous calendar day at the bottom of the loop body.
+    // The next page should resume from that already-advanced day — applying
+    // `prevDay()` again here would skip a calendar day per page.
+    //
+    // Suppress the cursor when the resume day is already past
+    // `NEWS_LOOKBACK_DAYS` (would only happen at the lookback boundary and a
+    // resume-key still mid-day on that boundary). Emitting it would return a
+    // cursor whose next call would short-circuit on day 1 of the loop and
+    // return an empty page — confusing for clients/UI.
+    let nextCursor: string | null = null;
+    if (collected.length >= limit) {
+      const resumeDay = currentDay;
+      const resumeDaysFromToday = Math.round((startDayMs - dayToMs(resumeDay)) / 86400000);
+      if (resumeDaysFromToday < NEWS_LOOKBACK_DAYS) {
+        const nextCursorObj: NewsCursor = resumeKey
+          ? { day: resumeDay, lastEvaluatedKey: resumeKey }
+          : { day: resumeDay };
+        nextCursor = encodeNewsCursor(nextCursorObj);
+      }
+    }
+
+    const fearGreed = await fearGreedPromise;
+    return { news: collected, fearGreed, nextCursor };
   } catch (err) {
     console.error("[admin.service] getNews failed:", err);
-    return { news: [], fearGreed: null };
+    // Make sure the prefetched fearGreed promise doesn't reject unhandled.
+    void fearGreedPromise.catch(() => {});
+    return { news: [], fearGreed: null, nextCursor: null };
   }
+}
+
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function prevDay(day: string): string {
+  const ms = dayToMs(day) - 86400000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function dayToMs(day: string): number {
+  return new Date(`${day}T00:00:00.000Z`).getTime();
 }
 
 /**

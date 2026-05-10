@@ -193,4 +193,41 @@ describe("handler", () => {
 
     expect(res).toMatchObject({ statusCode: 500 });
   });
+
+  // ---------------------------------------------------------------------------
+  // Channel parsing (#184 — Live Activity Feed)
+  // ---------------------------------------------------------------------------
+
+  it("defaults channel to 'signals' when query param absent", async () => {
+    jwtVerifyMock.mockResolvedValue({ payload: { sub: "user_a" } });
+    ddbSend.mockResolvedValue({});
+
+    const { handler } = await import("./ws-connect-handler.js");
+    await handler(makeEvent({ token: "valid.jwt" }), {} as any, () => {});
+
+    const putCall = ddbSend.mock.calls[0][0];
+    expect(putCall.input.Item.channel).toBe("signals");
+  });
+
+  it("persists channel='events' when query param is 'events'", async () => {
+    jwtVerifyMock.mockResolvedValue({ payload: { sub: "user_b" } });
+    ddbSend.mockResolvedValue({});
+
+    const { handler } = await import("./ws-connect-handler.js");
+    await handler(makeEvent({ token: "valid.jwt", channel: "events" }), {} as any, () => {});
+
+    const putCall = ddbSend.mock.calls[0][0];
+    expect(putCall.input.Item.channel).toBe("events");
+  });
+
+  it("falls back to 'signals' for unknown channel values (no leakage to events)", async () => {
+    jwtVerifyMock.mockResolvedValue({ payload: { sub: "user_c" } });
+    ddbSend.mockResolvedValue({});
+
+    const { handler } = await import("./ws-connect-handler.js");
+    await handler(makeEvent({ token: "valid.jwt", channel: "garbage" }), {} as any, () => {});
+
+    const putCall = ddbSend.mock.calls[0][0];
+    expect(putCall.input.Item.channel).toBe("signals");
+  });
 });

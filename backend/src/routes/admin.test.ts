@@ -131,20 +131,49 @@ describe("GET /market", () => {
 });
 
 describe("GET /news", () => {
-  it("defaults limit to 50", async () => {
-    getNewsMock.mockResolvedValue({ news: [], fearGreed: null });
+  it("defaults limit to 50 with no cursor", async () => {
+    getNewsMock.mockResolvedValue({ news: [], fearGreed: null, nextCursor: null });
     const app = await loadApp();
     const res = await app.request("/news");
     expect(res.status).toBe(200);
-    expect(getNewsMock).toHaveBeenCalledWith(50);
+    expect(getNewsMock).toHaveBeenCalledWith(50, undefined);
   });
 
-  it("forwards a numeric limit query param", async () => {
-    getNewsMock.mockResolvedValue({ news: [], fearGreed: null });
+  it("forwards a numeric limit and no cursor when cursor param absent", async () => {
+    getNewsMock.mockResolvedValue({ news: [], fearGreed: null, nextCursor: null });
     const app = await loadApp();
     const res = await app.request("/news?limit=10");
     expect(res.status).toBe(200);
-    expect(getNewsMock).toHaveBeenCalledWith(10);
+    expect(getNewsMock).toHaveBeenCalledWith(10, undefined);
+  });
+
+  it("forwards cursor param when provided", async () => {
+    getNewsMock.mockResolvedValue({ news: [], fearGreed: null, nextCursor: null });
+    const app = await loadApp();
+    const res = await app.request("/news?cursor=abc123");
+    expect(res.status).toBe(200);
+    expect(getNewsMock).toHaveBeenCalledWith(50, "abc123");
+  });
+
+  it("returns 400 when limit is out of range", async () => {
+    const app = await loadApp();
+    const res = await app.request("/news?limit=999");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("exposes nextCursor in the response data", async () => {
+    getNewsMock.mockResolvedValue({
+      news: [{ newsId: "x" }],
+      fearGreed: null,
+      nextCursor: "tok123",
+    });
+    const app = await loadApp();
+    const res = await app.request("/news");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { nextCursor: string } };
+    expect(body.data.nextCursor).toBe("tok123");
   });
 });
 

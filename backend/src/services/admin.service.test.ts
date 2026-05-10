@@ -18,6 +18,7 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
   ScanCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Scan", input })),
   GetCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Get", input })),
   QueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Query", input })),
+  BatchGetCommand: vi.fn().mockImplementation((input) => ({ __cmd: "BatchGet", input })),
 }));
 
 vi.mock("@aws-sdk/client-ecs", () => ({
@@ -121,34 +122,336 @@ describe("setWhitelist", () => {
   });
 });
 
+describe("encodeNewsCursor / decodeNewsCursor", () => {
+  it("round-trips a cursor with only a day", async () => {
+    const { encodeNewsCursor, decodeNewsCursor } = await importService();
+    const cursor = { day: "2026-05-09" };
+    expect(decodeNewsCursor(encodeNewsCursor(cursor))).toEqual(cursor);
+  });
+
+  it("round-trips a cursor with a day and lastEvaluatedKey", async () => {
+    const { encodeNewsCursor, decodeNewsCursor } = await importService();
+    const cursor = {
+      day: "2026-05-08",
+      lastEvaluatedKey: {
+        newsId: "abc",
+        publishedAt: "2026-05-08T10:00:00Z",
+        publishedDay: "2026-05-08",
+      },
+    };
+    expect(decodeNewsCursor(encodeNewsCursor(cursor))).toEqual(cursor);
+  });
+
+  it("returns null for invalid base64", async () => {
+    const { decodeNewsCursor } = await importService();
+    expect(decodeNewsCursor("not-valid-base64!!!")).toBeNull();
+  });
+
+  it("returns null for valid base64 but wrong shape (missing day)", async () => {
+    const { decodeNewsCursor } = await importService();
+    const bad = Buffer.from(JSON.stringify({ notDay: "foo" })).toString("base64url");
+    expect(decodeNewsCursor(bad)).toBeNull();
+  });
+
+  it("drops a malformed lastEvaluatedKey but keeps the day", async () => {
+    // Regression: previously, decodeNewsCursor accepted any lastEvaluatedKey
+    // shape and passed it straight to ExclusiveStartKey, where DynamoDB would
+    // throw and the endpoint would return an empty page. Now an invalid
+    // lastEvaluatedKey is silently dropped so the caller falls back to a
+    // day-only resume.
+    const { decodeNewsCursor } = await importService();
+    const malformed = Buffer.from(
+      JSON.stringify({
+        day: "2026-05-08",
+        lastEvaluatedKey: { nested: { bad: "shape" } }, // nested object — invalid for DDB key
+      }),
+    ).toString("base64url");
+    expect(decodeNewsCursor(malformed)).toEqual({ day: "2026-05-08" });
+  });
+
+  it("rejects lastEvaluatedKey containing arrays or null values", async () => {
+    // JSON.stringify drops `undefined` values, so the only round-trippable
+    // invalid LEK shapes are arrays-as-values, null-as-value, and nested
+    // objects (covered above).
+    const { decodeNewsCursor } = await importService();
+    for (const lek of [
+      { ok: "yes", arr: [1, 2] },
+      { ok: "yes", nullVal: null },
+    ]) {
+      const enc = Buffer.from(
+        JSON.stringify({ day: "2026-05-08", lastEvaluatedKey: lek }),
+      ).toString("base64url");
+      expect(decodeNewsCursor(enc)).toEqual({ day: "2026-05-08" });
+    }
+  });
+});
+
 describe("getNews", () => {
-  it("returns news sorted desc by publishedAt and trimmed to limit", async () => {
-    dynamoSend.mockImplementation(async (cmd: { __cmd: string; input?: { Key?: unknown } }) => {
-      if (cmd.__cmd === "Scan") {
-        return {
-          Items: [
-            { newsId: "a", publishedAt: "2026-04-01T00:00:00Z", title: "old" },
-            { newsId: "b", publishedAt: "2026-04-25T00:00:00Z", title: "new" },
-            { newsId: "c", publishedAt: "2026-04-10T00:00:00Z", title: "mid" },
-          ],
-        };
-      }
-      // Get for fear-greed
-      return { Item: { value: 55, classification: "Greed" } };
+  it("queries the GSI by publishedDay and returns items newest-first", async () => {
+    const mockItems = [
+      {
+        newsId: "b",
+        publishedAt: "2026-05-09T12:00:00Z",
+        publishedDay: "2026-05-09",
+        title: "new",
+      },
+      {
+        newsId: "a",
+        publishedAt: "2026-05-09T08:00:00Z",
+        publishedDay: "2026-05-09",
+        title: "old",
+      },
+    ];
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Query") return { Items: mockItems };
+      if (cmd.__cmd === "Get") return { Item: { value: 55, classification: "Greed" } };
+      return {};
     });
 
     const { getNews } = await importService();
     const result = await getNews(2);
     expect(result.news).toHaveLength(2);
     expect(result.news[0].title).toBe("new");
-    expect(result.news[1].title).toBe("mid");
+    expect(result.news[1].title).toBe("old");
     expect(result.fearGreed).toEqual({ value: 55, classification: "Greed" });
   });
 
-  it("returns an empty result when scan throws", async () => {
+  it("walks back to the previous day when current day has fewer rows than limit", async () => {
+    // Today returns 1 item; yesterday returns 2 more.
+    const todayItem = {
+      newsId: "t1",
+      publishedAt: "2026-05-09T10:00:00Z",
+      publishedDay: "2026-05-09",
+    };
+    const yesterdayItems = [
+      { newsId: "y1", publishedAt: "2026-05-08T23:00:00Z", publishedDay: "2026-05-08" },
+      { newsId: "y2", publishedAt: "2026-05-08T12:00:00Z", publishedDay: "2026-05-08" },
+    ];
+    let callCount = 0;
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown> };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          callCount++;
+          const day = cmd.input?.ExpressionAttributeValues?.[":day"] as string | undefined;
+          if (day === "2026-05-09") return { Items: [todayItem] };
+          if (day === "2026-05-08") return { Items: yesterdayItems };
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    // Freeze "today" to 2026-05-09 so todayUtc() returns "2026-05-09".
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T15:00:00Z"));
+
+    const { getNews } = await importService();
+    const result = await getNews(3);
+    expect(result.news).toHaveLength(3);
+    expect(result.news[0].newsId).toBe("t1");
+    expect(result.news[1].newsId).toBe("y1");
+    expect(result.news[2].newsId).toBe("y2");
+    expect(callCount).toBeGreaterThanOrEqual(2);
+
+    vi.useRealTimers();
+  });
+
+  it("stops walking at the lookback limit even if fewer than limit rows found", async () => {
+    // Every day returns 0 items — should stop after NEWS_LOOKBACK_DAYS days.
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      if (cmd.__cmd === "Query") return { Items: [] };
+      return {};
+    });
+
+    const { getNews } = await importService();
+    const result = await getNews(50);
+    // Should return empty, not hang.
+    expect(result.news).toHaveLength(0);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("emits nextCursor pointing at the next calendar day when the page fills exactly on day-exhaustion", async () => {
+    // Mock the system clock so `todayUtc()` resolves to 2026-05-09.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
+    const items = Array.from({ length: 2 }, (_, i) => ({
+      newsId: `n${i}`,
+      publishedAt: `2026-05-09T${String(12 - i).padStart(2, "0")}:00:00Z`,
+      publishedDay: "2026-05-09",
+    }));
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      // No LastEvaluatedKey → day exhausted by this query.
+      if (cmd.__cmd === "Query") return { Items: items };
+      return {};
+    });
+
+    const { getNews, decodeNewsCursor } = await importService();
+    const result = await getNews(2);
+
+    expect(result.news).toHaveLength(2);
+    expect(typeof result.nextCursor).toBe("string");
+
+    // Regression: cursor must point to the immediately-prior day (2026-05-08).
+    // Earlier impl applied prevDay() twice — once in the loop, once when
+    // building the cursor — silently skipping a calendar day per page.
+    const decoded = decodeNewsCursor(result.nextCursor!);
+    expect(decoded).toEqual({ day: "2026-05-08" });
+
+    vi.useRealTimers();
+  });
+
+  it("resumes from cursor on next page call", async () => {
+    const { getNews, encodeNewsCursor } = await importService();
+    const cursor = encodeNewsCursor({ day: "2026-05-08" });
+
+    const page2Items = [
+      { newsId: "p2a", publishedAt: "2026-05-08T20:00:00Z", publishedDay: "2026-05-08" },
+    ];
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown> };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const day = cmd.input?.ExpressionAttributeValues?.[":day"] as string | undefined;
+          if (day === "2026-05-08") return { Items: page2Items };
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    const result = await getNews(50, cursor);
+    expect(result.news[0].newsId).toBe("p2a");
+  });
+
+  it("returns an empty result and null nextCursor when Query throws", async () => {
     dynamoSend.mockRejectedValue(new Error("throttled"));
     const { getNews } = await importService();
-    expect(await getNews()).toEqual({ news: [], fearGreed: null });
+    const result = await getNews();
+    expect(result).toEqual({ news: [], fearGreed: null, nextCursor: null });
+  });
+
+  it("keeps querying the same day when DynamoDB returns a partial page with LastEvaluatedKey (1 MB cap)", async () => {
+    // Regression: previously, code broke out as soon as LastEvaluatedKey was
+    // present even if collected.length < limit, returning a short page
+    // when DynamoDB had explicitly signalled more rows existed.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
+    const firstPage = [
+      { newsId: "a", publishedAt: "2026-05-09T12:00:00Z", publishedDay: "2026-05-09" },
+    ];
+    const secondPage = [
+      { newsId: "b", publishedAt: "2026-05-09T11:00:00Z", publishedDay: "2026-05-09" },
+      { newsId: "c", publishedAt: "2026-05-09T10:00:00Z", publishedDay: "2026-05-09" },
+    ];
+
+    let callCount = 0;
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      if (cmd.__cmd === "Query") {
+        callCount++;
+        if (callCount === 1) {
+          // Partial page: only 1 item returned, but LastEvaluatedKey indicates more.
+          return { Items: firstPage, LastEvaluatedKey: { newsId: "a" } };
+        }
+        if (callCount === 2) {
+          return { Items: secondPage };
+        }
+        return { Items: [] };
+      }
+      return {};
+    });
+
+    const { getNews } = await importService();
+    const result = await getNews(3);
+
+    expect(result.news).toHaveLength(3);
+    expect(result.news.map((r) => r.newsId)).toEqual(["a", "b", "c"]);
+    // Two queries against the same day (NOT one short-page query then walk
+    // back to yesterday).
+    expect(callCount).toBe(2);
+
+    vi.useRealTimers();
+  });
+
+  it("short-circuits without issuing reads when the cursor's day is older than the lookback window", async () => {
+    // Regression: daysWalked previously initialized to 0, ignoring cursor.day,
+    // so a stale or forged cursor with an old day could still trigger a Query.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
+    const { getNews, encodeNewsCursor } = await importService();
+    // Construct a cursor for a day far older than NEWS_LOOKBACK_DAYS (14).
+    const ancientCursor = encodeNewsCursor({ day: "2025-01-01" });
+
+    let queryCalls = 0;
+    dynamoSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") return { Item: null };
+      if (cmd.__cmd === "Query") {
+        queryCalls++;
+        return { Items: [] };
+      }
+      return {};
+    });
+
+    const result = await getNews(50, ancientCursor);
+
+    expect(result.news).toHaveLength(0);
+    expect(result.nextCursor).toBeNull();
+    expect(queryCalls).toBe(0);
+
+    vi.useRealTimers();
+  });
+
+  it("does not emit a nextCursor when the page fills exactly at the lookback boundary", async () => {
+    // Regression: when the page filled on the oldest allowed day and the
+    // loop advanced `currentDay` past NEWS_LOOKBACK_DAYS at the bottom, we
+    // would still emit a cursor pointing to that out-of-window day. The next
+    // call would short-circuit on the daysWalked check and return an empty
+    // page — confusing for clients.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T18:00:00Z"));
+
+    // Mock: today and yesterday return 0 items, then day NEWS_LOOKBACK_DAYS-1
+    // ago (i.e. 2026-04-26) returns exactly the requested 2 items so the
+    // page fills there and `currentDay` advances to 2026-04-25 — which is
+    // outside the 14-day window from today (2026-05-09).
+    const items = [
+      { newsId: "p1", publishedAt: "2026-04-26T10:00:00Z", publishedDay: "2026-04-26" },
+      { newsId: "p2", publishedAt: "2026-04-26T09:00:00Z", publishedDay: "2026-04-26" },
+    ];
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: { ExpressionAttributeValues?: Record<string, unknown> };
+      }) => {
+        if (cmd.__cmd === "Get") return { Item: null };
+        if (cmd.__cmd === "Query") {
+          const day = cmd.input?.ExpressionAttributeValues?.[":day"] as string | undefined;
+          if (day === "2026-04-26") return { Items: items };
+          return { Items: [] };
+        }
+        return {};
+      },
+    );
+
+    const { getNews } = await importService();
+    const result = await getNews(2);
+
+    expect(result.news).toHaveLength(2);
+    expect(result.nextCursor).toBeNull();
+
+    vi.useRealTimers();
   });
 });
 

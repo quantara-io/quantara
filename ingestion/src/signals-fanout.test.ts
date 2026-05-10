@@ -78,7 +78,7 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("findSubscribersForPair", () => {
-  it("scans with contains() filter on subscribedPairs", async () => {
+  it("scans with contains() filter on subscribedPairs AND channel='signals'", async () => {
     ddbSend.mockResolvedValue({
       Items: [{ connectionId: "conn-1", userId: "u1", subscribedPairs: ["BTC/USDT"] }],
       LastEvaluatedKey: undefined,
@@ -90,9 +90,17 @@ describe("findSubscribersForPair", () => {
     expect(result).toHaveLength(1);
     expect(result[0].connectionId).toBe("conn-1");
 
+    // After #184, the filter must also exclude `events`-channel connections
+    // so activity-feed clients don't receive trading-signal payloads as
+    // garbage rows. Pre-#184 connections (no `channel` attribute) keep
+    // working via the `attribute_not_exists(#channel)` clause.
     const scanCall = ddbSend.mock.calls[0][0];
-    expect(scanCall.input.FilterExpression).toBe("contains(subscribedPairs, :pair)");
+    expect(scanCall.input.FilterExpression).toBe(
+      "contains(subscribedPairs, :pair) AND (attribute_not_exists(#channel) OR #channel = :signals)",
+    );
+    expect(scanCall.input.ExpressionAttributeNames).toEqual({ "#channel": "channel" });
     expect(scanCall.input.ExpressionAttributeValues[":pair"]).toBe("BTC/USDT");
+    expect(scanCall.input.ExpressionAttributeValues[":signals"]).toBe("signals");
   });
 
   it("paginates through all pages", async () => {
