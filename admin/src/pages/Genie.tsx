@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { PAIRS } from "@quantara/shared";
+import { PAIRS, GLOSSARY } from "@quantara/shared";
 import type {
   BlendedSignal,
   RiskRecommendation,
@@ -9,6 +9,7 @@ import type {
 
 import { apiFetch } from "../lib/api";
 import { getAccessToken } from "../lib/auth";
+import { HelpTooltip } from "../components/HelpTooltip";
 
 interface SignalsData {
   signals: BlendedSignal[];
@@ -266,8 +267,11 @@ function InterpretationBlock({
   return (
     <div className={`rounded border px-3 py-2 space-y-1.5 ${sourceClass}`}>
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-widest opacity-70">
+        <span className="text-[10px] font-semibold uppercase tracking-widest opacity-70 inline-flex items-center gap-1">
           {sourceLabel}
+          <HelpTooltip label={GLOSSARY.ratificationVerdict.label}>
+            {GLOSSARY.ratificationVerdict.body}
+          </HelpTooltip>
         </span>
       </div>
       <p className="text-sm leading-snug">{interpretation.text}</p>

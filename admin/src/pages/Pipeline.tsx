@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { PAIRS } from "@quantara/shared";
+import { PAIRS, GLOSSARY } from "@quantara/shared";
+
 import { apiFetch } from "../lib/api";
+import { HelpTooltip } from "../components/HelpTooltip";
 
 // ---------------------------------------------------------------------------
 // Debug result types
@@ -142,10 +144,23 @@ function ratificationBadge(status: string | null): string {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function Stat({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
+function Stat({
+  label,
+  value,
+  valueClass,
+  tooltip,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+  tooltip?: React.ReactNode;
+}) {
   return (
     <div className="flex items-baseline justify-between gap-1">
-      <span className="text-[10px] text-slate-500 shrink-0">{label}</span>
+      <span className="text-[10px] text-slate-500 shrink-0 inline-flex items-center gap-0.5">
+        {label}
+        {tooltip}
+      </span>
       <span
         className={`text-[11px] font-mono tabular-nums truncate ${valueClass ?? "text-slate-300"}`}
       >
@@ -209,10 +224,47 @@ function CellCard({
       ) : (
         <>
           <SectionLabel>Indicator</SectionLabel>
-          <Stat label="RSI14" value={fmt(cell.indicator.rsi14)} />
-          <Stat label="EMA50" value={fmt(cell.indicator.ema50, 0)} />
-          <Stat label="MACD" value={fmt(cell.indicator.macdLine)} />
-          <Stat label="Age" value={fmtAge(cell.indicator.ageSeconds)} valueClass={indAgeClass} />
+          <Stat
+            label="RSI14"
+            value={fmt(cell.indicator.rsi14)}
+            tooltip={
+              <HelpTooltip label={GLOSSARY.rsi14.label} code={GLOSSARY.rsi14.code} position="right">
+                {GLOSSARY.rsi14.body}
+              </HelpTooltip>
+            }
+          />
+          <Stat
+            label="EMA50"
+            value={fmt(cell.indicator.ema50, 0)}
+            tooltip={
+              <HelpTooltip label={GLOSSARY.ema50.label} position="right">
+                {GLOSSARY.ema50.body}
+              </HelpTooltip>
+            }
+          />
+          <Stat
+            label="MACD"
+            value={fmt(cell.indicator.macdLine)}
+            tooltip={
+              <HelpTooltip
+                label={GLOSSARY.macdHist.label}
+                code={GLOSSARY.macdHist.code}
+                position="right"
+              >
+                {GLOSSARY.macdHist.body}
+              </HelpTooltip>
+            }
+          />
+          <Stat
+            label="Age"
+            value={fmtAge(cell.indicator.ageSeconds)}
+            valueClass={indAgeClass}
+            tooltip={
+              <HelpTooltip label={GLOSSARY.barFreshness.label} position="right">
+                {GLOSSARY.barFreshness.body}
+              </HelpTooltip>
+            }
+          />
 
           <SectionLabel>Signal</SectionLabel>
           <Stat

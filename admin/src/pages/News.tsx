@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { GLOSSARY } from "@quantara/shared";
 
 import { apiFetch } from "../lib/api";
+import { HelpTooltip } from "../components/HelpTooltip";
 
 // ---------------------------------------------------------------------------
 // Debug: replay enrichment result type
@@ -378,7 +380,18 @@ export function News() {
                   {n.publishedAt ? new Date(n.publishedAt).toLocaleString() : ""}
                 </span>
 
-                <SentimentChip item={n} />
+                <span className="inline-flex items-center gap-1">
+                  <SentimentChip item={n} />
+                  {/* Phase 5a tooltip — only when the numeric path ran */}
+                  {typeof n.sentiment?.score === "number" && (
+                    <HelpTooltip
+                      label={GLOSSARY.phase5aSentiment.label}
+                      code={GLOSSARY.phase5aSentiment.code}
+                    >
+                      {GLOSSARY.phase5aSentiment.body}
+                    </HelpTooltip>
+                  )}
+                </span>
 
                 <span
                   className={`px-1.5 py-0.5 rounded text-[11px] ${
@@ -391,12 +404,23 @@ export function News() {
                 >
                   {n.status ?? "raw"}
                 </span>
+                {/* Status tooltip rendered once, outside the chip, so it's available regardless of status value */}
+                <HelpTooltip label={GLOSSARY.newsStatus.label}>
+                  {GLOSSARY.newsStatus.body}
+                </HelpTooltip>
 
-                {pairs.map((c) => (
-                  <span key={c} className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300">
-                    {c}
+                {pairs.length > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    {pairs.map((c) => (
+                      <span key={c} className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300">
+                        {c}
+                      </span>
+                    ))}
+                    <HelpTooltip label={GLOSSARY.mentionedPairs.label}>
+                      {GLOSSARY.mentionedPairs.body}
+                    </HelpTooltip>
                   </span>
-                ))}
+                )}
 
                 <div className="ml-auto flex items-center gap-2">
                   {hasEnrichment && (
