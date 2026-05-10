@@ -43,6 +43,18 @@ vi.mock("@aws-sdk/client-cloudwatch-logs", () => ({
   DescribeLogStreamsCommand: vi
     .fn()
     .mockImplementation((input) => ({ __cmd: "DescribeLogStreams", input })),
+  StartQueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "StartQuery", input })),
+  GetQueryResultsCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ __cmd: "GetQueryResults", input })),
+  QueryStatus: {
+    Running: "Running",
+    Scheduled: "Scheduled",
+    Complete: "Complete",
+    Failed: "Failed",
+    Cancelled: "Cancelled",
+    Unknown: "Unknown",
+  },
 }));
 
 vi.mock("@aws-sdk/client-cloudwatch", () => ({
@@ -1772,6 +1784,141 @@ describe("getPipelineHealth — response shape", () => {
     expect(Object.keys(result.exchanges)).toEqual(
       expect.arrayContaining(["binanceus", "kraken", "coinbase"]),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getExchangeRestartCounts — watchdog Logs Insights query (#212)
+// ---------------------------------------------------------------------------
+
+describe("getExchangeRestartCounts", () => {
+  it("returns restart counts per exchange when query completes successfully", async () => {
+    // First call: StartQueryCommand → returns queryId
+    // Second call: GetQueryResultsCommand → returns Complete status with rows
+    cwLogsSend.mockResolvedValueOnce({ queryId: "qid-001" }).mockResolvedValueOnce({
+      status: "Complete",
+      results: [
+        [
+          { field: "exchange", value: "binanceus" },
+          { field: "restartCount", value: "3" },
+        ],
+        [
+          { field: "exchange", value: "kraken" },
+          { field: "restartCount", value: "1" },
+        ],
+      ],
+    });
+
+    const { getExchangeRestartCounts } = await importService();
+    const windowStart = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const windowEnd = new Date();
+    const result = await getExchangeRestartCounts(windowStart, windowEnd);
+
+    expect(result).not.toBeNull();
+    expect(result?.binanceus).toBe(3);
+    expect(result?.kraken).toBe(1);
+    // coinbase was not restarted — should be absent (not zero)
+    expect(result?.coinbase).toBeUndefined();
+  });
+
+  it("returns null when StartQueryCommand throws (e.g. IAM denied)", async () => {
+    cwLogsSend.mockRejectedValueOnce(new Error("AccessDeniedException"));
+
+    const { getExchangeRestartCounts } = await importService();
+    const result = await getExchangeRestartCounts(new Date(Date.now() - 3600_000), new Date());
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when StartQueryCommand returns no queryId", async () => {
+    cwLogsSend.mockResolvedValueOnce({ queryId: undefined });
+
+    const { getExchangeRestartCounts } = await importService();
+    const result = await getExchangeRestartCounts(new Date(Date.now() - 3600_000), new Date());
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when query status is Failed", async () => {
+    cwLogsSend
+      .mockResolvedValueOnce({ queryId: "qid-002" })
+      .mockResolvedValueOnce({ status: "Failed", results: [] });
+
+    const { getExchangeRestartCounts } = await importService();
+    const result = await getExchangeRestartCounts(new Date(Date.now() - 3600_000), new Date());
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when GetQueryResultsCommand throws", async () => {
+    cwLogsSend
+      .mockResolvedValueOnce({ queryId: "qid-003" })
+      .mockRejectedValueOnce(new Error("transient error"));
+
+    const { getExchangeRestartCounts } = await importService();
+    const result = await getExchangeRestartCounts(new Date(Date.now() - 3600_000), new Date());
+
+    expect(result).toBeNull();
+  });
+
+  it("returns an empty object when query completes but no restart events were found", async () => {
+    cwLogsSend
+      .mockResolvedValueOnce({ queryId: "qid-004" })
+      .mockResolvedValueOnce({ status: "Complete", results: [] });
+
+    const { getExchangeRestartCounts } = await importService();
+    const result = await getExchangeRestartCounts(new Date(Date.now() - 3600_000), new Date());
+
+    expect(result).toEqual({});
+  });
+});
+
+describe("getPipelineHealth — restartCount wiring", () => {
+  beforeEach(() => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+  });
+
+  it("populates restartCount per exchange from Insights query results", async () => {
+    cwLogsSend
+      // 1st call: StartQuery for Insights
+      .mockResolvedValueOnce({ queryId: "qid-restart" })
+      // 2nd call: GetQueryResults → Complete
+      .mockResolvedValueOnce({
+        status: "Complete",
+        results: [
+          [
+            { field: "exchange", value: "binanceus" },
+            { field: "restartCount", value: "5" },
+          ],
+        ],
+      })
+      // Remaining calls: DescribeLogStreams (for fargate lastRestartAt)
+      .mockResolvedValue({ logStreams: [] });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.binanceus.restartCount).toBe(5);
+    // exchanges not in the Insights result default to null
+    expect(result.exchanges.kraken.restartCount).toBeNull();
+    expect(result.exchanges.coinbase.restartCount).toBeNull();
+  });
+
+  it("sets restartCount to null for all exchanges when Insights query fails", async () => {
+    cwLogsSend
+      // StartQuery throws
+      .mockRejectedValueOnce(new Error("AccessDeniedException"))
+      // DescribeLogStreams for fargate
+      .mockResolvedValue({ logStreams: [] });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.binanceus.restartCount).toBeNull();
+    expect(result.exchanges.kraken.restartCount).toBeNull();
+    expect(result.exchanges.coinbase.restartCount).toBeNull();
   });
 });
 
