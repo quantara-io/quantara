@@ -14,10 +14,16 @@ export interface Candle {
   close: number;
   volume: number;
   isClosed: boolean;
-  /** Origin of this candle — mandatory from v6 onwards. "live" = real-time stream or
-   *  higher-TF aggregator; "backfill" = historical fetch. Used by DDB Streams
-   *  FilterCriteria so the IndicatorLambda only fires on live closes. */
-  source: "live" | "backfill";
+  /** Origin of this candle — mandatory from v6 onwards.
+   *  - "live"            = real-time trade-derived candle from an exchange stream
+   *  - "live-synthesized" = zero-volume carry-forward synthesized locally when no
+   *                         trades arrived within a 1m window (Kraken USDT-quoted
+   *                         pairs during quiet hours). Close-price is carried from
+   *                         the previous real candle. Downstream indicators treat
+   *                         this identically to "live" for continuity.
+   *  - "backfill"        = historical fetch.
+   *  Used by DDB Streams FilterCriteria so the IndicatorLambda only fires on live closes. */
+  source: "live" | "live-synthesized" | "backfill";
 }
 
 export interface RawNewsEvent {

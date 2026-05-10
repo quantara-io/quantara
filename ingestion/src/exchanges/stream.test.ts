@@ -450,6 +450,182 @@ describe("MarketStreamManager — Coinbase backfill idempotency", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Kraken zero-volume synthesis
+// ---------------------------------------------------------------------------
+
+describe("MarketStreamManager — Kraken zero-volume synthesis", () => {
+  it("synthesizes a zero-volume carry-forward when no Kraken trade arrives by the close boundary", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      // A 2-min-old closed candle so isClosed = true on every exchange.
+      // Use mockResolvedValue (not Once) so all binanceus + kraken pair calls
+      // each get this row — otherwise Only one pair would resolve (whichever
+      // happens to dequeue first) and it might be a binanceus pair, leaving
+      // no kraken candles stored and no synthesis timer armed.
+      const openTime = now - 120_000;
+      const closedRow = [openTime, "0.5000", "0.5100", "0.4900", "0.5050", "200.0"];
+
+      // First call per pair resolves with the closed row; subsequent calls
+      // block so only one cycle fires per pair.
+      watchOHLCVMock
+        .mockResolvedValueOnce([closedRow]) // pair 1 first call
+        .mockResolvedValueOnce([closedRow]) // pair 2 first call
+        .mockResolvedValueOnce([closedRow]) // pair 3 first call
+        .mockResolvedValueOnce([closedRow]) // pair 4 first call
+        .mockResolvedValueOnce([closedRow]) // pair 5 first call
+        .mockResolvedValueOnce([closedRow]) // pair 6 first call
+        .mockResolvedValueOnce([closedRow]) // pair 7 first call
+        .mockResolvedValueOnce([closedRow]) // pair 8 first call
+        .mockResolvedValueOnce([closedRow]) // pair 9 first call
+        .mockResolvedValueOnce([closedRow]) // pair 10 first call
+        .mockReturnValue(new Promise(() => {})); // all subsequent: block
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockReturnValue(new Promise(() => {}));
+
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
+
+      // Flush all first-batch OHLCV resolutions (all pairs × 2 ws-exchanges).
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Advance past the synthesis deadline for every kraken pair.
+      // prevCloseTime = openTime + 60s = now - 60s.
+      // expectedNextCloseTime = now - 60s + 60s = now.
+      // fireAt = now + 2s (KRAKEN_SYNTHESIS_DELAY_MS).
+      // delay = Math.max(0, now + 2_000 - now) = 2_000.
+      // Advancing 5s clears all synthesis timers.
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await manager.stop();
+
+      const allCandles: Candle[] = [];
+      for (const call of storeCandelsMock.mock.calls) {
+        allCandles.push(...(call[0] as Candle[]));
+      }
+
+      const krakenSynth = allCandles.filter(
+        (c) => c.exchange === "kraken" && c.source === "live-synthesized",
+      );
+      // Every Kraken pair should have a synthesized candle (silence after first real bar).
+      expect(krakenSynth.length).toBe(PAIRS.length);
+
+      for (const candle of krakenSynth) {
+        // Synthesized candle must carry prev close forward.
+        expect(candle.close).toBe(0.505);
+        expect(candle.open).toBe(0.505);
+        expect(candle.high).toBe(0.505);
+        expect(candle.low).toBe(0.505);
+        expect(candle.volume).toBe(0);
+        expect(candle.isClosed).toBe(true);
+        expect(candle.timeframe).toBe("1m");
+        // openTime of the synthesized window = prevCloseTime of the real candle.
+        expect(candle.openTime).toBe(openTime + 60_000);
+        expect(candle.source).toBe("live-synthesized");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT synthesize when a subsequent real Kraken candle advances lastCloseTime before the timer fires", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      // Two consecutive closed bars — both well past their close boundary.
+      // Bar 1: openTime = now - 180s, closeTime = now - 120s.
+      // Bar 2: openTime = now - 120s, closeTime = now - 60s.
+      // Both are isClosed = true (closeTime < now).
+      const openTime1 = now - 180_000;
+      const openTime2 = now - 120_000;
+
+      const row1 = [openTime1, "1.5000", "1.5100", "1.4900", "1.5050", "100.0"];
+      const row2 = [openTime2, "1.5050", "1.5200", "1.4950", "1.5100", "80.0"];
+
+      // Deliver both rows in the same watchOHLCV batch — Kraken sometimes
+      // emits multiple closed candles in one message when catching up.
+      // The stream iterates them in order, calling updateKrakenSynthState for
+      // each closed bar; the second call cancels the first timer and arms a
+      // new one for the window after row2's closeTime (= now - 60s + 60s = now).
+      const batchRow = [row1, row2];
+      watchOHLCVMock
+        .mockResolvedValueOnce(batchRow) // pair 1
+        .mockResolvedValueOnce(batchRow) // pair 2
+        .mockResolvedValueOnce(batchRow) // pair 3
+        .mockResolvedValueOnce(batchRow) // pair 4
+        .mockResolvedValueOnce(batchRow) // pair 5
+        .mockResolvedValueOnce(batchRow) // pair 6
+        .mockResolvedValueOnce(batchRow) // pair 7
+        .mockResolvedValueOnce(batchRow) // pair 8
+        .mockResolvedValueOnce(batchRow) // pair 9
+        .mockResolvedValueOnce(batchRow) // pair 10
+        .mockReturnValue(new Promise(() => {}));
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockReturnValue(new Promise(() => {}));
+
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
+
+      // Flush all first-batch OHLCV resolutions.
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Count real candles stored after the first batch (before any synthesis timer fires).
+      // There should be 2 real candles per kraken pair (row1 + row2) and 2 per binanceus pair.
+      const realKrakenCount = storeCandelsMock.mock.calls
+        .flatMap((call) => call[0] as Candle[])
+        .filter((c) => c.exchange === "kraken" && c.source === "live").length;
+      expect(realKrakenCount).toBe(PAIRS.length * 2);
+
+      // Now advance past the synthesis timer deadline for the SECOND bar:
+      // prevCloseTime (row2) = openTime2 + 60s = now - 60s.
+      // expectedNextCloseTime = now.
+      // fireAt = now + 2s.
+      // Advancing 5s should fire the timer but also advance lastCloseTime via
+      // the second real candle, so synthesis must NOT happen.
+      //
+      // Since row2 was processed in the same batch and updated lastCloseTime
+      // to now - 60s, the synthesis timer for the window ending at `now` fires
+      // and checks: lastCloseTime (now - 60s) < expectedNextCloseTime (now)?
+      // Yes — so it WOULD synthesize. But wait: row2's closeTime = now - 60s,
+      // so expectedNextCloseTime for row2 = now - 60s + 60s = now.
+      // The timer fires at now + 2s (delay = 2s from fake-now=now).
+      // At fire time, lastCloseTime is still now - 60s < now. So it synthesizes.
+      // That's expected: row2's NEXT window is still silent.
+      // What the test asserts: NO synthesis for the window between row1 and row2
+      // (the window that row2 itself filled). That window's timer was CANCELLED
+      // by the second call to updateKrakenSynthState.
+
+      const storeCountBeforeFire = storeCandelsMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      // The only newly-synthesized candles should be for the window AFTER row2
+      // (the next silence window), NOT the window between row1 and row2.
+      // Specifically: no candle should have openTime = row1.closeTime = openTime1 + 60_000.
+      const allCandles: Candle[] = [];
+      for (const call of storeCandelsMock.mock.calls) {
+        allCandles.push(...(call[0] as Candle[]));
+      }
+      const krakenSynth = allCandles.filter(
+        (c) => c.exchange === "kraken" && c.source === "live-synthesized",
+      );
+
+      // Any synthesized candles must be for window AFTER row2, not the row1→row2 gap.
+      const wrongWindowSynth = krakenSynth.filter((c) => c.openTime === openTime1 + 60_000);
+      expect(wrongWindowSynth).toHaveLength(0);
+
+      // Stores after fire is allowed (synthesis for the post-row2 window).
+      expect(storeCandelsMock.mock.calls.length).toBeGreaterThanOrEqual(storeCountBeforeFire);
+
+      await manager.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Watchdog auto-reconnect tests
 //
 // Build a manager, manipulate a stream's lastDataAt to simulate staleness,

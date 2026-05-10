@@ -32,7 +32,7 @@ export async function storeCandles(candles: Candle[]): Promise<void> {
   for (const c of candles) {
     if (!c.source) {
       throw new Error(
-        `[CandleStore] candle.source is required (pair=${c.pair} tf=${c.timeframe} openTime=${c.openTime}). Set "live" or "backfill".`,
+        `[CandleStore] candle.source is required (pair=${c.pair} tf=${c.timeframe} openTime=${c.openTime}). Set "live", "live-synthesized", or "backfill".`,
       );
     }
   }
@@ -90,7 +90,7 @@ export async function storeCandlesConditional(candles: Candle[]): Promise<void> 
   for (const c of candles) {
     if (!c.source) {
       throw new Error(
-        `[CandleStore] candle.source is required (pair=${c.pair} tf=${c.timeframe} openTime=${c.openTime}). Set "live" or "backfill".`,
+        `[CandleStore] candle.source is required (pair=${c.pair} tf=${c.timeframe} openTime=${c.openTime}). Set "live", "live-synthesized", or "backfill".`,
       );
     }
 
