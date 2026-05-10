@@ -77,12 +77,15 @@ const GATE_PRIORITY: Record<"vol" | "dispersion" | "stale", number> = {
  * @param perTimeframeVotes  Map of TF → vote (null means no opinion / warm-up for that TF).
  * @param emittingTimeframe  Which TF's close triggered this blend run (for lifecycle tracking).
  * @param weights  Per-TF weight overrides (default: DEFAULT_TIMEFRAME_WEIGHTS).
+ * @param threshold  Threshold T override (default: BLEND_THRESHOLD_T). Used at the API read
+ *                   path to apply the user's BlendProfile without re-writing stored signals.
  */
 export function blendTimeframeVotes(
   pair: string,
   perTimeframeVotes: Record<Timeframe, TimeframeVote | null>,
   emittingTimeframe: Timeframe,
   weights: Record<Timeframe, number> = DEFAULT_TIMEFRAME_WEIGHTS,
+  threshold: number = BLEND_THRESHOLD_T,
 ): BlendedSignal | null {
   // Step 1: If ALL votes are null → return null.
   const allNull = TIMEFRAMES.every((tf) => perTimeframeVotes[tf] === null);
@@ -226,10 +229,10 @@ export function blendTimeframeVotes(
   let type: "buy" | "sell" | "hold";
   let confidence: number;
 
-  if (blended > BLEND_THRESHOLD_T) {
+  if (blended > threshold) {
     type = "buy";
     confidence = Math.min(1, blended * 1.2 * dampingFactor);
-  } else if (blended < -BLEND_THRESHOLD_T) {
+  } else if (blended < -threshold) {
     type = "sell";
     confidence = Math.min(1, Math.abs(blended) * 1.2 * dampingFactor);
   } else {

@@ -30,6 +30,9 @@ import {
   attachRiskRecommendation,
   buildInterpretation,
   defaultRiskProfiles,
+  defaultBlendProfiles,
+  getBlendProfile,
+  reblendWithProfile,
 } from "@quantara/shared";
 import type { z } from "@hono/zod-openapi";
 
@@ -144,6 +147,9 @@ async function getLatestIndicatorStateForSignal(
  * Fetches the IndicatorState for the signal's pair/timeframe, then calls
  * attachRiskRecommendation. Silently falls back to the original signal if
  * the IndicatorState is unavailable (warm-up period).
+ *
+ * @param signal        The BlendedSignal (already re-blended with user's profile).
+ * @param riskProfiles  User's per-pair risk profile map.
  */
 async function enrichWithRisk(
   signal: BlendedSignal,
@@ -166,6 +172,36 @@ async function enrichWithRisk(
   }
 
   return attachRiskRecommendation(signal, state, riskProfiles);
+}
+
+/**
+ * Apply the user's BlendProfile to a stored BlendedSignal and re-populate
+ * interpretation. Called once per signal on the read path before enrichWithRisk.
+ *
+ * Storage (signals_v2) always uses the strict profile — canonical blend has one
+ * ground truth for calibration / outcome attribution. Profile application is
+ * read-only: only the response shape changes.
+ *
+ * @param signal       The stored BlendedSignal (canonical strict blend).
+ * @param pair         The trading pair (used to look up the per-pair blend profile).
+ * @param blendProfiles User's per-pair BlendProfileMap (may be absent on old records).
+ */
+function applyBlendProfile(
+  signal: BlendedSignal,
+  pair: TradingPair,
+  blendProfiles: ReturnType<typeof defaultBlendProfiles> | undefined,
+): BlendedSignal {
+  const profile = getBlendProfile(blendProfiles, pair);
+  // "strict" is the canonical stored blend — no re-blend needed.
+  if (profile === "strict") return signal;
+
+  const reblended = reblendWithProfile(signal, profile);
+  // Re-derive interpretation after profile re-blend so the narrative reflects
+  // the profile-adjusted type/confidence, not the stored strict values.
+  return {
+    ...reblended,
+    interpretation: buildInterpretation(reblended),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +238,11 @@ export async function getSignalForUser(
 
   const raw = itemToBlendedSignal(item);
   const riskProfiles = user.riskProfiles ?? defaultRiskProfiles(user.tier ?? "free");
-  return enrichWithRisk(raw, riskProfiles);
+  // Apply user's blend profile (re-blend on read) before enriching with risk.
+  // "strict" is a no-op (stored signal already uses strict); balanced/aggressive
+  // re-run the §5.3 math against the persisted perTimeframe votes.
+  const profiled = applyBlendProfile(raw, pair, user.blendProfiles);
+  return enrichWithRisk(profiled, riskProfiles);
 }
 
 const BLEND_TIMEFRAMES: readonly Timeframe[] = ["15m", "1h", "4h", "1d"];
@@ -293,7 +333,9 @@ export async function getAllSignalsForUser(
       const item = await fetchLatestSignalRow(pair);
       if (!item) return null;
       const raw = itemToBlendedSignal(item);
-      return enrichWithRisk(raw, riskProfiles);
+      // Apply user's blend profile (re-blend on read) before enriching with risk.
+      const profiled = applyBlendProfile(raw, pair, user.blendProfiles);
+      return enrichWithRisk(profiled, riskProfiles);
     }),
   );
 
