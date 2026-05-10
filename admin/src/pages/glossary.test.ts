@@ -121,4 +121,57 @@ describe("GLOSSARY", () => {
       expect(typeof k).toBe("string");
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // longForm field — added in #229
+  // ---------------------------------------------------------------------------
+
+  it("at least 8 entries have a longForm field populated", () => {
+    const withLongForm = (Object.entries(GLOSSARY) as [string, GlossaryEntry][]).filter(
+      ([, entry]) => entry.longForm !== undefined,
+    );
+    expect(withLongForm.length, "expected ≥8 longForm entries").toBeGreaterThanOrEqual(8);
+  });
+
+  it("longForm.paragraphs, when present, contains at least one non-empty string", () => {
+    for (const [key, entry] of Object.entries(GLOSSARY) as [string, GlossaryEntry][]) {
+      if (entry.longForm === undefined) continue;
+      expect(
+        entry.longForm.paragraphs.length,
+        `${key}.longForm.paragraphs must have ≥1 item`,
+      ).toBeGreaterThan(0);
+      for (const para of entry.longForm.paragraphs) {
+        expect(typeof para, `${key}.longForm paragraph type`).toBe("string");
+        expect(para.length, `${key}.longForm paragraph must be non-empty`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("longForm.related keys, when present, are valid GlossaryKey values", () => {
+    const validKeys = new Set(Object.keys(GLOSSARY));
+    for (const [key, entry] of Object.entries(GLOSSARY) as [string, GlossaryEntry][]) {
+      if (!entry.longForm?.related) continue;
+      for (const relKey of entry.longForm.related) {
+        expect(
+          validKeys.has(relKey),
+          `${key}.longForm.related contains unknown key: ${relKey}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("longForm.seenOn items, when present, have non-empty page and href starting with /", () => {
+    for (const [key, entry] of Object.entries(GLOSSARY) as [string, GlossaryEntry][]) {
+      if (!entry.longForm?.seenOn) continue;
+      for (const loc of entry.longForm.seenOn) {
+        expect(loc.page.length, `${key}.longForm.seenOn[].page must be non-empty`).toBeGreaterThan(
+          0,
+        );
+        expect(
+          loc.href.startsWith("/"),
+          `${key}.longForm.seenOn[].href must be an in-app path starting with /`,
+        ).toBe(true);
+      }
+    }
+  });
 });
