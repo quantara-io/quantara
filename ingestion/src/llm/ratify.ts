@@ -40,6 +40,7 @@ import {
 import { validateRatification } from "./validate.js";
 import { putRatificationRecord, type InvokedReason } from "../lib/ratification-store.js";
 import type { RatificationVerdictRecord } from "../lib/signal-store.js";
+import { emitPipelineEventSafe } from "../lib/pipeline-events-store.js";
 
 // ---------------------------------------------------------------------------
 // Model config (pinned per issue spec)
@@ -279,7 +280,28 @@ export async function ratifySignal(
       triggerReason,
       previousRatificationId,
     });
-    const signal: BlendedSignal = { ...cached, ratificationStatus: "ratified" };
+    // The cache stores the BlendedSignal as written at original
+    // ratification time, which may carry "downgraded" if the LLM disagreed
+    // with the algo. Preserve that status — overriding to "ratified" would
+    // misreport every downgraded cache hit (in both the persisted ratification
+    // record and the activity-feed event). Default to "ratified" only when
+    // the cached signal has no recognised status (legacy rows pre-#142).
+    const cachedStatus = cached.ratificationStatus === "downgraded" ? "downgraded" : "ratified";
+
+    // Activity feed: emit ratification-fired event for cache-hit path.
+    emitPipelineEventSafe({
+      type: "ratification-fired",
+      pair: context.pair,
+      timeframe: context.candidate.emittingTimeframe,
+      triggerReason,
+      verdict: cachedStatus,
+      latencyMs: Date.now() - startMs,
+      costUsd: 0,
+      cacheHit: true,
+      ts: new Date().toISOString(),
+    });
+
+    const signal: BlendedSignal = { ...cached, ratificationStatus: cachedStatus };
     return {
       signal,
       fellBackToAlgo: false,
@@ -523,6 +545,19 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
   console.log(
     `[Ratifier] Ratified ${context.pair}: ${finalSignal.type} conf=${finalSignal.confidence.toFixed(3)} status=${ratificationStatus}`,
   );
+
+  // Activity feed: emit ratification-fired event (fire-and-forget, non-fatal).
+  emitPipelineEventSafe({
+    type: "ratification-fired",
+    pair: context.pair,
+    timeframe: context.candidate.emittingTimeframe,
+    triggerReason,
+    verdict: ratificationStatus,
+    latencyMs: Date.now() - startMs,
+    costUsd,
+    cacheHit: false,
+    ts: new Date().toISOString(),
+  });
 
   if (onStage2) {
     try {

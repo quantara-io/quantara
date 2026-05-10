@@ -114,6 +114,14 @@ await build({
   outfile: "dist/signals-fanout.js",
 });
 
+// Lambda: DDB Streams fanout — push pipeline events to WebSocket activity-feed subscribers (#184).
+// Subscribed to `pipeline-events` table; pushes to channel="events" connections.
+await build({
+  ...shared,
+  entryPoints: ["src/events-fanout.ts"],
+  outfile: "dist/events-fanout.js",
+});
+
 console.log(
-  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/outcome-handler.js, dist/close-quorum-monitor.js, dist/higher-tf-poller-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js",
+  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/outcome-handler.js, dist/close-quorum-monitor.js, dist/higher-tf-poller-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js, dist/events-fanout.js",
 );

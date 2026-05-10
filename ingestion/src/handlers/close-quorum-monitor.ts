@@ -26,6 +26,8 @@ import type { AttributeValue } from "@aws-sdk/client-dynamodb";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 
+import { emitPipelineEventSafe } from "../lib/pipeline-events-store.js";
+
 // ---------------------------------------------------------------------------
 // Clients
 // ---------------------------------------------------------------------------
@@ -77,19 +79,6 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
       continue;
     }
 
-    // If quorum was never reached on this row, the indicator handler correctly
-    // returned early without writing a signal. The TTL expiry is normal, not a
-    // missed close — skip the lookup and metric emission to avoid false alarms.
-    const exchanges = oldImage.exchanges;
-    const exchangeCount =
-      exchanges instanceof Set ? exchanges.size : Array.isArray(exchanges) ? exchanges.length : 0;
-    if (exchangeCount < REQUIRED_EXCHANGE_COUNT) {
-      console.log(
-        `[CloseQuorumMonitor] ${id}: only ${exchangeCount}/${REQUIRED_EXCHANGE_COUNT} exchanges at TTL expiry — quorum never reached, not a missed close.`,
-      );
-      continue;
-    }
-
     // id format: "pair#timeframe#closeTime"
     // pair may contain "/" which doesn't appear in timeframe or closeTime,
     // so split from the right to handle pairs like "BTC/USDT".
@@ -102,6 +91,34 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     const closeTimeStr = parts[parts.length - 1]!;
     const timeframe = parts[parts.length - 2]!;
     const pair = parts.slice(0, parts.length - 2).join("#");
+
+    // If quorum was never reached on this row, the indicator handler correctly
+    // returned early without writing a signal. The TTL expiry is normal, not a
+    // missed close — skip the signals-v2 lookup and metric emission to avoid
+    // false alarms.
+    //
+    // Activity feed: still emit quorum-failed so the admin UI can surface
+    // exchanges that habitually fail to deliver candles. This is the
+    // definitive "this close did not reach quorum" decision point — the
+    // indicator-handler's early-return on insufficient exchanges may still
+    // resolve later if a delayed exchange catches up; only the TTL expiry
+    // here means it definitively didn't.
+    const exchanges = oldImage.exchanges;
+    const exchangeCount =
+      exchanges instanceof Set ? exchanges.size : Array.isArray(exchanges) ? exchanges.length : 0;
+    if (exchangeCount < REQUIRED_EXCHANGE_COUNT) {
+      console.log(
+        `[CloseQuorumMonitor] ${id}: only ${exchangeCount}/${REQUIRED_EXCHANGE_COUNT} exchanges at TTL expiry — quorum never reached, not a missed close.`,
+      );
+      emitPipelineEventSafe({
+        type: "quorum-failed",
+        pair,
+        timeframe,
+        closeTime: closeTimeStr,
+        ts: new Date().toISOString(),
+      });
+      continue;
+    }
 
     const sk = `${timeframe}#${closeTimeStr}`;
 
