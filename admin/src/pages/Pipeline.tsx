@@ -6,9 +6,15 @@ import { apiFetch } from "../lib/api";
 // Debug result types
 // ---------------------------------------------------------------------------
 
+// Mirrors `backend/src/services/admin-debug.service.ts:ForceRatificationResult`.
+// Backend distinguishes `algoSignalType` (the algo's input verdict) from
+// `verdictKind` (the LLM's output verdict) so the UI can render
+// "Algo: buy 75% → LLM: downgrade".
 interface ForceRatificationResult {
-  verdict: string | null;
-  confidence: number | null;
+  algoSignalType: string | null;
+  algoConfidence: number | null;
+  verdictKind: string | null;
+  ratifiedConfidence: number | null;
   reasoning: string | null;
   latencyMs: number;
   costUsd: number;
@@ -324,17 +330,26 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
             {ratResult && (
               <div className="text-[11px] bg-slate-900 rounded p-2 space-y-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-slate-500">Verdict</span>
+                  <span className="text-slate-500">
+                    {ratResult.algoSignalType ?? "—"}
+                    {ratResult.algoConfidence !== null
+                      ? ` ${(ratResult.algoConfidence * 100).toFixed(0)}%`
+                      : ""}
+                  </span>
+                  <span className="text-slate-600">→</span>
                   <span
                     className={`font-semibold ${
-                      ratResult.verdict === "ratify"
+                      ratResult.verdictKind === "ratify"
                         ? "text-emerald-400"
-                        : ratResult.verdict === "downgrade"
+                        : ratResult.verdictKind === "downgrade"
                           ? "text-yellow-400"
                           : "text-red-400"
                     }`}
                   >
-                    {ratResult.verdict ?? "—"}
+                    {ratResult.verdictKind ?? "—"}
+                    {ratResult.ratifiedConfidence !== null
+                      ? ` ${(ratResult.ratifiedConfidence * 100).toFixed(0)}%`
+                      : ""}
                   </span>
                   <span className="ml-auto text-slate-500 font-mono">
                     {ratResult.latencyMs}ms · ${ratResult.costUsd.toFixed(5)}

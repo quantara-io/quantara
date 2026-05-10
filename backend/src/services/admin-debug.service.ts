@@ -89,9 +89,11 @@ const RATIFICATION_MODEL_ID = "claude-sonnet-4-6";
 const SONNET_INPUT_COST_PER_1K = 0.003;
 const SONNET_OUTPUT_COST_PER_1K = 0.015;
 
-// Daily cap on debug-driven LLM calls (across all users + pairs). Mirrors
-// the per-pair daily cap in `ingestion/src/llm/gating.ts` but applies
-// globally to debug invocations.
+// Daily cap on debug-driven LLM calls — applied PER-PAIR (the cap query
+// uses pair as the partition key). With 5 trading pairs this is up to 1000
+// calls/day total, but each pair has its own 200-call ceiling so a noisy
+// pair can't starve the others. Mirrors the per-pair daily cap pattern in
+// `ingestion/src/llm/gating.ts`.
 const DAILY_DEBUG_CAP = 200;
 
 // Idempotency window — duplicate (user, endpoint, body) requests within this
@@ -394,10 +396,15 @@ Rate this signal's validity and provide your reasoning in 2-3 sentences.`;
       }),
     );
   } catch (err) {
+    // Persistence is part of the contract — the admin UI surfaces `recordId`
+    // as a clickable audit link, so silently logging+returning success would
+    // hand the caller a recordId that doesn't exist in DDB. Re-throw so the
+    // route returns 500 and the UI shows an explicit failure.
     logger.error(
       { err, pair, timeframe, recordId },
       "[AdminDebug] Failed to write ratification record",
     );
+    throw err;
   }
 
   return {
@@ -539,6 +546,14 @@ export async function replayNewsEnrichment(
       KeyConditionExpression: "newsId = :newsId",
       ExpressionAttributeValues: { ":newsId": newsId },
       Limit: 1,
+      // news_events composite key is (newsId, publishedAt). When a single
+      // newsId has multiple SK rows (rare but possible — e.g. an article
+      // re-fetched before #180's stable-newsId fix landed), we want the
+      // newest one. ScanIndexForward: false sorts SK descending.
+      ScanIndexForward: false,
+      // Strongly-consistent so a debug "replay-now" call sees a record
+      // that was just stored by the news poller seconds ago.
+      ConsistentRead: true,
     }),
   );
   const item = queryResult.Items?.[0] as Record<string, unknown> | undefined;
@@ -677,10 +692,11 @@ export async function injectSentimentShock(
 
   // --- Symbol normalization. The aggregator-handler keys sentiment-aggregates
   // by bare symbol (`BTC`) but signals_v2 / ratifications are keyed by the
-  // trading pair (`BTC/USDT`). The route accepts either; we normalize here so
-  // the aggregate read uses the bare symbol and the ratification record uses
-  // the canonical trading pair (matching the production sentiment-shock fix
-  // shipped on PR #181).
+  // trading pair (`BTC/USDT`). The route validates the input against `PAIRS`
+  // (trading pairs only — see `backend/src/routes/admin.ts`); we normalize
+  // here defensively in case a caller bypasses the route or for tests, and
+  // also derive the base symbol for the aggregate read (matching the
+  // production sentiment-shock fix shipped on PR #181).
   const tradingPair = symbolToTradingPair(pair);
   if (tradingPair === null) {
     throw new Error(`Unknown pair: ${pair}`);
