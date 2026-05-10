@@ -14,7 +14,7 @@ interface Status {
 
 const POLL_MS = 30_000;
 
-export function Overview() {
+export function Ops() {
   const [data, setData] = useState<Status | null>(null);
   const [error, setError] = useState("");
 

@@ -26,17 +26,18 @@ export function Layout({ children, bleed = false }: LayoutProps) {
         <div className="px-4 h-12 flex items-center gap-6">
           <Brand />
           <nav className="flex gap-0.5 text-sm overflow-x-auto rail-scroll min-w-0">
-            <Tab to="/">Overview</Tab>
+            <Tab to="/">Workstation</Tab>
             <Tab to="/market">Market</Tab>
             <Tab to="/news">News</Tab>
-            <Tab to="/whitelist">Whitelist</Tab>
-            <Tab to="/ratifications">Ratifications</Tab>
             <Tab to="/genie">Genie</Tab>
             <Tab to="/performance">Performance</Tab>
+            <Tab to="/pnl">PnL</Tab>
+            <Tab to="/whitelist">Whitelist</Tab>
+            <Tab to="/ratifications">Ratifications</Tab>
             <Tab to="/pipeline">Pipeline</Tab>
             <Tab to="/health">Health</Tab>
             <Tab to="/activity">Activity</Tab>
-            <Tab to="/pnl">PnL</Tab>
+            <Tab to="/ops">Ops</Tab>
             <Tab to="/admin/glossary">Glossary</Tab>
           </nav>
           <div className="ml-auto flex items-center gap-2 shrink-0">
