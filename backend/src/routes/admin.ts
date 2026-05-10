@@ -301,21 +301,22 @@ const VALID_TIMEFRAMES_DEBUG = ["15m", "1h", "4h", "1d"] as const;
 /**
  * POST /api/admin/debug/force-ratification
  * Body: { pair, timeframe }
- * Reads the latest signal for the cell, calls Bedrock Haiku inline, writes a
- * ratification record (triggerReason="manual"), returns result inline.
- * Counts against the daily cap — returns 429 if exhausted.
+ * Reads the latest signal for the cell, calls Bedrock Sonnet 4.6 (matches the
+ * production ratification model — see `ingestion/src/llm/ratify.ts`), writes
+ * a ratification record (triggerReason="manual"), returns result inline.
+ * Counts against the daily cap — returns 429 if exhausted. Server-side
+ * idempotency: duplicate requests within 60s for the same (admin user, pair,
+ * timeframe) collapse to 409.
  */
 admin.post("/debug/force-ratification", async (c) => {
   const body = await c.req.json<{ pair?: unknown; timeframe?: unknown }>();
+  const auth = c.get("auth");
 
   if (typeof body.pair !== "string" || !(PAIRS as readonly string[]).includes(body.pair)) {
     return c.json(
       {
         success: false,
-        error: {
-          code: "BAD_REQUEST",
-          message: `pair must be one of: ${PAIRS.join(", ")}`,
-        },
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
       },
       400,
     );
@@ -340,7 +341,22 @@ admin.post("/debug/force-ratification", async (c) => {
   const result = await forceRatification({
     pair: body.pair,
     timeframe: body.timeframe,
+    userId: auth.userId,
   });
+
+  if (result.duplicate) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "DUPLICATE_REQUEST",
+          message:
+            "Duplicate force-ratification within 60s window for the same (user, pair, timeframe). The first request is still processing.",
+        },
+      },
+      409,
+    );
+  }
 
   if (result.capped) {
     return c.json(
@@ -362,10 +378,13 @@ admin.post("/debug/force-ratification", async (c) => {
  * POST /api/admin/debug/replay-news-enrichment
  * Body: { newsId }
  * Re-runs Phase 5a enrichment (pair-tagging + sentiment) for the article.
- * Does NOT mutate the stored row — read-only diff tool.
+ * Does NOT mutate the stored row — read-only diff tool. Server-side
+ * idempotency: duplicate requests within 60s for the same (admin user,
+ * newsId) collapse to 409.
  */
 admin.post("/debug/replay-news-enrichment", async (c) => {
   const body = await c.req.json<{ newsId?: unknown }>();
+  const auth = c.get("auth");
 
   if (typeof body.newsId !== "string" || body.newsId.trim() === "") {
     return c.json(
@@ -377,7 +396,25 @@ admin.post("/debug/replay-news-enrichment", async (c) => {
     );
   }
 
-  const result = await replayNewsEnrichment({ newsId: body.newsId.trim() });
+  const result = await replayNewsEnrichment({
+    newsId: body.newsId.trim(),
+    userId: auth.userId,
+  });
+
+  if (result.duplicate) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "DUPLICATE_REQUEST",
+          message:
+            "Duplicate replay-news-enrichment within 60s window for the same (user, newsId). The first request is still processing.",
+        },
+      },
+      409,
+    );
+  }
+
   return c.json({ success: true, data: result });
 });
 
@@ -386,7 +423,9 @@ admin.post("/debug/replay-news-enrichment", async (c) => {
  * Body: { pair, deltaScore, deltaMagnitude }
  * Synthesizes a sentiment shock and runs the detection + cost-gate path.
  * The shock IS written to the ratifications table (triggerReason="sentiment_shock")
- * so the full path can be observed end-to-end.
+ * so the full path can be observed end-to-end. Server-side idempotency:
+ * duplicate requests within 60s for the same (admin user, pair, deltas)
+ * collapse to 409.
  */
 admin.post("/debug/inject-sentiment-shock", async (c) => {
   const body = await c.req.json<{
@@ -394,15 +433,13 @@ admin.post("/debug/inject-sentiment-shock", async (c) => {
     deltaScore?: unknown;
     deltaMagnitude?: unknown;
   }>();
+  const auth = c.get("auth");
 
   if (typeof body.pair !== "string" || !(PAIRS as readonly string[]).includes(body.pair)) {
     return c.json(
       {
         success: false,
-        error: {
-          code: "BAD_REQUEST",
-          message: `pair must be one of: ${PAIRS.join(", ")}`,
-        },
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
       },
       400,
     );
@@ -434,7 +471,27 @@ admin.post("/debug/inject-sentiment-shock", async (c) => {
     );
   }
 
-  const result = await injectSentimentShock({ pair: body.pair, deltaScore, deltaMagnitude });
+  const result = await injectSentimentShock({
+    pair: body.pair,
+    deltaScore,
+    deltaMagnitude,
+    userId: auth.userId,
+  });
+
+  if (result.duplicate) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "DUPLICATE_REQUEST",
+          message:
+            "Duplicate inject-sentiment-shock within 60s window for the same (user, pair, deltas).",
+        },
+      },
+      409,
+    );
+  }
+
   return c.json({ success: true, data: result });
 });
 

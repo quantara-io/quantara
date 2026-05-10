@@ -293,9 +293,7 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
       <div className="p-4 space-y-4">
         {/* Debug: Force ratification */}
         <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
-            Debug Controls
-          </h3>
+          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">Debug Controls</h3>
           <div className="space-y-2">
             <button
               onClick={handleForceRatification}
@@ -342,9 +340,7 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
                     {ratResult.latencyMs}ms · ${ratResult.costUsd.toFixed(5)}
                   </span>
                 </div>
-                {ratResult.reasoning && (
-                  <p className="text-slate-400">{ratResult.reasoning}</p>
-                )}
+                {ratResult.reasoning && <p className="text-slate-400">{ratResult.reasoning}</p>}
                 {ratResult.fellBackToAlgo && (
                   <p className="text-yellow-500">Fell back to algo signal (LLM failed)</p>
                 )}
@@ -450,13 +446,7 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
 // Inject Shock modal
 // ---------------------------------------------------------------------------
 
-function InjectShockModal({
-  pair,
-  onClose,
-}: {
-  pair: string;
-  onClose: () => void;
-}) {
+function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void }) {
   const [deltaScore, setDeltaScore] = useState("0.5");
   const [deltaMagnitude, setDeltaMagnitude] = useState("0.1");
   const [confirmed, setConfirmed] = useState(false);
@@ -491,11 +481,7 @@ function InjectShockModal({
 
   return (
     <>
-      <div
-        className="fixed inset-0 bg-black/50 z-30"
-        onClick={onClose}
-        aria-hidden
-      />
+      <div className="fixed inset-0 bg-black/50 z-30" onClick={onClose} aria-hidden />
       <div className="fixed inset-x-4 top-1/4 max-w-sm mx-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-40 p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-100">Inject Sentiment Shock</h2>
@@ -508,8 +494,8 @@ function InjectShockModal({
         </div>
 
         <div className="rounded bg-amber-950/50 border border-amber-800 p-2 text-[11px] text-amber-300">
-          This writes a real <code>sentiment_shock</code> ratification record to DynamoDB.
-          The shock is observed end-to-end but does not alter the live signal output.
+          This writes a real <code>sentiment_shock</code> ratification record to DynamoDB. The shock
+          is observed end-to-end but does not alter the live signal output.
         </div>
 
         <div className="space-y-2">
@@ -528,7 +514,10 @@ function InjectShockModal({
               min="-2"
               max="2"
               value={deltaScore}
-              onChange={(e) => { setDeltaScore(e.target.value); setConfirmed(false); }}
+              onChange={(e) => {
+                setDeltaScore(e.target.value);
+                setConfirmed(false);
+              }}
               className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-slate-500"
             />
           </div>
@@ -543,7 +532,10 @@ function InjectShockModal({
               min="-1"
               max="1"
               value={deltaMagnitude}
-              onChange={(e) => { setDeltaMagnitude(e.target.value); setConfirmed(false); }}
+              onChange={(e) => {
+                setDeltaMagnitude(e.target.value);
+                setConfirmed(false);
+              }}
               className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-slate-500"
             />
           </div>
@@ -569,9 +561,7 @@ function InjectShockModal({
           </button>
         </div>
 
-        {error && (
-          <p className="text-xs text-red-400 bg-red-950/30 rounded p-2">{error}</p>
-        )}
+        {error && <p className="text-xs text-red-400 bg-red-950/30 rounded p-2">{error}</p>}
 
         {result && (
           <div className="space-y-1">
@@ -745,9 +735,7 @@ export function Pipeline() {
       )}
 
       {/* Inject shock modal */}
-      {shockPair && (
-        <InjectShockModal pair={shockPair} onClose={() => setShockPair(null)} />
-      )}
+      {shockPair && <InjectShockModal pair={shockPair} onClose={() => setShockPair(null)} />}
     </div>
   );
 }

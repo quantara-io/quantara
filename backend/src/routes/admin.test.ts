@@ -741,8 +741,10 @@ describe("POST /debug/force-ratification", () => {
     forceRatificationMock.mockResolvedValue({
       capped: true,
       capCount: 200,
-      verdict: null,
-      confidence: null,
+      algoSignalType: null,
+      algoConfidence: null,
+      verdictKind: null,
+      ratifiedConfidence: null,
       reasoning: null,
       latencyMs: 0,
       costUsd: 0,
@@ -762,10 +764,38 @@ describe("POST /debug/force-ratification", () => {
     expect(body.error.code).toBe("RATE_LIMITED");
   });
 
+  it("returns 409 on duplicate request within the idempotency window", async () => {
+    forceRatificationMock.mockResolvedValue({
+      duplicate: true,
+      algoSignalType: null,
+      algoConfidence: null,
+      verdictKind: null,
+      ratifiedConfidence: null,
+      reasoning: null,
+      latencyMs: 0,
+      costUsd: 0,
+      cacheHit: false,
+      fellBackToAlgo: false,
+      recordId: "",
+      rawResponse: null,
+    });
+    const app = await loadApp();
+    const res = await app.request("/debug/force-ratification", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair: "BTC/USDT", timeframe: "1h" }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("DUPLICATE_REQUEST");
+  });
+
   it("returns 200 with the ratification result on success", async () => {
     const mockResult = {
-      verdict: "ratify",
-      confidence: 0.82,
+      algoSignalType: "buy",
+      algoConfidence: 0.8,
+      verdictKind: "ratify" as const,
+      ratifiedConfidence: 0.82,
       reasoning: "Strong signal",
       latencyMs: 450,
       costUsd: 0.0003,
@@ -784,8 +814,13 @@ describe("POST /debug/force-ratification", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: typeof mockResult };
     expect(body.success).toBe(true);
-    expect(body.data.verdict).toBe("ratify");
-    expect(forceRatificationMock).toHaveBeenCalledWith({ pair: "BTC/USDT", timeframe: "1h" });
+    expect(body.data.verdictKind).toBe("ratify");
+    expect(body.data.algoSignalType).toBe("buy");
+    expect(forceRatificationMock).toHaveBeenCalledWith({
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      userId: "user_admin",
+    });
   });
 
   it("is protected by requireAdmin — returns 403 for non-admin", async () => {
@@ -856,7 +891,10 @@ describe("POST /debug/replay-news-enrichment", () => {
     expect(body.success).toBe(true);
     expect(body.data.mutated).toBe(false);
     expect(body.data.newsId).toBe("news-123");
-    expect(replayNewsEnrichmentMock).toHaveBeenCalledWith({ newsId: "news-123" });
+    expect(replayNewsEnrichmentMock).toHaveBeenCalledWith({
+      newsId: "news-123",
+      userId: "user_admin",
+    });
   });
 
   it("is protected by requireAdmin — returns 403 for non-admin", async () => {
@@ -944,6 +982,7 @@ describe("POST /debug/inject-sentiment-shock", () => {
       pair: "BTC/USDT",
       deltaScore: 0.5,
       deltaMagnitude: 0.1,
+      userId: "user_admin",
     });
   });
 

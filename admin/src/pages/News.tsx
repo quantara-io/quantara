@@ -208,7 +208,11 @@ export function News() {
   async function handleReplayEnrichment(newsId: string) {
     if (!newsId) return;
     setReplayLoading((prev) => new Set(prev).add(newsId));
-    setReplayErrors((prev) => { const n = { ...prev }; delete n[newsId]; return n; });
+    setReplayErrors((prev) => {
+      const n = { ...prev };
+      delete n[newsId];
+      return n;
+    });
     const res = await apiFetch<ReplayEnrichmentResult>("/api/admin/debug/replay-news-enrichment", {
       method: "POST",
       body: { newsId },
@@ -420,8 +424,8 @@ export function News() {
                             : "bg-slate-800 text-slate-400"
                       }`}
                     >
-                      score {replayResults[id].replayedEnrichment.sentiment.score.toFixed(2)} ·
-                      mag {replayResults[id].replayedEnrichment.sentiment.magnitude.toFixed(2)}
+                      score {replayResults[id].replayedEnrichment.sentiment.score.toFixed(2)} · mag{" "}
+                      {replayResults[id].replayedEnrichment.sentiment.magnitude.toFixed(2)}
                     </span>
                   </div>
                 </div>
