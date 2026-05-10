@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PAIRS } from "@quantara/shared";
 import { apiFetch } from "../lib/api";
+import { HelpTooltip } from "../components/HelpTooltip";
 
 // ---------------------------------------------------------------------------
 // API types
@@ -201,7 +202,19 @@ export function Pnl() {
             <div className="flex items-center gap-2 mb-3">
               <h2 className="text-xs uppercase tracking-widest text-slate-500">Equity Curve</h2>
               {/* Assumption caveat tooltip */}
-              <CaveatTooltip />
+              <HelpTooltip label="Simulation assumptions" position="bottom">
+                <ul className="space-y-1 list-disc list-inside text-slate-400">
+                  <li>
+                    Signals are executed at{" "}
+                    <span className="text-slate-300">emit-bar close price</span> (priceAtSignal).
+                  </li>
+                  <li>No slippage, no partial fills, no order-book effects.</li>
+                  <li>Fixed position size per trade — no real risk sizing.</li>
+                  <li>Round-trip fee is applied flat (feeBps) regardless of price impact.</li>
+                  <li>Hold signals are excluded (no directional PnL).</li>
+                  <li>Invalidated outcomes are excluded.</li>
+                </ul>
+              </HelpTooltip>
             </div>
             <EquityCurveChart curve={data.equityCurve} />
             {data.equityCurve.length < 2 && (
@@ -427,40 +440,6 @@ function SortPicker({
           {opt === "pnl" ? "PnL" : opt === "winRate" ? "Win %" : "Trades"}
         </ToggleBtn>
       ))}
-    </div>
-  );
-}
-
-function CaveatTooltip() {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        className="text-[11px] text-slate-500 hover:text-slate-300 border border-slate-700 rounded px-1.5 py-0.5 leading-none"
-        aria-label="Simulation assumptions"
-      >
-        ?
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full mt-1 z-20 w-72 rounded border border-slate-700 bg-slate-950 p-3 text-xs text-slate-300 shadow-lg">
-          <p className="font-semibold mb-1 text-slate-200">Simulation assumptions</p>
-          <ul className="space-y-1 list-disc list-inside text-slate-400">
-            <li>
-              Signals are executed at <span className="text-slate-300">emit-bar close price</span>{" "}
-              (priceAtSignal).
-            </li>
-            <li>No slippage, no partial fills, no order-book effects.</li>
-            <li>Fixed position size per trade — no real risk sizing.</li>
-            <li>Round-trip fee is applied flat (feeBps) regardless of price impact.</li>
-            <li>Hold signals are excluded (no directional PnL).</li>
-            <li>Invalidated outcomes are excluded.</li>
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
