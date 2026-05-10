@@ -1871,6 +1871,29 @@ describe("getExchangeRestartCounts", () => {
 
     expect(result).toEqual({});
   });
+
+  it("sends a queryString that parses the colon-separated watchdog log format", async () => {
+    // The ingestion watchdog writes: [Watchdog] Restarting stream binanceus:BTC/USDT (…)
+    // Key shape in stream.ts: `${exchangeId}:${pair}` — colon, NOT hash.
+    // This test pins the exact parse pattern so a separator regression fails CI.
+    cwLogsSend
+      .mockResolvedValueOnce({ queryId: "qid-qs" })
+      .mockResolvedValueOnce({ status: "Complete", results: [] });
+
+    const { getExchangeRestartCounts } = await importService();
+    await getExchangeRestartCounts(new Date(Date.now() - 3600_000), new Date());
+
+    // cwLogsSend receives the constructed command object: { __cmd, input: { queryString, … } }
+    expect(cwLogsSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          queryString: expect.stringContaining(
+            "parse @message '[Watchdog] Restarting stream *:* ' as exchange, rest",
+          ),
+        }),
+      }),
+    );
+  });
 });
 
 describe("getPipelineHealth — restartCount wiring", () => {

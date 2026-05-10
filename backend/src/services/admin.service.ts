@@ -2173,12 +2173,13 @@ export async function getExchangeRestartCounts(
   windowEnd: Date,
 ): Promise<Record<string, number> | null> {
   const logGroupName = `/ecs/${PREFIX}-ingestion`;
-  // Extract the exchange name from the stream key (format: <exchange>#<pair>).
-  // The watchdog log line: [Watchdog] Restarting stream <key> (no data for …)
+  // Extract the exchange name from the stream key (format: <exchange>:<pair>).
+  // The watchdog log line: [Watchdog] Restarting stream <exchange>:<pair> (no data for …)
+  // Key shape comes from stream.ts: `${exchangeId}:${pair}` (colon separator, not #).
   const queryString = [
     "fields @message",
     "| filter @message like /\\[Watchdog\\] Restarting stream /",
-    "| parse @message '[Watchdog] Restarting stream *#* ' as exchange, rest",
+    "| parse @message '[Watchdog] Restarting stream *:* ' as exchange, rest",
     "| stats count() as restartCount by exchange",
   ].join(" ");
 
