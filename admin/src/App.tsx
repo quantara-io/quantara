@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { AuthGate } from "./components/AuthGate";
 import { Layout } from "./components/Layout";
+import { Activity } from "./pages/Activity";
 import { Genie } from "./pages/Genie";
 import { Health } from "./pages/Health";
 import { Login } from "./pages/Login";
@@ -93,6 +94,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Health />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/activity"
+          element={
+            <AuthGate>
+              <Layout>
+                <Activity />
               </Layout>
             </AuthGate>
           }

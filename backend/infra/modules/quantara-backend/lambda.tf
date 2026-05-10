@@ -152,12 +152,23 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
         # (Put/Update/Delete were granted unnecessarily). Same reasoning
         # applies to `ratifications` and `signal_outcomes` — admin reads
         # only, never writes.
+        #
+        # `BatchGetItem` is required for `getNewsUsage()` (PR #182), which
+        # reads day-bucketed `llm_usage#YYYY-MM-DD` rows from
+        # `ingestion-metadata` in a single deterministic batch instead of
+        # scanning the whole table every 60s.
+        #
+        # The `${news_events.arn}/index/*` entry is required for the
+        # `published-day-index` GSI Query introduced in #203 / used by
+        # paginated `getNews()` in #201. Granting Query on the table ARN
+        # alone does NOT cover its GSIs in IAM.
         Effect = "Allow"
-        Action = ["dynamodb:Query", "dynamodb:GetItem"]
+        Action = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:BatchGetItem"]
         Resource = [
           aws_dynamodb_table.prices.arn,
           aws_dynamodb_table.candles.arn,
           aws_dynamodb_table.news_events.arn,
+          "${aws_dynamodb_table.news_events.arn}/index/*",
           aws_dynamodb_table.ingestion_metadata.arn,
           aws_dynamodb_table.signals_v2.arn,
           aws_dynamodb_table.indicator_state.arn,
@@ -212,26 +223,26 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      AUTH_BASE_URL        = var.auth_base_url
-      APP_ID               = var.app_id
-      TABLE_PREFIX         = "${local.prefix}-"
-      TABLE_USERS          = aws_dynamodb_table.users.name
-      TABLE_SIGNALS        = aws_dynamodb_table.signals.name
-      TABLE_SIGNAL_HISTORY = aws_dynamodb_table.signal_history.name
-      TABLE_COACH_SESSIONS = aws_dynamodb_table.coach_sessions.name
-      TABLE_COACH_MESSAGES = aws_dynamodb_table.coach_messages.name
-      TABLE_DEALS          = aws_dynamodb_table.deals.name
-      TABLE_DEAL_INTERESTS = aws_dynamodb_table.deal_interests.name
-      TABLE_CAMPAIGNS        = aws_dynamodb_table.campaigns.name
-      TABLE_INDICATOR_STATE  = aws_dynamodb_table.indicator_state.name
-      TABLE_SIGNALS_V2       = aws_dynamodb_table.signals_v2.name
-      TABLE_RATIFICATIONS    = aws_dynamodb_table.ratifications.name
-      TABLE_SIGNAL_OUTCOMES  = aws_dynamodb_table.signal_outcomes.name
-      CORS_ORIGIN            = var.cors_origin
-      CLOUDFRONT_URL       = "https://${aws_cloudfront_distribution.api.domain_name}"
-      ENVIRONMENT          = var.environment
-      LOG_LEVEL            = var.log_level
-      AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+      AUTH_BASE_URL         = var.auth_base_url
+      APP_ID                = var.app_id
+      TABLE_PREFIX          = "${local.prefix}-"
+      TABLE_USERS           = aws_dynamodb_table.users.name
+      TABLE_SIGNALS         = aws_dynamodb_table.signals.name
+      TABLE_SIGNAL_HISTORY  = aws_dynamodb_table.signal_history.name
+      TABLE_COACH_SESSIONS  = aws_dynamodb_table.coach_sessions.name
+      TABLE_COACH_MESSAGES  = aws_dynamodb_table.coach_messages.name
+      TABLE_DEALS           = aws_dynamodb_table.deals.name
+      TABLE_DEAL_INTERESTS  = aws_dynamodb_table.deal_interests.name
+      TABLE_CAMPAIGNS       = aws_dynamodb_table.campaigns.name
+      TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
+      TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
+      TABLE_RATIFICATIONS   = aws_dynamodb_table.ratifications.name
+      TABLE_SIGNAL_OUTCOMES = aws_dynamodb_table.signal_outcomes.name
+      CORS_ORIGIN           = var.cors_origin
+      CLOUDFRONT_URL        = "https://${aws_cloudfront_distribution.api.domain_name}"
+      ENVIRONMENT           = var.environment
+      LOG_LEVEL             = var.log_level
+      AWS_ACCOUNT_ID        = data.aws_caller_identity.current.account_id
     }
   }
 

@@ -61,8 +61,9 @@ function num(v: number | null, decimals = 0): string {
 
 function ago(iso: string | null): string {
   if (!iso) return "—";
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const diffS = Math.round(diffMs / 1000);
+  const ts = new Date(iso).getTime();
+  if (!Number.isFinite(ts)) return "—";
+  const diffS = Math.round((Date.now() - ts) / 1000);
   if (diffS < 60) return `${diffS}s ago`;
   if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
   const h = Math.floor(diffS / 3600);
@@ -251,8 +252,8 @@ function LambdaTable({ lambdas }: { lambdas: Record<string, LambdaHealth> }) {
       </table>
       {Object.values(lambdas).every((l) => l.invocations === null) && (
         <p className="text-[10px] text-slate-600 mt-2">
-          CloudWatch metrics unavailable — <code>@aws-sdk/client-cloudwatch</code> not yet
-          installed. Add the dependency to activate.
+          CloudWatch metrics unavailable. Possible causes: missing IAM permissions, no recent
+          activity, or transient API failure.
         </p>
       )}
     </Card>

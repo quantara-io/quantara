@@ -16,6 +16,7 @@
 
 import { PAIRS, type TradingPair } from "@quantara/shared";
 
+import { emitPipelineEventSafe } from "../lib/pipeline-events-store.js";
 import { getRecentShockRatifications, getRecentRatifications } from "../lib/ratification-store.js";
 import { getLatestSignal } from "../lib/signal-store.js";
 import { ratifySignal } from "../llm/ratify.js";
@@ -331,6 +332,21 @@ export async function maybeFireSentimentShockRatification(
   console.log(
     `[SentimentShock] Shock detected for ${rawSymbol} → ${tradingPair}/${window}: ${shockResult.reason}`,
   );
+
+  // Activity feed: emit on detection (before cost gate / cooldown). The
+  // event records that a shock happened — whether or not we ultimately
+  // ratify is a separate concern (cost gate, rate limit). prev is
+  // guaranteed non-null here because detectSentimentShock requires it.
+  const deltaScore =
+    prev && prev.meanScore !== null && next.meanScore !== null
+      ? next.meanScore - prev.meanScore
+      : 0;
+  emitPipelineEventSafe({
+    type: "sentiment-shock-detected",
+    pair: tradingPair,
+    deltaScore,
+    ts: nowIso,
+  });
 
   // Step 4: Cost gate
   const gateResult = await checkSentimentShockCostGate(tradingPair, nowIso);

@@ -23,6 +23,7 @@ const LAMBDAS = [
   { entry: "ws-connect-handler.js", zip: "ws-connect-handler.zip" },
   { entry: "ws-disconnect-handler.js", zip: "ws-disconnect-handler.zip" },
   { entry: "signals-fanout.js", zip: "signals-fanout.zip" },
+  { entry: "events-fanout.js", zip: "events-fanout.zip" }, // Live activity feed (#184)
 ];
 
 // Install production-only ccxt into a clean directory
