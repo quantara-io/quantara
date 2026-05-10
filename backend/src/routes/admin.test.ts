@@ -17,6 +17,7 @@ const forceRatificationMock = vi.fn();
 const previewNewsEnrichmentMock = vi.fn();
 const reenrichNewsMock = vi.fn();
 const injectSentimentShockMock = vi.fn();
+const forceIndicatorsMock = vi.fn();
 const getActivityMock = vi.fn();
 const getShadowSignalsMock = vi.fn();
 
@@ -52,6 +53,9 @@ vi.mock("../services/admin-debug.service.js", () => ({
   previewNewsEnrichment: previewNewsEnrichmentMock,
   reenrichNews: reenrichNewsMock,
   injectSentimentShock: injectSentimentShockMock,
+  forceIndicators: forceIndicatorsMock,
+  FORCE_INDICATORS_TIMEFRAMES: ["15m", "1h", "4h", "1d"],
+  FORCE_INDICATORS_EXCHANGES: ["binanceus", "coinbase", "kraken"],
 }));
 
 let currentAuth: Record<string, unknown> = {
@@ -89,6 +93,7 @@ beforeEach(() => {
   previewNewsEnrichmentMock.mockReset();
   reenrichNewsMock.mockReset();
   injectSentimentShockMock.mockReset();
+  forceIndicatorsMock.mockReset();
   getActivityMock.mockReset();
   getShadowSignalsMock.mockReset();
   currentAuth = {
@@ -1759,5 +1764,139 @@ describe("GET /signals-shadow", () => {
     const res = await app.request("/signals-shadow");
     expect(res.status).toBe(403);
     expect(getShadowSignalsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /debug/force-indicators", () => {
+  function makeRequest(body: unknown) {
+    return {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    };
+  }
+
+  it("targeted mode invokes forceIndicators once and returns results", async () => {
+    forceIndicatorsMock.mockResolvedValue({
+      results: [{ pair: "BTC/USDT", exchange: "binanceus", timeframe: "1d", ok: true }],
+    });
+    const app = await loadApp();
+    const res = await app.request(
+      "/debug/force-indicators",
+      makeRequest({ pair: "BTC/USDT", exchange: "binanceus", timeframe: "1d" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { results: Array<{ ok: boolean }> };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.results).toHaveLength(1);
+    expect(body.data.results[0]!.ok).toBe(true);
+    expect(forceIndicatorsMock).toHaveBeenCalledTimes(1);
+    expect(forceIndicatorsMock).toHaveBeenCalledWith({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      timeframe: "1d",
+    });
+  });
+
+  it("bulk mode { all: true } invokes forceIndicators with all:true and returns 60 results", async () => {
+    const pairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
+    const exchanges = ["binanceus", "coinbase", "kraken"];
+    const timeframes = ["15m", "1h", "4h", "1d"];
+    const results = pairs.flatMap((pair) =>
+      exchanges.flatMap((exchange) =>
+        timeframes.map((timeframe) => ({ pair, exchange, timeframe, ok: true })),
+      ),
+    );
+    forceIndicatorsMock.mockResolvedValue({ results });
+    const app = await loadApp();
+    const res = await app.request("/debug/force-indicators", makeRequest({ all: true }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { results: unknown[] };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.results).toHaveLength(60);
+    expect(forceIndicatorsMock).toHaveBeenCalledWith({ all: true });
+  });
+
+  it("returns 400 for an unsupported timeframe", async () => {
+    const app = await loadApp();
+    const res = await app.request(
+      "/debug/force-indicators",
+      makeRequest({ pair: "BTC/USDT", exchange: "binanceus", timeframe: "3m" }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(forceIndicatorsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for an unknown pair", async () => {
+    const app = await loadApp();
+    const res = await app.request(
+      "/debug/force-indicators",
+      makeRequest({ pair: "FAKE/USDT", exchange: "binanceus", timeframe: "1d" }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(forceIndicatorsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for an unknown exchange", async () => {
+    const app = await loadApp();
+    const res = await app.request(
+      "/debug/force-indicators",
+      makeRequest({ pair: "BTC/USDT", exchange: "unknown-exchange", timeframe: "1d" }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(forceIndicatorsMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces lambda invoke error in results[i].error", async () => {
+    forceIndicatorsMock.mockResolvedValue({
+      results: [
+        {
+          pair: "ETH/USDT",
+          exchange: "kraken",
+          timeframe: "4h",
+          ok: false,
+          error: "Lambda error: Task timed out",
+        },
+      ],
+    });
+    const app = await loadApp();
+    const res = await app.request(
+      "/debug/force-indicators",
+      makeRequest({ pair: "ETH/USDT", exchange: "kraken", timeframe: "4h" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { results: Array<{ ok: boolean; error?: string }> };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.results[0]!.ok).toBe(false);
+    expect(body.data.results[0]!.error).toContain("Lambda error");
+  });
+
+  it("returns 403 when caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request(
+      "/debug/force-indicators",
+      makeRequest({ pair: "BTC/USDT", exchange: "binanceus", timeframe: "1d" }),
+    );
+    expect(res.status).toBe(403);
+    expect(forceIndicatorsMock).not.toHaveBeenCalled();
   });
 });

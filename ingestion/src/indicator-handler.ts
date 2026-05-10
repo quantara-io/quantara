@@ -107,6 +107,13 @@ interface StreamCandle {
   volume: number;
   symbol: string;
   source: "live" | "live-synthesized" | "backfill";
+  /**
+   * When `true`, the caller asserts that quorum + signals-v2 dedup should be
+   * bypassed. Only set by the admin debug `force-indicators` path, which
+   * constructs a synthetic event explicitly to re-drive IndicatorState. Must
+   * never be present on real candle stream records.
+   */
+  force?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,66 +160,75 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
 // ---------------------------------------------------------------------------
 
 async function processCandleClose(candle: StreamCandle): Promise<void> {
-  const { pair, timeframe, closeTime, exchange } = candle;
+  const { pair, timeframe, closeTime, exchange, force } = candle;
   const quorumId = `${pair}#${timeframe}#${closeTime}`;
-
-  // Step 1 — ADD exchange to close-quorum (idempotent DDB String Set ADD).
-  // Also set TTL via if_not_exists so first writer sets it; subsequent writers
-  // don't overwrite the TTL (preventing TTL extension on retry).
-  const ttlSeconds = Math.floor(closeTime / 1000) + 86_400;
-
-  await client.send(
-    new UpdateCommand({
-      TableName: CLOSE_QUORUM_TABLE,
-      Key: { id: quorumId },
-      UpdateExpression: "ADD exchanges :ex SET #ttl = if_not_exists(#ttl, :ttl)",
-      ExpressionAttributeNames: { "#ttl": "ttl" },
-      ExpressionAttributeValues: {
-        // DynamoDB Document Client accepts a plain Set for String Set ADD.
-        ":ex": new Set([exchange]),
-        ":ttl": ttlSeconds,
-      },
-    }),
-  );
-
-  // Step 2 — Check quorum.
-  // ConsistentRead is required: an eventually-consistent read after an UpdateItem
-  // can return the pre-update image and miss the just-added exchange. If no further
-  // exchanges arrive, the slot would be silently abandoned.
-  const quorumResult = await client.send(
-    new GetCommand({
-      TableName: CLOSE_QUORUM_TABLE,
-      Key: { id: quorumId },
-      ConsistentRead: true,
-    }),
-  );
-
-  const quorumItem = quorumResult.Item;
-  const exchangeSet = quorumItem?.exchanges as Set<string> | undefined;
-  const exchangeCount = exchangeSet?.size ?? 0;
-
-  if (exchangeCount < REQUIRED_EXCHANGE_COUNT) {
-    console.log(
-      `[IndicatorHandler] Quorum not reached for ${quorumId}: ${exchangeCount}/${REQUIRED_EXCHANGE_COUNT} exchanges. Waiting.`,
-    );
-    return;
-  }
-
-  // Step 3 — Check signals-v2 for prior processing (deterministic SK: tf#closeTime per P2.2).
+  // Deterministic SK (P2.2: tf#closeTime). Defined here so it's available in
+  // both the quorum/dedup branch (Step 3) and Step 4 (signal PutCommand).
   const sk = `${timeframe}#${closeTime}`;
 
-  const existing = await client.send(
-    new GetCommand({
-      TableName: SIGNALS_V2_TABLE,
-      Key: { pair, sk },
-    }),
-  );
+  if (force) {
+    // Force-recompute path: bypass quorum check (Step 1) and signals-v2 dedup
+    // (Step 3). Goes straight to Step 4. This branch is only reachable from
+    // the admin debug `force-indicators` endpoint — real DDB Streams records
+    // never carry `force: true`.
+    console.log(`[IndicatorHandler] FORCE recompute for ${quorumId} — skipping quorum + dedup`);
+  } else {
+    // Step 1 — ADD exchange to close-quorum (idempotent DDB String Set ADD).
+    // Also set TTL via if_not_exists so first writer sets it; subsequent writers
+    // don't overwrite the TTL (preventing TTL extension on retry).
+    const ttlSeconds = Math.floor(closeTime / 1000) + 86_400;
 
-  if (existing.Item) {
-    console.log(
-      `[IndicatorHandler] ${pair}/${timeframe}@${closeTime}: signals-v2 row already exists — idempotent skip.`,
+    await client.send(
+      new UpdateCommand({
+        TableName: CLOSE_QUORUM_TABLE,
+        Key: { id: quorumId },
+        UpdateExpression: "ADD exchanges :ex SET #ttl = if_not_exists(#ttl, :ttl)",
+        ExpressionAttributeNames: { "#ttl": "ttl" },
+        ExpressionAttributeValues: {
+          // DynamoDB Document Client accepts a plain Set for String Set ADD.
+          ":ex": new Set([exchange]),
+          ":ttl": ttlSeconds,
+        },
+      }),
     );
-    return;
+
+    // Step 2 — Check quorum.
+    // ConsistentRead is required: an eventually-consistent read after an UpdateItem
+    // can return the pre-update image and miss the just-added exchange. If no further
+    // exchanges arrive, the slot would be silently abandoned.
+    const quorumResult = await client.send(
+      new GetCommand({
+        TableName: CLOSE_QUORUM_TABLE,
+        Key: { id: quorumId },
+        ConsistentRead: true,
+      }),
+    );
+
+    const quorumItem = quorumResult.Item;
+    const exchangeSet = quorumItem?.exchanges as Set<string> | undefined;
+    const exchangeCount = exchangeSet?.size ?? 0;
+
+    if (exchangeCount < REQUIRED_EXCHANGE_COUNT) {
+      console.log(
+        `[IndicatorHandler] Quorum not reached for ${quorumId}: ${exchangeCount}/${REQUIRED_EXCHANGE_COUNT} exchanges. Waiting.`,
+      );
+      return;
+    }
+
+    // Step 3 — Check signals-v2 for prior processing (deterministic SK: tf#closeTime per P2.2).
+    const existing = await client.send(
+      new GetCommand({
+        TableName: SIGNALS_V2_TABLE,
+        Key: { pair, sk },
+      }),
+    );
+
+    if (existing.Item) {
+      console.log(
+        `[IndicatorHandler] ${pair}/${timeframe}@${closeTime}: signals-v2 row already exists — idempotent skip.`,
+      );
+      return;
+    }
   }
 
   // Step 4 — Compute indicators + blend → two-stage write (Phase B1).

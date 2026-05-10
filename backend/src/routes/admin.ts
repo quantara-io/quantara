@@ -25,6 +25,9 @@ import {
   previewNewsEnrichment,
   reenrichNews,
   injectSentimentShock,
+  forceIndicators,
+  FORCE_INDICATORS_TIMEFRAMES,
+  FORCE_INDICATORS_EXCHANGES,
 } from "../services/admin-debug.service.js";
 
 const admin = new Hono();
@@ -932,6 +935,84 @@ admin.get("/signals-shadow", async (c) => {
   });
 
   return c.json({ success: true, data: { signals } });
+});
+
+/**
+ * POST /api/admin/debug/force-indicators
+ * Body (targeted): { pair: string, exchange: string, timeframe: string }
+ * Body (bulk):     { all: true }
+ *
+ * Triggers an immediate recompute of IndicatorState for one or more
+ * (pair, exchange, timeframe) tuples by invoking the indicator-handler Lambda
+ * with a synthetic DynamoDBStreamEvent. Useful after a candle backfill run
+ * when the indicator Lambda's DDB Streams FilterCriteria (source="live") has
+ * correctly filtered out the backfill writes, leaving IndicatorState stale.
+ *
+ * Auth: requireAuth + requireAdmin (matches other /debug/* endpoints).
+ * Returns: { results: Array<{ pair, exchange, timeframe, ok, error? }> }
+ *
+ * Issue #288.
+ */
+admin.post("/debug/force-indicators", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>();
+
+  // Bulk mode: { all: true }
+  if (body.all === true) {
+    const result = await forceIndicators({ all: true });
+    return c.json({ success: true as const, data: result });
+  }
+
+  // Targeted mode: { pair, exchange, timeframe }
+  const { pair, exchange, timeframe } = body;
+
+  if (typeof pair !== "string" || !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  if (
+    typeof timeframe !== "string" ||
+    !(FORCE_INDICATORS_TIMEFRAMES as readonly string[]).includes(timeframe)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${FORCE_INDICATORS_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  if (
+    typeof exchange !== "string" ||
+    !(FORCE_INDICATORS_EXCHANGES as readonly string[]).includes(exchange)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `exchange must be one of: ${FORCE_INDICATORS_EXCHANGES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  const result = await forceIndicators({
+    pair,
+    exchange: exchange as (typeof FORCE_INDICATORS_EXCHANGES)[number],
+    timeframe: timeframe as (typeof FORCE_INDICATORS_TIMEFRAMES)[number],
+  });
+  return c.json({ success: true as const, data: result });
 });
 
 export { admin };

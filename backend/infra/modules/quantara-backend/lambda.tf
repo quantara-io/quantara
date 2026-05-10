@@ -271,6 +271,24 @@ resource "aws_iam_role_policy" "lambda_admin_debug_sqs" {
   })
 }
 
+# InvokeFunction permission for /debug/force-indicators (issue #288), which
+# calls the indicator-handler Lambda with a synthetic DynamoDBStreamEvent to
+# recompute IndicatorState without waiting for the next live bar close.
+# Scoped to the single indicator-handler ARN — no wildcard.
+resource "aws_iam_role_policy" "lambda_admin_debug_invoke_indicator" {
+  name = "${local.prefix}-admin-debug-invoke-indicator"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = aws_lambda_function.indicator_handler.arn
+    }]
+  })
+}
+
 # Build the app from source
 locals {
   source_hash = sha256(join("", [
@@ -339,6 +357,10 @@ resource "aws_lambda_function" "api" {
       # the service code never falls back to a string-built URL that is
       # malformed when AWS_ACCOUNT_ID is unset (see PR #269 review thread).
       ENRICHMENT_QUEUE_URL = aws_sqs_queue.enrichment.url
+      # Used by /debug/force-indicators (issue #288) to invoke the indicator
+      # handler Lambda by name. Injected explicitly so the service never
+      # constructs a function name from TABLE_PREFIX with a stale format.
+      INDICATOR_HANDLER_FUNCTION_NAME = aws_lambda_function.indicator_handler.function_name
     }
   }
 
