@@ -167,6 +167,14 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
         Resource = [
           aws_dynamodb_table.prices.arn,
           aws_dynamodb_table.candles.arn,
+          # Required for the Pipeline Health page's exchange-stream
+          # freshness check (admin.service.ts → getExchangeLastDataAt),
+          # which Queries the `exchange-index` GSI on candles. Without
+          # this, the dashboard shows every exchange as "down" because
+          # the Query throws AccessDenied and the try/catch in the
+          # service silently returns null. Same failure mode as #210
+          # for news_events; same fix.
+          "${aws_dynamodb_table.candles.arn}/index/*",
           aws_dynamodb_table.news_events.arn,
           "${aws_dynamodb_table.news_events.arn}/index/*",
           aws_dynamodb_table.ingestion_metadata.arn,
