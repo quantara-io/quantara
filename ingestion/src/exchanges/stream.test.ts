@@ -709,6 +709,281 @@ describe("MarketStreamManager — Kraken zero-volume synthesis", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #290 — Fix 1: skipped-window detection
+// ---------------------------------------------------------------------------
+
+describe("MarketStreamManager — Kraken skipped-window detection", () => {
+  it("logs a skipped-synthesis warning when a real candle arrives at T+120s after a timer was armed for T+60s", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      // Bar 1: openTime = now - 300s, closeTime = now - 240s.
+      // Processing bar1 arms a timer for expectedNextCloseTime = now - 180s.
+      const openTime1 = now - 300_000;
+      const closeTime1 = openTime1 + 60_000; // = now - 240_000
+
+      // Bar 2: openTime skips the slot bar1 targeted (closeTime1 to closeTime1+60s)
+      // and lands at closeTime1 + 120s = now - 120s, closeTime = now - 60s.
+      // Both bars are well past their close boundary, so isClosed = true.
+      // When the OHLCV loop calls updateKrakenSynthState for bar2, the existing
+      // timer's expectedNextCloseTime (now - 180s) < bar2.closeTime (now - 60s),
+      // triggering the skipped-window log.
+      const openTime2 = closeTime1 + 120_000; // = now - 120_000 (skips one 60s slot)
+
+      // Deliver BOTH rows in the same watchOHLCV batch. The loop iterates them
+      // in order: bar1 arms the timer; bar2 cancels it and logs the skip.
+      const row1 = [openTime1, "1.0000", "1.0100", "0.9900", "1.0050", "100.0"];
+      const row2 = [openTime2, "1.0060", "1.0080", "1.0010", "1.0070", "80.0"];
+
+      watchOHLCVMock
+        .mockResolvedValueOnce([row1, row2]) // pair 1 — both rows in one batch
+        .mockResolvedValueOnce([row1, row2]) // pair 2
+        .mockResolvedValueOnce([row1, row2]) // pair 3
+        .mockResolvedValueOnce([row1, row2]) // pair 4
+        .mockResolvedValueOnce([row1, row2]) // pair 5
+        .mockResolvedValueOnce([row1, row2]) // pair 6
+        .mockResolvedValueOnce([row1, row2]) // pair 7
+        .mockResolvedValueOnce([row1, row2]) // pair 8
+        .mockResolvedValueOnce([row1, row2]) // pair 9
+        .mockResolvedValueOnce([row1, row2]) // pair 10
+        .mockReturnValue(new Promise(() => {})); // block further
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockReturnValue(new Promise(() => {}));
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
+
+      // Flush the batch (bar1 arms timer, bar2 cancels it and logs the skip).
+      await vi.advanceTimersByTimeAsync(0);
+
+      await manager.stop();
+
+      // At least one kraken stream should have logged a "Skipped synthesis" warning.
+      const skippedWarnings = warnSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((msg) => msg.includes("Skipped synthesis") && msg.includes("kraken:"));
+      expect(skippedWarnings.length).toBeGreaterThan(0);
+
+      warnSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #290 — Fix 2: storeCandles retry with exponential backoff
+// ---------------------------------------------------------------------------
+
+describe("MarketStreamManager — Kraken storeCandles retry", () => {
+  it("succeeds when storeCandles throws once then resolves (retry path covered)", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      const openTime = now - 120_000;
+      const closedRow = [openTime, "2.0000", "2.0100", "1.9900", "2.0050", "50.0"];
+
+      // Make storeCandles fail on the synthesis call (first few calls are for
+      // the real candle batch; we fail only after PAIRS.length real writes).
+      let realWriteCount = 0;
+      storeCandelsMock.mockImplementation(async (candles: { source: string }[]) => {
+        const isSynth = candles.some((c) => c.source === "live-synthesized");
+        if (isSynth) {
+          realWriteCount++;
+          if (realWriteCount === 1) throw new Error("DDB throttle");
+          // Second synth call succeeds.
+        }
+      });
+
+      watchOHLCVMock
+        .mockResolvedValueOnce([closedRow]) // pair 1
+        .mockResolvedValueOnce([closedRow]) // pair 2
+        .mockResolvedValueOnce([closedRow]) // pair 3
+        .mockResolvedValueOnce([closedRow]) // pair 4
+        .mockResolvedValueOnce([closedRow]) // pair 5
+        .mockResolvedValueOnce([closedRow]) // pair 6
+        .mockResolvedValueOnce([closedRow]) // pair 7
+        .mockResolvedValueOnce([closedRow]) // pair 8
+        .mockResolvedValueOnce([closedRow]) // pair 9
+        .mockResolvedValueOnce([closedRow]) // pair 10
+        .mockReturnValue(new Promise(() => {}));
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockReturnValue(new Promise(() => {}));
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
+
+      // Flush first batch (real candles + arm synthesis timers).
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Advance past synthesis deadline (2s delay) + retry delay (100ms).
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await manager.stop();
+
+      // A retry warning should have been emitted for the first synth failure.
+      const retryWarnings = warnSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((msg) => msg.includes("storeCandles attempt") && msg.includes("kraken:"));
+      expect(retryWarnings.length).toBeGreaterThan(0);
+
+      warnSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits KrakenSynthDropped EMF metric when all retries fail", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      const openTime = now - 120_000;
+      const closedRow = [openTime, "3.0000", "3.0100", "2.9900", "3.0050", "30.0"];
+
+      // All storeCandles calls for synthesized candles fail.
+      storeCandelsMock.mockImplementation(async (candles: { source: string }[]) => {
+        if (candles.some((c) => c.source === "live-synthesized")) {
+          throw new Error("DDB unavailable");
+        }
+      });
+
+      watchOHLCVMock
+        .mockResolvedValueOnce([closedRow]) // pair 1
+        .mockResolvedValueOnce([closedRow]) // pair 2
+        .mockResolvedValueOnce([closedRow]) // pair 3
+        .mockResolvedValueOnce([closedRow]) // pair 4
+        .mockResolvedValueOnce([closedRow]) // pair 5
+        .mockResolvedValueOnce([closedRow]) // pair 6
+        .mockResolvedValueOnce([closedRow]) // pair 7
+        .mockResolvedValueOnce([closedRow]) // pair 8
+        .mockResolvedValueOnce([closedRow]) // pair 9
+        .mockResolvedValueOnce([closedRow]) // pair 10
+        .mockReturnValue(new Promise(() => {}));
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockReturnValue(new Promise(() => {}));
+
+      // Spy on stdout.write to capture EMF metric lines.
+      const stdoutLines: string[] = [];
+      const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+        stdoutLines.push(typeof chunk === "string" ? chunk : chunk.toString());
+        return true;
+      });
+
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
+
+      // Flush real candle batch.
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Advance past synthesis deadline + all three retry delays (100 + 200 + 400 = 700ms total).
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await manager.stop();
+
+      // At least one KrakenSynthDropped EMF line should have been emitted.
+      const emfLines = stdoutLines.filter((line) => {
+        try {
+          const obj = JSON.parse(line) as Record<string, unknown>;
+          return obj["KrakenSynthDropped"] === 1;
+        } catch {
+          return false;
+        }
+      });
+      expect(emfLines.length).toBeGreaterThan(0);
+
+      stdoutSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #290 — Fix 3: consecutive-synth cap
+// ---------------------------------------------------------------------------
+
+describe("MarketStreamManager — Kraken consecutive-synth cap", () => {
+  it("emits exactly KRAKEN_MAX_CONSECUTIVE_SYNTH synths per pair then stops (cap=2 via env)", async () => {
+    // Set a small cap to make the test fast without many timer advances.
+    process.env.KRAKEN_MAX_CONSECUTIVE_SYNTH = "2";
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      const openTime = now - 120_000;
+      const closedRow = [openTime, "4.0000", "4.0100", "3.9900", "4.0050", "10.0"];
+
+      watchOHLCVMock
+        .mockResolvedValueOnce([closedRow]) // pair 1
+        .mockResolvedValueOnce([closedRow]) // pair 2
+        .mockResolvedValueOnce([closedRow]) // pair 3
+        .mockResolvedValueOnce([closedRow]) // pair 4
+        .mockResolvedValueOnce([closedRow]) // pair 5
+        .mockResolvedValueOnce([closedRow]) // pair 6
+        .mockResolvedValueOnce([closedRow]) // pair 7
+        .mockResolvedValueOnce([closedRow]) // pair 8
+        .mockResolvedValueOnce([closedRow]) // pair 9
+        .mockResolvedValueOnce([closedRow]) // pair 10
+        .mockReturnValue(new Promise(() => {}));
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockReturnValue(new Promise(() => {}));
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
+
+      // Flush first batch (real candles stored, synthesis timers armed).
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Fire 6 consecutive synthesis rounds (well past cap=2).
+      // Each synthesis round: delay ≈ 2s for first, then recurring 60s+2s windows.
+      // Advancing 10 min (600s) is enough for cap=2 with a 1-min interval.
+      await vi.advanceTimersByTimeAsync(600_000);
+
+      await manager.stop();
+
+      // Count synthesized candles per kraken pair.
+      const allCandles: { exchange: string; pair: string; source: string }[] = [];
+      for (const call of storeCandelsMock.mock.calls) {
+        allCandles.push(...(call[0] as { exchange: string; pair: string; source: string }[]));
+      }
+      const krakenSynth = allCandles.filter(
+        (c) => c.exchange === "kraken" && c.source === "live-synthesized",
+      );
+
+      // Each pair should emit at most 2 synthesized candles (cap=2).
+      const synthPerPair = new Map<string, number>();
+      for (const candle of krakenSynth) {
+        const k = candle.pair;
+        synthPerPair.set(k, (synthPerPair.get(k) ?? 0) + 1);
+      }
+      for (const [, count] of synthPerPair) {
+        expect(count).toBeLessThanOrEqual(2);
+      }
+
+      // At least one "Cap reached" warning should have been logged.
+      const capWarnings = warnSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((msg) => msg.includes("Cap reached"));
+      expect(capWarnings.length).toBeGreaterThan(0);
+
+      warnSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+      delete process.env.KRAKEN_MAX_CONSECUTIVE_SYNTH;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Watchdog auto-reconnect tests
 //
 // Build a manager, manipulate a stream's lastDataAt to simulate staleness,
