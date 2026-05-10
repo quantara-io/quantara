@@ -244,7 +244,7 @@ function InterpretationBlock({
 }: {
   interpretation: SignalInterpretation;
   /** Final signal type after ratification — used to render the "→ LLM: hold 50%" tail on downgraded transitions. */
-  finalType: "buy" | "sell" | "hold";
+  finalType: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
   /** Final signal confidence after ratification. */
   finalConfidence: number;
 }) {
@@ -290,18 +290,32 @@ function InterpretationBlock({
   );
 }
 
-function TypeBadge({ type }: { type: "buy" | "sell" | "hold" }) {
+function TypeBadge({ type }: { type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell" }) {
   const classes =
-    type === "buy"
-      ? "bg-up-soft text-up-strong border border-up/30"
-      : type === "sell"
-        ? "bg-down-soft text-down-strong border border-down/30"
-        : "bg-sunken text-muted border border-line";
+    type === "strong-buy"
+      ? "bg-up text-white border border-up"
+      : type === "buy"
+        ? "bg-up-soft text-up-strong border border-up/30"
+        : type === "sell"
+          ? "bg-down-soft text-down-strong border border-down/30"
+          : type === "strong-sell"
+            ? "bg-down text-white border border-down"
+            : "bg-sunken text-muted border border-line";
+  const label =
+    type === "strong-buy"
+      ? "Strong Buy"
+      : type === "strong-sell"
+        ? "Strong Sell"
+        : type === "buy"
+          ? "Buy"
+          : type === "sell"
+            ? "Sell"
+            : "Hold";
   return (
     <span
       className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wide ${classes}`}
     >
-      {type}
+      {label}
     </span>
   );
 }
