@@ -1,5 +1,6 @@
 import type { IndicatorState } from "./indicators.js";
 import type { Timeframe } from "./ingestion.js";
+import type { SignalTag } from "./signal-tags.js";
 
 // ---------------------------------------------------------------------------
 // Gate types — single source of truth (also imported by ingestion/signals/)
@@ -90,8 +91,8 @@ export interface FiredRule {
  * Until then the UI must not represent confidence as a probability.
  */
 export interface TimeframeVote {
-  /** Signal direction produced by this timeframe. */
-  type: "buy" | "sell" | "hold";
+  /** Signal direction produced by this timeframe. Expanded to 5 tiers in v2 Phase 2 (#253). */
+  type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
   /**
    * Ordinal confidence in [0, 1].
    * For buy/sell: sigmoid(bullishScore − bearishScore).
@@ -117,6 +118,16 @@ export interface TimeframeVote {
    * "stale"      — ≥2 of 3 exchanges are stale
    */
   gateReason: "vol" | "dispersion" | "stale" | null;
+  /**
+   * Human-readable reasoning string populated on every emission.
+   * Added in v2 Phase 2 (#253) — includes holds, gates, and below-threshold cases.
+   */
+  reasoning: string;
+  /**
+   * Auxiliary signal tags populated independent of the tier verdict.
+   * May be an empty array. Added in v2 Phase 2 (#253).
+   */
+  tags: SignalTag[];
   /** Snapshot of state.asOf passed through for audit / downstream blending. */
   asOf: number;
 }

@@ -2,9 +2,11 @@ import type { SignalType } from "../types/signals.js";
 import type { Rule } from "../types/rules.js";
 
 export const SIGNAL_COLORS: Record<SignalType, { themeA: string; themeB: string }> = {
+  "strong-buy": { themeA: "#00C97A", themeB: "#1DBF7D" },
   buy: { themeA: "#2EE6A8", themeB: "#7FD494" },
-  sell: { themeA: "#FF5C7A", themeB: "#E56B5F" },
   hold: { themeA: "#FFB547", themeB: "#F0B94A" },
+  sell: { themeA: "#FF5C7A", themeB: "#E56B5F" },
+  "strong-sell": { themeA: "#C4003C", themeB: "#B0003A" },
 };
 
 export const ADVISORY_DISCLAIMER =
@@ -19,6 +21,20 @@ export const VOLATILITY_BANNER =
  * Design: §4.3 of docs/SIGNALS_AND_RISK.md
  */
 export const MIN_CONFLUENCE = 1.5;
+
+/**
+ * Directional score required to emit a strong-buy or strong-sell signal.
+ * Added in v2 Phase 2 (#253).
+ */
+export const STRONG_CONFLUENCE = 3.0;
+
+/**
+ * Minimum net margin (bull - bear for strong-buy; bear - bull for strong-sell)
+ * required alongside STRONG_CONFLUENCE to reach the strong tier.
+ * Prevents noisy strong-* signals when opposing evidence is high.
+ * Added in v2 Phase 2 (#253).
+ */
+export const STRONG_NET_MARGIN = 2.0;
 
 /**
  * Appendix A — full rule library (14 rules).

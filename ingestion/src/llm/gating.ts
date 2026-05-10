@@ -4,11 +4,14 @@
  * Returns { shouldInvoke: boolean; reason: string } so callers can log the
  * gate decision without coupling to the Anthropic client.
  *
- * Rules (§7.5):
+ * Rules (§7.5), updated in v2 Phase 2 (#253):
+ *   0. Tier priority: strong-buy / strong-sell always invoke Genie (bypass daily-budget check)
  *   1. Confidence floor: candidate.confidence must be >= 0.6
  *   2. Per-(pair, TF) 5-minute rate limit
  *   3. Per-pair daily cap (100 calls/day); above cap, ALL three conditions must fire
+ *      (buy / sell only — strong-* bypass the daily cap)
  *   4. At least one trigger condition: recentNews | volatilityFlag | fngShift
+ *   hold signals (rule-driven or gated) never invoke Genie
  *
  * The three trigger helpers (recentNewsExists, volatilityFlagSet, fngShifted) are
  * exported so they can be tested independently.
@@ -36,6 +39,28 @@ export const DAILY_CAP = 100;
 
 /** F&G shift threshold: absolute change >= this triggers. */
 export const FNG_SHIFT_THRESHOLD = 15;
+
+// ---------------------------------------------------------------------------
+// Tier helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the candidate signal is in the strong tier.
+ * Strong-tier signals always invoke Genie — they bypass the daily-budget check.
+ * Added in v2 Phase 2 (#253).
+ */
+export function isStrongTier(ctx: RatifyContext): boolean {
+  return ctx.candidate.type === "strong-buy" || ctx.candidate.type === "strong-sell";
+}
+
+/**
+ * True when the candidate is a hold (rule-driven or gated).
+ * Hold signals never invoke Genie.
+ * Added in v2 Phase 2 (#253).
+ */
+export function isHold(ctx: RatifyContext): boolean {
+  return ctx.candidate.type === "hold";
+}
 
 // ---------------------------------------------------------------------------
 // Trigger condition helpers
@@ -139,7 +164,26 @@ export async function shouldInvokeRatification(
 ): Promise<{ shouldInvoke: boolean; reason: string }> {
   const isShock = ctx.triggerReason === "sentiment_shock";
 
-  // 1. Confidence floor — applies to all callers, including shock.
+  // 0. Hold signals never invoke Genie — rule-driven or gated holds both excluded.
+  //    Added in v2 Phase 2 (#253).
+  if (isHold(ctx)) {
+    return { shouldInvoke: false, reason: "hold signal — Genie not invoked" };
+  }
+
+  // 0b. Strong-tier signals (strong-buy / strong-sell) always invoke Genie.
+  //     They bypass the confidence floor and daily-budget check.
+  //     Per-(pair, TF) rate limit still applies to prevent runaway cost on
+  //     rapid re-emissions of the same strong signal.
+  //     Added in v2 Phase 2 (#253).
+  if (isStrongTier(ctx) && !isShock) {
+    const lastInvocation = await getLastRatificationFor(ctx.pair, ctx.candidate.emittingTimeframe);
+    if (lastInvocation && Date.now() - Date.parse(lastInvocation) < RATE_LIMIT_MS) {
+      return { shouldInvoke: false, reason: "per-(pair, TF) rate limit" };
+    }
+    return { shouldInvoke: true, reason: "strong-tier — Genie priority" };
+  }
+
+  // 1. Confidence floor — applies to buy/sell and shock callers.
   if (ctx.candidate.confidence < CONFIDENCE_FLOOR) {
     return { shouldInvoke: false, reason: "candidate confidence < 0.6" };
   }

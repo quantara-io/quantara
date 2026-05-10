@@ -184,6 +184,8 @@ function makeVote(type: "buy" | "sell" | "hold" = "hold"): TimeframeVote {
     bearishScore: 0,
     volatilityFlag: false,
     gateReason: null,
+    reasoning: "No rules fired",
+    tags: [],
     asOf: TEST_CLOSE_TIME,
   };
 }

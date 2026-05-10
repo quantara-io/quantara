@@ -1,4 +1,5 @@
 export type * from "./types/tiers.js";
+export type * from "./types/signal-tags.js";
 export type * from "./types/signals.js";
 export type * from "./types/users.js";
 export type * from "./types/risk.js";
@@ -12,6 +13,7 @@ export type * from "./types/events.js";
 
 export { TIER_IDS } from "./types/tiers.js";
 export { SIGNAL_TYPES } from "./types/signals.js";
+export { SIGNAL_TAGS } from "./types/signal-tags.js";
 export { USER_TYPES } from "./types/users.js";
 export { defaultRiskProfiles, mergeTierRiskProfiles } from "./types/users.js";
 export { DEAL_TYPES, DEAL_SORT_OPTIONS } from "./types/deals.js";
@@ -25,6 +27,8 @@ export {
   VOLATILITY_BANNER,
   RULES,
   MIN_CONFLUENCE,
+  STRONG_CONFLUENCE,
+  STRONG_NET_MARGIN,
 } from "./constants/signals.js";
 export { PAIRS, type TradingPair } from "./constants/pairs.js";
 export { VOL_GATE_THRESHOLDS } from "./constants/vol-gates.js";
@@ -39,6 +43,9 @@ export type { GlossaryEntry, GlossaryKey } from "./constants/glossary.js";
 
 // Signal interpretation helper — Phase B2 (#171)
 export { buildInterpretation } from "./signals/interpretation.js";
+
+// Signal explanation templater — v2 Phase 2 (#253)
+export { explainRules } from "./signals/explain.js";
 
 // Risk helpers (Gap 1 — moved from ingestion/src/risk/ so backend can import)
 export { attachRiskRecommendation } from "./risk/attach.js";

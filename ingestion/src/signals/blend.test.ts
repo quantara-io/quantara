@@ -39,6 +39,8 @@ function makeVote(overrides: Partial<TimeframeVote>): TimeframeVote {
     bearishScore: 0,
     volatilityFlag: false,
     gateReason: null,
+    reasoning: "No rules fired",
+    tags: [],
     asOf: 1_700_000_000_000,
     ...overrides,
   };

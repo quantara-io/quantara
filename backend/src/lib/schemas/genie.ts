@@ -10,13 +10,20 @@ export const ExchangePricePoint = z
   })
   .openapi("ExchangePricePoint");
 
+/** Canonical signal type enum — 5 tiers added in v2 Phase 2 (#253). */
+const SignalTypeEnum = z.enum(["strong-buy", "buy", "hold", "sell", "strong-sell"]);
+
 export const Signal = z
   .object({
     id: z.string(),
     pair: z.string(),
-    type: z.enum(["buy", "sell", "hold"]),
+    type: SignalTypeEnum,
     confidence: z.number().min(0).max(1),
     reasoning: z.string(),
+    /** Auxiliary tags. Added in v2 Phase 2 (#253). */
+    tags: z.array(z.string()).optional(),
+    /** Genie interpretation. Added in v2 Phase 2 (#253). */
+    interpretation: z.any().nullable().optional(),
     exchangeData: z.array(ExchangePricePoint),
     volatilityFlag: z.boolean(),
     createdAt: z.string(),
@@ -34,7 +41,7 @@ const TimeframeEnum = z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]);
  */
 export const TimeframeVoteSchema = z
   .object({
-    type: z.enum(["buy", "sell", "hold"]),
+    type: SignalTypeEnum,
     confidence: z.number(),
     rulesFired: z.array(z.string()),
     bullishScore: z.number(),
@@ -84,7 +91,7 @@ export const SignalInterpretationSchema = z
     text: z.string(),
     originalAlgo: z
       .object({
-        type: z.enum(["buy", "sell", "hold"]),
+        type: SignalTypeEnum,
         confidence: z.number(),
         reasoning: z.string(),
       })
@@ -100,7 +107,8 @@ export const SignalInterpretationSchema = z
 export const BlendedSignalSchema = z
   .object({
     pair: z.string(),
-    type: z.enum(["buy", "sell", "hold"]),
+    /** Signal type — 5 tiers added in v2 Phase 2 (#253). Old rows have "buy" | "sell" | "hold". */
+    type: SignalTypeEnum,
     confidence: z.number().min(0).max(1),
     volatilityFlag: z.boolean(),
     gateReason: z.enum(["vol", "dispersion", "stale"]).nullable(),
@@ -159,7 +167,7 @@ export const BlendedSignalSchema = z
     //   - row predates Phase B1 (#132)
     ratificationVerdict: z
       .object({
-        type: z.enum(["buy", "sell", "hold"]),
+        type: SignalTypeEnum,
         confidence: z.number(),
         reasoning: z.string(),
         // "algo-fallback" → graceful fallback wrote the algo verdict because
@@ -172,7 +180,7 @@ export const BlendedSignalSchema = z
     // Populated when ratificationStatus is "downgraded". Preserves the original algo signal.
     algoVerdict: z
       .object({
-        type: z.enum(["buy", "sell", "hold"]),
+        type: SignalTypeEnum,
         confidence: z.number(),
         reasoning: z.string(),
       })
@@ -210,7 +218,7 @@ export const SignalHistoryEntry = z
   .object({
     signalId: z.string(),
     pair: z.string(),
-    type: z.enum(["buy", "sell", "hold"]),
+    type: SignalTypeEnum,
     confidence: z.number(),
     createdAt: z.string(),
     outcome: z.enum(["correct", "incorrect", "neutral", "pending"]),

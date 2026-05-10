@@ -313,7 +313,8 @@ export async function markSignalInvalidated(
 export type RatificationStatusFinal = "ratified" | "downgraded";
 
 export interface RatificationVerdictRecord {
-  type: "buy" | "sell" | "hold";
+  /** Signal type. Expanded to 5 tiers in v2 Phase 2 (#253). Old rows have "buy" | "sell" | "hold". */
+  type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
   confidence: number;
   reasoning: string;
   /**
