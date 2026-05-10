@@ -1,19 +1,28 @@
 name: Auto-request Copilot review
 
-# Free-tier workaround for the rulesets-based "Request review from Copilot" feature
-# (which requires GitHub Team or higher to enforce on private repos). This workflow
-# fires on every non-draft PR and asks the Copilot reviewer bot to look at the diff.
+# Free-tier workaround for the rulesets-based "Request review from Copilot"
+# feature (which requires GitHub Team or higher to enforce on private repos).
+# This workflow fires on every non-draft PR and asks the Copilot reviewer bot
+# to look at the diff.
+#
+# Why GraphQL and not the REST `requested_reviewers` endpoint:
+#   The Copilot bot is not a repo collaborator, so the REST request returns
+#   422 ("Reviews may only be requested from collaborators") rather than
+#   actually adding the reviewer. The previous version of this workflow
+#   silently swallowed that 422 as "already requested" and reported success
+#   on every run, even though Copilot was never being added — see #210
+#   diagnosis. The GraphQL `requestReviews` mutation accepts a `botIds`
+#   list and is the documented path for assigning bot reviewers.
 #
 # Copilot's review is advisory — it does not block merge. Existing flows
 # (quantara-reviewer subagent, codex second-opinion, human review) still apply.
 #
 # Triggers:
 #   - opened / reopened / ready_for_review: initial review on PR creation
-#   - synchronize: re-review after a push (new commits to the PR branch).
-#     When a reviewer submits a review GitHub removes them from the requested
-#     list, so re-pushing the request prompts Copilot to look at the new diff.
-#     The 422 (already-requested) response is treated as a no-op so this is
-#     idempotent across rapid-fire pushes.
+#   - synchronize: re-review after a push. When a reviewer submits a review
+#     GitHub removes them from the requested list, so re-pushing the request
+#     prompts Copilot to look at the new diff. The mutation is idempotent —
+#     re-requesting an already-requested reviewer is a no-op.
 
 on:
   pull_request:
@@ -22,33 +31,60 @@ on:
 permissions:
   pull-requests: write
 
+env:
+  # The Copilot reviewer bot's stable GraphQL node ID. Discovered via the
+  # `author { ... on Bot { id } }` field on an existing Copilot review (see
+  # GraphQL probe in #210 / fix/copilot-review-graphql). Hardcoding is fine —
+  # this is the public bot account; the ID does not rotate.
+  COPILOT_BOT_ID: BOT_kgDOCnlnWA
+
 jobs:
   request:
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
     steps:
-      - name: Request Copilot as reviewer
-        run: |
-          set -e
-          # Request the Copilot bot. The API treats this like any other reviewer
-          # request; on success it returns 201 with the updated reviewer list.
-          # If Copilot is already a requested reviewer or has already reviewed,
-          # the API returns 422 — treat that as a no-op success.
-          response=$(curl -sS -o /dev/null -w "%{http_code}" \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/requested_reviewers" \
-            -d '{"reviewers":["copilot-pull-request-reviewer"]}')
-
-          if [ "$response" = "201" ] || [ "$response" = "200" ]; then
-            echo "✅ Copilot review requested (HTTP $response)"
-          elif [ "$response" = "422" ]; then
-            echo "ℹ️ Copilot already requested or reviewed (HTTP 422) — no-op"
-          else
-            echo "⚠️ Unexpected response from GitHub API: HTTP $response"
-            exit 1
-          fi
+      - name: Request Copilot as reviewer (GraphQL)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+        run: |
+          set -e
+          # `union: true` means "add the bot to the existing reviewer set"
+          # rather than replacing it — so we don't accidentally evict
+          # quantara-reviewer or human reviewers that are already requested.
+          gh api graphql \
+            -f query='
+              mutation($pr:ID!, $bots:[ID!]) {
+                requestReviews(input:{
+                  pullRequestId: $pr
+                  botIds: $bots
+                  union: true
+                }) {
+                  pullRequest {
+                    number
+                    reviewRequests(first:10) {
+                      nodes {
+                        requestedReviewer {
+                          __typename
+                          ... on Bot { login }
+                          ... on User { login }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' \
+            -f pr="$PR_NODE_ID" \
+            -F bots="$COPILOT_BOT_ID" \
+            > /tmp/result.json
+
+          # Sanity check: confirm Copilot is in the post-mutation reviewer set
+          # OR has already reviewed (in which case it's not in the requested
+          # list any more). Either way the mutation must have succeeded — if
+          # it didn't, gh exits non-zero above and `set -e` aborts.
+          if grep -q "copilot-pull-request-reviewer" /tmp/result.json; then
+            echo "✅ Copilot is now in the requested-reviewers set"
+          else
+            # Already reviewed → not in requested list, but not an error.
+            echo "ℹ️ Copilot is not in the requested set (may have already reviewed). Mutation succeeded."
+          fi
