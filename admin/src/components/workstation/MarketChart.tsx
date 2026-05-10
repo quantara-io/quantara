@@ -26,6 +26,12 @@ export interface Candle {
 interface MarketChartProps {
   candles: Candle[];
   height?: number;
+  /**
+   * Called when the user pans near the left edge of loaded data. The argument
+   * is the openTime (ms epoch) of the oldest currently-loaded candle — the
+   * parent should fetch candles before this timestamp and merge them in.
+   */
+  onBackfillNeeded?: (oldestOpenTime: number) => void;
 }
 
 function getCss(name: string): string {
@@ -56,13 +62,25 @@ function ema(values: number[], period: number): (number | null)[] {
   return out;
 }
 
-export function MarketChart({ candles, height = 380 }: MarketChartProps) {
+export function MarketChart({ candles, height = 380, onBackfillNeeded }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const ema20Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const ema50Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  // Stable ref so the range-change subscriber always sees the latest callback
+  // without needing to unsubscribe/resubscribe when the parent re-renders.
+  const onBackfillNeededRef = useRef(onBackfillNeeded);
+  // Oldest candle openTime (ms) currently loaded — updated whenever the candles
+  // prop changes. Used by the range-change handler to pass the right cursor.
+  const oldestOpenTimeRef = useRef<number | null>(null);
+
+  // Keep callback ref current so the range-change subscriber always calls the
+  // latest version without re-subscribing on every render.
+  useEffect(() => {
+    onBackfillNeededRef.current = onBackfillNeeded;
+  }, [onBackfillNeeded]);
 
   // Build chart once on mount; recompute colors when the theme class changes.
   useEffect(() => {
@@ -116,6 +134,17 @@ export function MarketChart({ candles, height = 380 }: MarketChartProps) {
     });
     chart.priceScale("volume").applyOptions({
       scaleMargins: { top: 0.78, bottom: 0 },
+    });
+
+    // Fire onBackfillNeeded when the user pans near the left edge of loaded
+    // data (leftmost visible logical index < 10 bars from the start).
+    // Uses a ref-based callback so it never needs to unsubscribe/resubscribe.
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range) return;
+      if (range.from > 10) return; // not near the left edge
+      const oldest = oldestOpenTimeRef.current;
+      const cb = onBackfillNeededRef.current;
+      if (oldest !== null && cb) cb(oldest);
     });
 
     return () => {
@@ -172,6 +201,9 @@ export function MarketChart({ candles, height = 380 }: MarketChartProps) {
     const dedupedMap = new Map<number, Candle>();
     for (const c of sorted) dedupedMap.set(Math.floor(c.openTime / 1000), c);
     const deduped = Array.from(dedupedMap.entries()).sort((a, b) => a[0] - b[0]);
+
+    // Track oldest loaded candle time for the backfill range-change handler.
+    oldestOpenTimeRef.current = sorted[0]?.openTime ?? null;
 
     const candleData: CandlestickData<Time>[] = deduped.map(([t, c]) => ({
       time: t as UTCTimestamp,

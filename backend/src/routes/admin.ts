@@ -67,7 +67,27 @@ admin.get("/market", async (c) => {
       400,
     );
   }
-  return c.json({ success: true, data: await getMarket(pair, exchange, timeframe, limit) });
+  // Optional `before` param for lazy backfill: return candles whose openTime
+  // is strictly before this millisecond timestamp. When omitted, returns the
+  // most recent `limit` candles (existing behaviour — backwards compatible).
+  const beforeRaw = c.req.query("before");
+  let beforeMs: number | undefined;
+  if (beforeRaw !== undefined) {
+    beforeMs = parseInt(beforeRaw, 10);
+    if (!Number.isInteger(beforeMs) || beforeMs <= 0) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "before must be a positive integer (ms epoch)" },
+        },
+        400,
+      );
+    }
+  }
+  return c.json({
+    success: true,
+    data: await getMarket(pair, exchange, timeframe, limit, beforeMs),
+  });
 });
 
 admin.get("/signals", async (c) => {
