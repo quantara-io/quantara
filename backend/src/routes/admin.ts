@@ -33,10 +33,41 @@ admin.use("*", requireAdmin);
 
 admin.get("/status", async (c) => c.json({ success: true, data: await getStatus() }));
 
+// Whitelist of supported timeframes — must match what the candle ingestion
+// writes to the `quantara-{env}-candles` table. Anything outside this set is
+// rejected so callers can't probe for arbitrary partition keys.
+const SUPPORTED_TIMEFRAMES = ["1m", "15m", "1h", "4h", "1d", "1w"] as const;
+type SupportedTimeframe = (typeof SUPPORTED_TIMEFRAMES)[number];
+
 admin.get("/market", async (c) => {
   const pair = c.req.query("pair") ?? "BTC/USDT";
   const exchange = c.req.query("exchange") ?? "binanceus";
-  return c.json({ success: true, data: await getMarket(pair, exchange) });
+  const tfRaw = c.req.query("timeframe") ?? "1m";
+  if (!(SUPPORTED_TIMEFRAMES as readonly string[]).includes(tfRaw)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${SUPPORTED_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+  const timeframe = tfRaw as SupportedTimeframe;
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 60;
+  if (Number.isNaN(limit) || limit < 1 || limit > 500) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "limit must be between 1 and 500" },
+      },
+      400,
+    );
+  }
+  return c.json({ success: true, data: await getMarket(pair, exchange, timeframe, limit) });
 });
 
 admin.get("/signals", async (c) => {

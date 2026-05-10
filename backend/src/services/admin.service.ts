@@ -423,15 +423,20 @@ async function getRecentCandles(pair: string, exchange: string, timeframe: strin
   }
 }
 
-export async function getMarket(pair: string, exchange: string) {
+export async function getMarket(
+  pair: string,
+  exchange: string,
+  timeframe: string = "1m",
+  limit: number = 60,
+) {
   const [prices, candles, fearGreed, indicators] = await Promise.all([
     getLatestPrices(),
-    getRecentCandles(pair, exchange, "1m", 60),
+    getRecentCandles(pair, exchange, timeframe, limit),
     getFearGreed(),
-    getIndicatorState(pair, exchange, "1m"),
+    getIndicatorState(pair, exchange, timeframe),
   ]);
   const dispersion = computeDispersion(prices, pair);
-  return { prices, candles, fearGreed, indicators, dispersion, pair, exchange };
+  return { prices, candles, fearGreed, indicators, dispersion, pair, exchange, timeframe };
 }
 
 export async function getSignals(

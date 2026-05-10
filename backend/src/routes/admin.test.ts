@@ -128,7 +128,7 @@ describe("GET /status", () => {
 });
 
 describe("GET /market", () => {
-  it("uses default pair and exchange when no query params are given", async () => {
+  it("uses default pair, exchange, timeframe, limit when no query params are given", async () => {
     getMarketMock.mockResolvedValue({
       pair: "BTC/USDT",
       exchange: "binanceus",
@@ -139,7 +139,7 @@ describe("GET /market", () => {
     const app = await loadApp();
     const res = await app.request("/market");
     expect(res.status).toBe(200);
-    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus");
+    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus", "1m", 60);
   });
 
   it("forwards pair and exchange query params", async () => {
@@ -153,7 +153,40 @@ describe("GET /market", () => {
     const app = await loadApp();
     const res = await app.request("/market?pair=ETH/USDT&exchange=kraken");
     expect(res.status).toBe(200);
-    expect(getMarketMock).toHaveBeenCalledWith("ETH/USDT", "kraken");
+    expect(getMarketMock).toHaveBeenCalledWith("ETH/USDT", "kraken", "1m", 60);
+  });
+
+  it("forwards a supported timeframe and a custom limit", async () => {
+    getMarketMock.mockResolvedValue({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      prices: [],
+      candles: [],
+      fearGreed: null,
+    });
+    const app = await loadApp();
+    const res = await app.request("/market?timeframe=1h&limit=80");
+    expect(res.status).toBe(200);
+    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus", "1h", 80);
+  });
+
+  it("rejects an unsupported timeframe", async () => {
+    const app = await loadApp();
+    const res = await app.request("/market?timeframe=2h");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getMarketMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-numeric or out-of-range limit", async () => {
+    const app = await loadApp();
+    const tooBig = await app.request("/market?limit=9999");
+    expect(tooBig.status).toBe(400);
+    const garbage = await app.request("/market?limit=abc");
+    expect(garbage.status).toBe(400);
+    expect(getMarketMock).not.toHaveBeenCalled();
   });
 });
 
