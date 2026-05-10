@@ -26,7 +26,9 @@ export function Layout({ children }: { children: ReactNode }) {
             <Tab to="/whitelist">Whitelist</Tab>
             <Tab to="/ratifications">Ratifications</Tab>
             <Tab to="/genie">Genie</Tab>
+            <Tab to="/performance">Performance</Tab>
             <Tab to="/pipeline">Pipeline</Tab>
+            <Tab to="/health">Health</Tab>
             <Tab to="/activity">Activity</Tab>
             <Tab to="/pnl">PnL</Tab>
           </nav>

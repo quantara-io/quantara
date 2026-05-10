@@ -5,6 +5,7 @@ const dynamoRawSend = vi.fn();
 const ecsSend = vi.fn();
 const sqsSend = vi.fn();
 const cwLogsSend = vi.fn();
+const cwSend = vi.fn();
 const lambdaSend = vi.fn();
 const ssmSend = vi.fn();
 
@@ -44,6 +45,13 @@ vi.mock("@aws-sdk/client-cloudwatch-logs", () => ({
     .mockImplementation((input) => ({ __cmd: "DescribeLogStreams", input })),
 }));
 
+vi.mock("@aws-sdk/client-cloudwatch", () => ({
+  CloudWatchClient: vi.fn().mockImplementation(() => ({ send: cwSend })),
+  GetMetricStatisticsCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ __cmd: "GetMetricStatistics", input })),
+}));
+
 vi.mock("@aws-sdk/client-lambda", () => ({
   LambdaClient: vi.fn().mockImplementation(() => ({ send: lambdaSend })),
   GetFunctionCommand: vi.fn().mockImplementation((input) => ({ __cmd: "GetFunction", input })),
@@ -55,9 +63,32 @@ vi.mock("@aws-sdk/client-ssm", () => ({
   PutParameterCommand: vi.fn().mockImplementation((input) => ({ __cmd: "PutParameter", input })),
 }));
 
+// Provide PAIRS and other constants so tests are not sensitive to the
+// version of @quantara/shared installed in the active node_modules.
+vi.mock("@quantara/shared", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@quantara/shared")>();
+  return {
+    ...orig,
+    PAIRS: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"],
+    HAIKU_INPUT_PRICE_PER_M: orig.HAIKU_INPUT_PRICE_PER_M ?? 0.8,
+    HAIKU_OUTPUT_PRICE_PER_M: orig.HAIKU_OUTPUT_PRICE_PER_M ?? 4.0,
+    HAIKU_MODEL_TAG:
+      (orig as Record<string, unknown>).HAIKU_MODEL_TAG ?? "anthropic.claude-haiku-4-5",
+  };
+});
+
 beforeEach(() => {
   vi.resetModules();
-  for (const m of [dynamoSend, dynamoRawSend, ecsSend, sqsSend, cwLogsSend, lambdaSend, ssmSend]) {
+  for (const m of [
+    dynamoSend,
+    dynamoRawSend,
+    ecsSend,
+    sqsSend,
+    cwLogsSend,
+    cwSend,
+    lambdaSend,
+    ssmSend,
+  ]) {
     m.mockReset();
   }
   process.env.TABLE_PREFIX = "quantara-dev-";
@@ -1219,5 +1250,527 @@ describe("getRatifications", () => {
     expect(page.items).toEqual([]);
     // No throw, valid empty cursor.
     expect(page.cursor).toBeNull();
+  });
+});
+
+describe("getPipelineHealth — exchange staleness", () => {
+  beforeEach(() => {
+    // Default: ECS returns a running service, CW Logs returns a stream,
+    // CloudWatch metrics return null datapoints (graceful).
+    ecsSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "DescribeServices") {
+        return { services: [{ runningCount: 1, desiredCount: 1 }] };
+      }
+      return {};
+    });
+    cwLogsSend.mockResolvedValue({ logStreams: [{ creationTime: Date.now() - 60_000 }] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+  });
+
+  it("marks an exchange healthy when its most-recent candle sk is within 5 min", async () => {
+    const recentIso = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 min ago
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          return { Items: [{ sk: `binanceus#1m#${recentIso}`, exchange: "binanceus" }] };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.binanceus.streamHealth).toBe("healthy");
+    expect(result.exchanges.binanceus.lastDataAt).toBe(recentIso);
+    expect(result.exchanges.binanceus.stalenessSec).toBeLessThan(5 * 60);
+  });
+
+  it("marks an exchange stale when its most-recent candle is 6-14 min old", async () => {
+    const staleIso = new Date(Date.now() - 8 * 60 * 1000).toISOString(); // 8 min ago
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          return { Items: [{ sk: `kraken#15m#${staleIso}`, exchange: "kraken" }] };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.kraken.streamHealth).toBe("stale");
+    expect(result.exchanges.kraken.stalenessSec).toBeGreaterThan(5 * 60);
+    expect(result.exchanges.kraken.stalenessSec).toBeLessThan(15 * 60);
+  });
+
+  it("marks an exchange down when no candle rows are returned", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.coinbase.streamHealth).toBe("down");
+    expect(result.exchanges.coinbase.lastDataAt).toBeNull();
+    expect(result.exchanges.coinbase.stalenessSec).toBeNull();
+  });
+
+  it("marks an exchange down when its most-recent candle is older than 15 min", async () => {
+    const oldIso = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20 min ago
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          return { Items: [{ sk: `binanceus#1m#${oldIso}`, exchange: "binanceus" }] };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.binanceus.streamHealth).toBe("down");
+  });
+});
+
+describe("getPipelineHealth — quorum success rate", () => {
+  beforeEach(() => {
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+    // Exchange queries return empty by default
+    dynamoSend.mockResolvedValue({ Items: [] });
+  });
+
+  it("returns null quorum successRate when indicator-state has no rows", async () => {
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+    expect(result.quorum.successRate).toBeNull();
+  });
+
+  it("computes 100% quorum rate when all indicator-state items have dispersion set", async () => {
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
+          return {
+            Items: [
+              { dispersion: 0.001, pk: "BTC/USDT#consensus#1h", asOf: "2026-05-09T00:00:00Z" },
+              { dispersion: 0.002, pk: "BTC/USDT#consensus#1h", asOf: "2026-05-08T23:00:00Z" },
+            ],
+          };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    // All returned items have dispersion — quorum rate should be 1.0 for the populated tf
+    expect(result.quorum.successRate).not.toBeNull();
+    expect(result.quorum.successRate).toBeGreaterThan(0);
+  });
+
+  it("computes fractional quorum rate when some items lack dispersion (null)", async () => {
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
+          // 3 items: 2 with dispersion, 1 without → 2/3 quorum for this tf
+          return {
+            Items: [
+              { dispersion: 0.001, pk: "BTC/USDT#consensus#15m" },
+              { dispersion: null, pk: "BTC/USDT#consensus#15m" },
+              { dispersion: 0.003, pk: "BTC/USDT#consensus#15m" },
+            ],
+          };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+    // At least one tf populated with fractional quorum; rate must be in (0, 1)
+    expect(result.quorum.successRate).not.toBeNull();
+  });
+
+  it("queries indicator-state by asOf, not sk", async () => {
+    const indicatorStateQueries: Array<{
+      KeyConditionExpression?: string;
+      ExpressionAttributeNames?: Record<string, string>;
+    }> = [];
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: {
+          TableName?: string;
+          KeyConditionExpression?: string;
+          ExpressionAttributeNames?: Record<string, string>;
+        };
+      }) => {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
+          indicatorStateQueries.push({
+            KeyConditionExpression: cmd.input?.KeyConditionExpression,
+            ExpressionAttributeNames: cmd.input?.ExpressionAttributeNames,
+          });
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    await getPipelineHealth(24);
+
+    expect(indicatorStateQueries.length).toBeGreaterThan(0);
+    for (const q of indicatorStateQueries) {
+      expect(q.KeyConditionExpression).toContain("#asOf");
+      expect(q.KeyConditionExpression).not.toContain("#sk");
+      expect(q.ExpressionAttributeNames).toMatchObject({ "#asOf": "asOf" });
+    }
+  });
+
+  it("aggregates quorum success rate as a weighted average across pair×tf", async () => {
+    // First call (BTC/USDT × 15m): 1000 bars, all with quorum.
+    // Second call (BTC/USDT × 1h): 10 bars, 0 with quorum.
+    // Naive (per-tf) average: (1.0 + 0.0) / 2 = 0.5
+    // Weighted (per-bar) average: 1000 / 1010 ≈ 0.99
+    let queryIdx = 0;
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
+          queryIdx += 1;
+          if (queryIdx === 1) {
+            return {
+              Items: Array.from({ length: 1000 }, (_, i) => ({
+                dispersion: 0.001,
+                pk: "BTC/USDT#consensus#15m",
+                asOf: `2026-05-09T${String(i).padStart(2, "0")}:00:00Z`,
+              })),
+            };
+          }
+          if (queryIdx === 2) {
+            return {
+              Items: Array.from({ length: 10 }, (_, i) => ({
+                dispersion: null,
+                pk: "BTC/USDT#consensus#1h",
+                asOf: `2026-05-09T${String(i).padStart(2, "0")}:00:00Z`,
+              })),
+            };
+          }
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    // Weighted: 1000/1010 ≈ 0.99, NOT the unweighted 0.5
+    expect(result.quorum.successRate).toBeGreaterThan(0.95);
+  });
+
+  it("treats missing dispersion (undefined attribute) as no-quorum", async () => {
+    // DDB DocumentClient drops null attrs on write — no-quorum rows therefore
+    // come back without a `dispersion` key at all. Regression: the previous
+    // `(dispersion as number | null) !== null` check was true for `undefined`,
+    // overcounting these rows as quorum-achieved.
+    let queryIdx = 0;
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { TableName?: string } }) => {
+        if (cmd.__cmd === "Query" && (cmd.input?.TableName ?? "").includes("indicator-state")) {
+          queryIdx += 1;
+          // First call only, populate one tf so quorum has data to compute.
+          // The other 17 tf×pair calls return empty → no influence on rate.
+          if (queryIdx === 1) {
+            return {
+              Items: [
+                { dispersion: 0.001, pk: "BTC/USDT#consensus#15m" },
+                { pk: "BTC/USDT#consensus#15m" }, // dispersion attribute absent
+                { pk: "BTC/USDT#consensus#15m" }, // dispersion attribute absent
+                { pk: "BTC/USDT#consensus#15m" }, // dispersion attribute absent
+              ],
+            };
+          }
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    // 1 quorum / 4 bars = 0.25, not 1.0
+    expect(result.quorum.successRate).not.toBeNull();
+    expect(result.quorum.successRate!).toBeLessThan(0.5);
+    expect(result.quorum.successRate!).toBeGreaterThan(0);
+  });
+});
+
+describe("getPipelineHealth — exchange query shape", () => {
+  beforeEach(() => {
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+  });
+
+  it("constrains the candles GSI query with a timeframe-prefixed begins_with on sk", async () => {
+    const exchangeQueries: Array<{
+      KeyConditionExpression?: string;
+      ExpressionAttributeValues?: Record<string, unknown>;
+    }> = [];
+    dynamoSend.mockImplementation(
+      async (cmd: {
+        __cmd: string;
+        input?: {
+          IndexName?: string;
+          KeyConditionExpression?: string;
+          ExpressionAttributeValues?: Record<string, unknown>;
+        };
+      }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          exchangeQueries.push({
+            KeyConditionExpression: cmd.input?.KeyConditionExpression,
+            ExpressionAttributeValues: cmd.input?.ExpressionAttributeValues,
+          });
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    await getPipelineHealth(24);
+
+    expect(exchangeQueries.length).toBe(3); // one per HEALTH_EXCHANGES entry
+    for (const q of exchangeQueries) {
+      expect(q.KeyConditionExpression).toContain("begins_with");
+      const prefix = q.ExpressionAttributeValues?.[":skPrefix"] as string | undefined;
+      expect(prefix).toMatch(/#1m#$/);
+    }
+  });
+
+  it("returns 'down' when lastDataAt is a malformed timestamp (NaN guard)", async () => {
+    dynamoSend.mockImplementation(
+      async (cmd: { __cmd: string; input?: { IndexName?: string } }) => {
+        if (cmd.__cmd === "Query" && cmd.input?.IndexName === "exchange-index") {
+          // sk[2] is non-ISO garbage → new Date(...).getTime() === NaN
+          return { Items: [{ sk: "binanceus#1m#not-a-date", exchange: "binanceus" }] };
+        }
+        return { Items: [] };
+      },
+    );
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.exchanges.binanceus.streamHealth).toBe("down");
+    expect(result.exchanges.binanceus.stalenessSec).toBeNull();
+  });
+});
+
+describe("getPipelineHealth — CloudWatch period clamping", () => {
+  beforeEach(() => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+  });
+
+  it("uses a Period ≤86400 and a multiple of 60, even for 168h (7d) windows", async () => {
+    const periods: number[] = [];
+    cwSend.mockImplementation(async (cmd: { __cmd: string; input?: { Period?: number } }) => {
+      if (cmd.input?.Period !== undefined) periods.push(cmd.input.Period);
+      return { Datapoints: [] };
+    });
+
+    const { getPipelineHealth } = await importService();
+    await getPipelineHealth(168);
+
+    expect(periods.length).toBeGreaterThan(0);
+    for (const p of periods) {
+      expect(p).toBeLessThanOrEqual(86_400);
+      expect(p % 60).toBe(0);
+      expect(p).toBeGreaterThanOrEqual(60);
+    }
+  });
+});
+
+describe("getPipelineHealth — fargate panel", () => {
+  beforeEach(() => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+  });
+
+  it("returns running and desired counts from ECS DescribeServices", async () => {
+    ecsSend.mockImplementation(async (cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "DescribeServices") {
+        return { services: [{ runningCount: 2, desiredCount: 2 }] };
+      }
+      return {};
+    });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.fargate.runningCount).toBe(2);
+    expect(result.fargate.desiredCount).toBe(2);
+  });
+
+  it("returns zeros when ECS call fails", async () => {
+    ecsSend.mockRejectedValue(new Error("ecs down"));
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.fargate.runningCount).toBe(0);
+    expect(result.fargate.desiredCount).toBe(0);
+  });
+
+  it("populates lastRestartAt from the most recent CW Logs stream creation time", async () => {
+    const creationTime = Date.now() - 3_600_000; // 1 hour ago
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [{ creationTime }] });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.fargate.lastRestartAt).toBe(new Date(creationTime).toISOString());
+  });
+
+  it("returns null lastRestartAt when CW Logs has no streams", async () => {
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(result.fargate.lastRestartAt).toBeNull();
+  });
+});
+
+describe("getPipelineHealth — lambda metrics", () => {
+  beforeEach(() => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+  });
+
+  it("returns CloudWatch metric values when @aws-sdk/client-cloudwatch is available", async () => {
+    cwSend.mockImplementation(async (cmd: { __cmd: string; input?: { MetricName?: string } }) => {
+      const metric = cmd.input?.MetricName;
+      if (metric === "Invocations") return { Datapoints: [{ Sum: 1000 }] };
+      if (metric === "Errors") return { Datapoints: [{ Sum: 10 }] };
+      if (metric === "Duration") return { Datapoints: [{ Average: 95.5 }] };
+      if (metric === "Throttles") return { Datapoints: [{ Sum: 2 }] };
+      return { Datapoints: [] };
+    });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    const apiMetrics = result.lambdas["api"];
+    expect(apiMetrics.invocations).toBe(1000);
+    expect(apiMetrics.errors).toBe(10);
+    expect(apiMetrics.errorRate).toBeCloseTo(10 / 1000);
+    expect(apiMetrics.avgDurationMs).toBe(95.5);
+    expect(apiMetrics.throttles).toBe(2);
+  });
+
+  it("returns null-filled metrics when CloudWatch returns empty datapoints", async () => {
+    cwSend.mockResolvedValue({ Datapoints: [] });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    const apiMetrics = result.lambdas["api"];
+    expect(apiMetrics.invocations).toBeNull();
+    expect(apiMetrics.errors).toBeNull();
+    expect(apiMetrics.errorRate).toBeNull();
+    expect(apiMetrics.avgDurationMs).toBeNull();
+    expect(apiMetrics.throttles).toBeNull();
+  });
+
+  it("computes errorRate as null when invocations is zero", async () => {
+    cwSend.mockImplementation(async (cmd: { __cmd: string; input?: { MetricName?: string } }) => {
+      const metric = cmd.input?.MetricName;
+      if (metric === "Invocations") return { Datapoints: [{ Sum: 0 }] };
+      if (metric === "Errors") return { Datapoints: [{ Sum: 5 }] };
+      return { Datapoints: [] };
+    });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    // Divide-by-zero guard: errorRate must be null when invocations === 0
+    const apiMetrics = result.lambdas["api"];
+    expect(apiMetrics.invocations).toBe(0);
+    expect(apiMetrics.errorRate).toBeNull();
+  });
+
+  it("aggregates Sum stat across multiple datapoints (regression: was returning Datapoints[0] only)", async () => {
+    // CloudWatch returns datapoints unordered and possibly multiple per window.
+    // Sum stat must be totaled across all buckets, not just the first.
+    cwSend.mockImplementation(async (cmd: { __cmd: string; input?: { MetricName?: string } }) => {
+      const metric = cmd.input?.MetricName;
+      if (metric === "Invocations") {
+        return { Datapoints: [{ Sum: 100 }, { Sum: 200 }, { Sum: 300 }] };
+      }
+      if (metric === "Errors") return { Datapoints: [{ Sum: 1 }, { Sum: 2 }] };
+      if (metric === "Duration") {
+        // Average stat must be mean-of-means, not just Datapoints[0].
+        return { Datapoints: [{ Average: 100 }, { Average: 200 }] };
+      }
+      if (metric === "Throttles") return { Datapoints: [{ Sum: 0 }] };
+      return { Datapoints: [] };
+    });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    const apiMetrics = result.lambdas["api"];
+    expect(apiMetrics.invocations).toBe(600); // 100+200+300
+    expect(apiMetrics.errors).toBe(3); // 1+2
+    expect(apiMetrics.avgDurationMs).toBe(150); // (100+200)/2
+  });
+});
+
+describe("getPipelineHealth — response shape", () => {
+  it("returns the expected top-level keys and windowStart/windowEnd within the requested hours", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+
+    const { getPipelineHealth } = await importService();
+    const before = Date.now();
+    const result = await getPipelineHealth(6);
+    const after = Date.now();
+
+    expect(result).toHaveProperty("windowStart");
+    expect(result).toHaveProperty("windowEnd");
+    expect(result).toHaveProperty("exchanges");
+    expect(result).toHaveProperty("quorum");
+    expect(result).toHaveProperty("lambdas");
+    expect(result).toHaveProperty("fargate");
+
+    const windowStartMs = new Date(result.windowStart).getTime();
+    const windowEndMs = new Date(result.windowEnd).getTime();
+    expect(windowEndMs).toBeGreaterThanOrEqual(before);
+    expect(windowEndMs).toBeLessThanOrEqual(after + 1000);
+    expect(windowEndMs - windowStartMs).toBeCloseTo(6 * 60 * 60 * 1000, -3);
+  });
+
+  it("includes all three exchanges in the response", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+    ecsSend.mockResolvedValue({ services: [{ runningCount: 1, desiredCount: 1 }] });
+    cwLogsSend.mockResolvedValue({ logStreams: [] });
+    cwSend.mockResolvedValue({ Datapoints: [] });
+
+    const { getPipelineHealth } = await importService();
+    const result = await getPipelineHealth(24);
+
+    expect(Object.keys(result.exchanges)).toEqual(
+      expect.arrayContaining(["binanceus", "kraken", "coinbase"]),
+    );
   });
 });

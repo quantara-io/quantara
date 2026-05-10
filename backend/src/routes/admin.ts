@@ -13,9 +13,11 @@ import {
   getSignals,
   getGenieMetrics,
   getRatifications,
+  getPipelineHealth,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
 import { getPnlSimulation } from "../services/pnl-simulation.service.js";
+import { getGenieDeepDive } from "../services/genie-deepdive.service.js";
 
 const admin = new Hono();
 
@@ -192,6 +194,29 @@ admin.get("/ratifications", async (c) => {
   });
 
   return c.json({ success: true, data: { items, cursor } });
+});
+
+admin.get("/pipeline-health", async (c) => {
+  const windowHoursRaw = c.req.query("windowHours");
+  let windowHours = 24;
+  if (windowHoursRaw !== undefined) {
+    const parsed = parseInt(windowHoursRaw, 10);
+    if (isNaN(parsed) || parsed < 1 || parsed > 168) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: "windowHours must be an integer between 1 and 168",
+          },
+        },
+        400,
+      );
+    }
+    windowHours = parsed;
+  }
+  const data = await getPipelineHealth(windowHours);
+  return c.json({ success: true, data });
 });
 
 admin.get("/news", async (c) => {
@@ -405,6 +430,52 @@ admin.get("/pnl-simulation", async (c) => {
     direction,
   });
   return c.json({ success: true, data: result });
+});
+
+admin.get("/genie-deepdive", async (c) => {
+  const sinceRaw = c.req.query("since");
+  let sinceCanon: string | undefined;
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    sinceCanon = parsed.toISOString();
+  }
+
+  const pair = c.req.query("pair");
+  if (pair !== undefined && !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  const timeframe = c.req.query("timeframe");
+  if (timeframe !== undefined && !(VALID_TIMEFRAMES as readonly string[]).includes(timeframe)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  const data = await getGenieDeepDive(sinceCanon, pair, timeframe);
+  return c.json({ success: true, data });
 });
 
 export { admin };
