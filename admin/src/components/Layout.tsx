@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { clearTokens, currentUser } from "../lib/auth";
@@ -43,6 +43,7 @@ export function Layout({ children, bleed = false }: LayoutProps) {
   const { theme, toggle } = useTheme();
   const [sectionsOpen, setSectionsOpen] = useState(false);
   const [avatarOpen, setAvatarOpen] = useState(false);
+  const sectionsTriggerRef = useRef<HTMLButtonElement>(null);
   const sectionLabel = useSectionLabel();
 
   function logout() {
@@ -90,8 +91,9 @@ export function Layout({ children, bleed = false }: LayoutProps) {
             {/* Grid / Sections icon */}
             <div className="relative">
               <button
+                ref={sectionsTriggerRef}
                 type="button"
-                aria-label="Open sections menu"
+                aria-label="Sections"
                 aria-expanded={sectionsOpen}
                 aria-haspopup="dialog"
                 onClick={() => {
@@ -106,7 +108,12 @@ export function Layout({ children, bleed = false }: LayoutProps) {
               >
                 <GridIcon />
               </button>
-              {sectionsOpen && <SectionsPopover onClose={() => setSectionsOpen(false)} />}
+              {sectionsOpen && (
+                <SectionsPopover
+                  onClose={() => setSectionsOpen(false)}
+                  triggerRef={sectionsTriggerRef}
+                />
+              )}
             </div>
 
             {/* Notification bell (visual-only for now) */}
