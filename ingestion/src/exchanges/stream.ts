@@ -8,11 +8,21 @@ import { storePriceSnapshots } from "../lib/store.js";
 
 import { EXCHANGES, PAIRS, getSymbol, type ExchangeId, type TradingPair } from "./config.js";
 import type { PriceSnapshot } from "./fetcher.js";
+import { synthesizeCandle } from "./synthesize-candle.js";
 
 const WATCHDOG_INTERVAL_MS = 60_000;
 const STALE_THRESHOLD_MS = 5 * 60_000;
 const RECONNECT_THRESHOLD_MS = 10 * 60_000;
 const COINBASE_BACKFILL_INTERVAL_MS = 30_000;
+
+/**
+ * How long after a candle-close boundary we wait before synthesizing. A small
+ * buffer (2s) avoids a race where the real candle arrives a few hundred ms
+ * late due to network jitter — we give Kraken a moment before emitting a
+ * synthetic stand-in.
+ */
+const KRAKEN_SYNTHESIS_DELAY_MS = 2_000;
+const KRAKEN_1M_MS = 60_000;
 
 /**
  * Shape of a single OHLCV row returned by ccxt's `fetchOHLCV` / `watchOHLCV`.
@@ -56,6 +66,18 @@ export class MarketStreamManager {
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   /** Tracks the last closeTime (ms) we successfully wrote for each coinbase pair. */
   private coinbaseLastCloseTime: Map<TradingPair, number> = new Map();
+  /**
+   * Kraken zero-volume synthesis state, keyed by "kraken:<pair>".
+   *
+   * `lastClose`    — close price from the most-recently-seen real Kraken candle.
+   *                  Used as open/high/low/close for synthesized candles.
+   * `lastCloseTime`— closeTime (ms) of the most-recently-written candle for this
+   *                  pair (real or synthesized). The synthesis timer computes the
+   *                  next expected closeTime from this baseline.
+   */
+  private krakenSynthState: Map<string, { lastClose: number; lastCloseTime: number }> = new Map();
+  /** Active synthesis timers keyed by "kraken:<pair>". Cleared on stop(). */
+  private krakenSynthTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   /** DynamoDB document client — created per-instance so mocks are applied correctly in tests. */
   private readonly ddbClient: DynamoDBDocumentClient;
 
@@ -142,6 +164,12 @@ export class MarketStreamManager {
     if (this.watchdogTimer) {
       clearInterval(this.watchdogTimer);
     }
+
+    // Clear all pending Kraken synthesis timers so shutdown is prompt.
+    for (const timer of this.krakenSynthTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.krakenSynthTimers.clear();
 
     for (const exchange of this.exchanges.values()) {
       try {
@@ -246,6 +274,13 @@ export class MarketStreamManager {
 
             if (candle.isClosed) {
               await storeCandles([candle]);
+
+              // For Kraken: update synthesis state and arm the next-minute
+              // synthesis timer. If no real candle arrives for the following
+              // window, the timer fires a zero-volume carry-forward instead.
+              if (exchangeId === "kraken") {
+                this.updateKrakenSynthState(key, symbol, pair, candle.close, candle.closeTime);
+              }
             }
           }
 
@@ -263,6 +298,68 @@ export class MarketStreamManager {
         console.error(`[Stream] OHLCV loop fatal ${key}: ${(err as Error).message}`);
       }
     });
+  }
+
+  /**
+   * Update the last-known close price and schedule a synthesis timer for the
+   * next 1m boundary after `prevCloseTime`.
+   *
+   * The timer fires `KRAKEN_SYNTHESIS_DELAY_MS` after the expected boundary.
+   * When it fires, it checks whether a real candle has already advanced
+   * `lastCloseTime` past the expected boundary; if not, it synthesizes one.
+   *
+   * Calling this again before the timer fires cancels the pending timer and
+   * arms a fresh one — this handles the case where Kraken sends a burst of
+   * two consecutive closed candles in one watchOHLCV response.
+   */
+  private updateKrakenSynthState(
+    key: string,
+    symbol: string,
+    pair: TradingPair,
+    prevClose: number,
+    prevCloseTime: number,
+  ): void {
+    // Cancel any existing timer for this pair before arming a new one.
+    const existing = this.krakenSynthTimers.get(key);
+    if (existing !== undefined) clearTimeout(existing);
+
+    this.krakenSynthState.set(key, { lastClose: prevClose, lastCloseTime: prevCloseTime });
+
+    const expectedNextCloseTime = prevCloseTime + KRAKEN_1M_MS;
+    const fireAt = expectedNextCloseTime + KRAKEN_SYNTHESIS_DELAY_MS;
+    const delay = Math.max(0, fireAt - Date.now());
+
+    const timer = setTimeout(() => {
+      this.krakenSynthTimers.delete(key);
+      if (this.abortController.signal.aborted) return;
+
+      const synthState = this.krakenSynthState.get(key);
+      if (!synthState) return;
+
+      // If a real candle already advanced lastCloseTime to or past the
+      // expected boundary, no synthesis needed.
+      if (synthState.lastCloseTime >= expectedNextCloseTime) return;
+
+      // Synthesize the missing minute and re-arm for the minute after.
+      const openTime = prevCloseTime; // openTime of the missed window = prevCloseTime
+      const synth = synthesizeCandle("kraken", symbol, pair, "1m", openTime, synthState.lastClose);
+
+      console.log(
+        `[KrakenSynth] No trade for ${key} by ${new Date(expectedNextCloseTime).toISOString()} — emitting zero-volume carry-forward`,
+      );
+
+      storeCandles([synth]).catch((err: Error) => {
+        console.error(
+          `[KrakenSynth] Failed to store synthesized candle for ${key}: ${err.message}`,
+        );
+      });
+
+      // Advance lastCloseTime and arm the timer for the next window so
+      // consecutive silent minutes each get a synthesized candle.
+      this.updateKrakenSynthState(key, symbol, pair, synthState.lastClose, expectedNextCloseTime);
+    }, delay);
+
+    this.krakenSynthTimers.set(key, timer);
   }
 
   /**

@@ -127,14 +127,14 @@ resource "aws_lambda_function" "indicator_handler_shadow" {
 
   environment {
     variables = {
-      TABLE_PREFIX                = "${local.prefix}-"
-      TABLE_CANDLES               = aws_dynamodb_table.candles.name
-      TABLE_CLOSE_QUORUM          = aws_dynamodb_table.close_quorum.name
-      TABLE_INDICATOR_STATE       = aws_dynamodb_table.indicator_state.name
-      TABLE_SIGNALS_COLLECTION    = aws_dynamodb_table.signals_collection.name
-      TABLE_METADATA              = aws_dynamodb_table.ingestion_metadata.name
-      REQUIRED_EXCHANGE_COUNT     = local.required_exchange_count
-      ENVIRONMENT                 = var.environment
+      TABLE_PREFIX             = "${local.prefix}-"
+      TABLE_CANDLES            = aws_dynamodb_table.candles.name
+      TABLE_CLOSE_QUORUM       = aws_dynamodb_table.close_quorum.name
+      TABLE_INDICATOR_STATE    = aws_dynamodb_table.indicator_state.name
+      TABLE_SIGNALS_COLLECTION = aws_dynamodb_table.signals_collection.name
+      TABLE_METADATA           = aws_dynamodb_table.ingestion_metadata.name
+      REQUIRED_EXCHANGE_COUNT  = local.required_exchange_count
+      ENVIRONMENT              = var.environment
     }
   }
 
@@ -168,7 +168,10 @@ resource "aws_lambda_event_source_mapping" "indicator_shadow_from_candles" {
         dynamodb = {
           NewImage = {
             timeframe = { S = ["1m", "5m"] }
-            source    = { S = ["live"] }
+            # Match both `live` and `live-synthesized`. `S` is exact-string
+            # match — must enumerate, not rely on inequality. See main
+            # indicator-handler ESM for the full rationale (#224 / PR #272).
+            source = { S = ["live", "live-synthesized"] }
           }
         }
       })

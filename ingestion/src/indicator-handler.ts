@@ -2,7 +2,8 @@
  * Indicator Lambda handler — Phase P2 (v6 design, DDB Streams trigger).
  *
  * Triggered by DDB Streams on `quantara-{env}-candles` with FilterCriteria:
- *   { dynamodb.NewImage.source.S = "live", dynamodb.NewImage.timeframe.S in [15m,1h,4h,1d] }
+ *   { dynamodb.NewImage.source.S in ["live", "live-synthesized"],
+ *     dynamodb.NewImage.timeframe.S in [15m,1h,4h,1d] }
  *
  * One invocation per candle record that passes the filter.
  *
@@ -105,7 +106,7 @@ interface StreamCandle {
   close: number;
   volume: number;
   symbol: string;
-  source: "live" | "backfill";
+  source: "live" | "live-synthesized" | "backfill";
 }
 
 // ---------------------------------------------------------------------------
@@ -128,9 +129,12 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
     ) as StreamCandle;
 
     // FilterCriteria should have already excluded non-signal timeframes and
-    // non-live sources, but guard defensively.
+    // non-live sources, but guard defensively. Both `live` and
+    // `live-synthesized` are accepted — `live-synthesized` is the Kraken
+    // silent-window carry-forward from stream.ts (#224) and must vote in
+    // close-quorum alongside real `live` candles.
     if (!SIGNAL_TIMEFRAMES.includes(candle.timeframe)) continue;
-    if (candle.source !== "live") continue;
+    if (candle.source !== "live" && candle.source !== "live-synthesized") continue;
 
     try {
       await processCandleClose(candle);
