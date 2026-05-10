@@ -112,6 +112,17 @@ export const BlendedSignalSchema = z
     confidence: z.number().min(0).max(1),
     volatilityFlag: z.boolean(),
     gateReason: z.enum(["vol", "dispersion", "stale"]).nullable(),
+    /**
+     * Gate inputs that drove the suppression decision — issue #216.
+     * Absent on old rows (pre-#216); clients fall back to the short gateReason label.
+     */
+    gateContext: z
+      .object({
+        gate: z.enum(["vol", "dispersion", "stale"]),
+        inputs: z.record(z.string(), z.union([z.string(), z.number()])),
+      })
+      .nullable()
+      .optional(),
     rulesFired: z.array(z.string()),
 
     // Per-timeframe vote breakdown — null when a TF had no valid data.

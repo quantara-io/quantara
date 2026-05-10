@@ -215,6 +215,9 @@ export function scoreTimeframe(
       bearishScore: 0,
       volatilityFlag: true,
       gateReason: gateResult.reason,
+      // Carry the gate's decision inputs so blend.ts can surface them in the HOLD
+      // rationale (issue #216). Omitted when context is absent (pre-context gate paths).
+      ...(gateResult.context !== undefined ? { gateContext: gateResult.context } : {}),
       reasoning: explainRules([], gateResult.reason),
       tags: detectTags(state, []),
       asOf: state.asOf,
