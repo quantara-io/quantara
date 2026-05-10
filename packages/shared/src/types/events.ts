@@ -2,7 +2,7 @@
  * PipelineEvent discriminated union — used by the pipeline activity feed.
  *
  * Each producer (indicator-handler, ratify, enrich) emits one of these
- * event shapes to the `pipeline_events` DDB table. The events-fanout
+ * event shapes to the `pipeline-events` DDB table. The events-fanout
  * Lambda reads the DDB stream and pushes to WebSocket clients subscribed
  * to `?channel=events`.
  *

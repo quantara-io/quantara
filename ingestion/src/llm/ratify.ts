@@ -280,20 +280,28 @@ export async function ratifySignal(
       triggerReason,
       previousRatificationId,
     });
+    // The cache stores the BlendedSignal as written at original
+    // ratification time, which may carry "downgraded" if the LLM disagreed
+    // with the algo. Preserve that status — overriding to "ratified" would
+    // misreport every downgraded cache hit (in both the persisted ratification
+    // record and the activity-feed event). Default to "ratified" only when
+    // the cached signal has no recognised status (legacy rows pre-#142).
+    const cachedStatus = cached.ratificationStatus === "downgraded" ? "downgraded" : "ratified";
+
     // Activity feed: emit ratification-fired event for cache-hit path.
     emitPipelineEventSafe({
       type: "ratification-fired",
       pair: context.pair,
       timeframe: context.candidate.emittingTimeframe,
       triggerReason,
-      verdict: "ratified",
+      verdict: cachedStatus,
       latencyMs: Date.now() - startMs,
       costUsd: 0,
       cacheHit: true,
       ts: new Date().toISOString(),
     });
 
-    const signal: BlendedSignal = { ...cached, ratificationStatus: "ratified" };
+    const signal: BlendedSignal = { ...cached, ratificationStatus: cachedStatus };
     return {
       signal,
       fellBackToAlgo: false,

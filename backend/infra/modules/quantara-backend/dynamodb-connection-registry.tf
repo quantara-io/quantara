@@ -29,9 +29,15 @@ resource "aws_dynamodb_table" "connection_registry" {
   }
 
   global_secondary_index {
-    name            = "channel-index"
-    hash_key        = "channel"
-    projection_type = "ALL"
+    name     = "channel-index"
+    hash_key = "channel"
+    # events-fanout only reads `connectionId` (the table PK, always
+    # projected via KEYS) and `userId` (for log attribution). Wider
+    # projection (`ALL`) would force every Query result to carry
+    # `subscribedPairs` etc., increasing read cost per event with no
+    # consumer for the extra fields.
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["userId"]
   }
 
   server_side_encryption {

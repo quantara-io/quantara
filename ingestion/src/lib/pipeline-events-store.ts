@@ -30,9 +30,11 @@ const TTL_SECONDS = 86_400;
 /**
  * Write a PipelineEvent to the `pipeline-events` DDB table.
  *
- * Fire-and-forget safe for callers: errors are caught and logged but
- * never propagate — activity-feed writes should never block the critical
- * signal/enrichment path.
+ * Note: this function PROPAGATES errors. The caller is responsible for
+ * deciding whether to swallow them. Use `emitPipelineEventSafe` (below)
+ * in signal-critical paths to get fire-and-forget semantics — that
+ * wrapper logs and discards errors so a DDB write failure can never
+ * block the primary flow.
  */
 export async function emitPipelineEvent(event: PipelineEvent): Promise<void> {
   const eventId = crypto.randomUUID();
