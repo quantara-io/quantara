@@ -709,6 +709,44 @@ Stream event (filtered: timeframe in [15m,1h,4h,1d] AND source = "live")
              if Put fails (ConditionalCheckFailed): discard (another handler won)
 ```
 
+### 5.10 Design decision: BLEND_THRESHOLD_T = 0.25 makes 15m and 1h directional signals mathematically impossible to surface alone
+
+**Status: accepted by design for v1. Revisit when calibration data is available.**
+
+#### The math
+
+With default weights and `BLEND_THRESHOLD_T = 0.25`, the maximum blended scalar a single timeframe can contribute (at perfect confidence = 1.0) is:
+
+| Timeframe | Weight | Max contribution (conf = 1.0) | Can cross T = 0.25 alone? |
+| --------- | ------ | ----------------------------- | ------------------------- |
+| 15m       | 0.15   | ±0.15                         | No                        |
+| 1h        | 0.20   | ±0.20                         | No                        |
+| 4h        | 0.30   | ±0.30                         | Yes                       |
+| 1d        | 0.35   | ±0.35                         | Yes                       |
+
+When 4h and 1d both vote `hold` — the common case in quiet markets where those rules require longer history — no amount of conviction on 15m or 1h alone produces a directional blended signal. For example, a textbook 1h RSI-overbought + volume-spike-bear setup at confidence 0.679 contributes only `−0.136` to the blended scalar, which stays inside the `[−0.25, +0.25]` hold band.
+
+#### Why this is intentional (for now)
+
+The threshold design reflects a deliberate stance: **short-TF directional firing is treated as noise unless it co-occurs with a longer-TF vote.** The 1d and 4h frames capture regime and trend; 1h and 15m capture setup and entry timing. The framework rewards multi-TF agreement and penalizes whipsaw signals by requiring weight-weighted consensus before committing to a direction.
+
+The alternative — lowering `T` to 0.20 or reweighting 1h to 0.30 — would let short-TF votes surface more often, at the cost of more emissions and likely more noise at the current (pre-calibration) product stage.
+
+#### When to revisit
+
+Once the Performance page Calibration section (tracked in issues #226/#227) has enough outcome data, compare:
+
+- **Win rate of 1h-directional signals that were blended through** (i.e. co-occurred with a 4h or 1d directional vote)
+- **Win rate of 1h-directional signals that were suppressed** (i.e. 4h and 1d were both hold)
+
+If the suppressed cohort shows meaningful edge, revisit one of:
+
+- **(B)** Lower `BLEND_THRESHOLD_T` to 0.20 so a max-confidence 1h vote can cross.
+- **(D)** Reweight to `{15m: 0.10, 1h: 0.30, 4h: 0.30, 1d: 0.30}` so 1h crosses T at full confidence.
+- **(C)** Add a "minority report" override: if any single TF votes directional with confidence > 0.70, route the blend to that TF's verdict regardless of weight math.
+
+Do not change `BLEND_THRESHOLD_T` or the weights without empirical data. See also `ingestion/src/signals/blend.ts` comments near `DEFAULT_TIMEFRAME_WEIGHTS` and `BLEND_THRESHOLD_T`.
+
 ---
 
 ## 6. Sentiment integration
