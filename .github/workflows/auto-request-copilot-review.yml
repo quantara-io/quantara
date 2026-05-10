@@ -78,13 +78,32 @@ jobs:
             -F bots="$COPILOT_BOT_ID" \
             > /tmp/result.json
 
+          # Always log the response body so any silent-no-op surface (e.g.
+          # token-scope issue, bot rejected) is visible in the run log
+          # rather than masked behind a green check.
+          echo "::group::Mutation response"
+          cat /tmp/result.json
+          echo
+          echo "::endgroup::"
+
           # Sanity check: confirm Copilot is in the post-mutation reviewer set
           # OR has already reviewed (in which case it's not in the requested
-          # list any more). Either way the mutation must have succeeded — if
-          # it didn't, gh exits non-zero above and `set -e` aborts.
+          # list any more). gh exits non-zero on GraphQL errors so `set -e`
+          # would have aborted above, but token-scope problems can also
+          # manifest as a "successful" response that just doesn't contain the
+          # bot — fail loudly rather than report success in that case.
           if grep -q "copilot-pull-request-reviewer" /tmp/result.json; then
             echo "✅ Copilot is now in the requested-reviewers set"
+          elif jq -e '.data.requestReviews.pullRequest.reviewRequests.nodes | length == 0' /tmp/result.json > /dev/null 2>&1; then
+            # Empty reviewer set + we union'd Copilot in → mutation didn't
+            # actually add the bot. This usually means the workflow token
+            # lacks permission to assign Copilot. Surface as a failure.
+            echo "❌ Mutation returned empty reviewer set despite union:true — token likely lacks permission to assign Copilot."
+            echo "   Common cause: GITHUB_TOKEN can't add bot reviewers; configure a fine-grained PAT with"
+            echo "   'Pull requests: Read and write' as a repo secret (e.g. COPILOT_REVIEW_TOKEN) and reference it here."
+            exit 1
           else
-            # Already reviewed → not in requested list, but not an error.
-            echo "ℹ️ Copilot is not in the requested set (may have already reviewed). Mutation succeeded."
+            # Other reviewers present but not Copilot → already reviewed,
+            # GitHub removed Copilot from the requested list. Not an error.
+            echo "ℹ️ Copilot is not in the requested set but other reviewers are. Likely already reviewed; mutation succeeded."
           fi
