@@ -66,16 +66,23 @@ export interface Candle {
   openTime: number;
 }
 
+/** Maximum bars to request in a single backfill batch. Backend caps at 500. */
+const MAX_BATCH = 500;
+/** Minimum bars to request in a single backfill batch. */
+const MIN_BATCH = 200;
+
 interface MarketChartProps {
   candles: Candle[];
   timeframe?: string;
   height?: number;
   /**
-   * Called when the user pans near the left edge of loaded data. The argument
-   * is the openTime (ms epoch) of the oldest currently-loaded candle — the
-   * parent should fetch candles before this timestamp and merge them in.
+   * Called when the user pans near the left edge of loaded data.
+   * @param oldestOpenTime - openTime (ms epoch) of the oldest currently-loaded candle.
+   * @param requestedLimit - zoom-aware batch size; parent should cap at backend max (500).
    */
-  onBackfillNeeded?: (oldestOpenTime: number) => void;
+  onBackfillNeeded?: (oldestOpenTime: number, requestedLimit: number) => void;
+  /** When true, shows a muted footer label indicating the history cap was reached. */
+  backfillExhausted?: boolean;
 }
 
 function getCss(name: string): string {
@@ -111,6 +118,7 @@ export function MarketChart({
   timeframe = "1h",
   height = 380,
   onBackfillNeeded,
+  backfillExhausted = false,
 }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -152,7 +160,12 @@ export function MarketChart({
       },
       crosshair: { mode: 1 },
       rightPriceScale: { borderColor: getCss("--line") },
-      timeScale: { borderColor: getCss("--line"), timeVisible: true, secondsVisible: false },
+      timeScale: {
+        borderColor: getCss("--line"),
+        timeVisible: true,
+        secondsVisible: false,
+        minBarSpacing: 1,
+      },
     });
     chartRef.current = chart;
 
@@ -193,12 +206,17 @@ export function MarketChart({
     // Fire onBackfillNeeded when the user pans near the left edge of loaded
     // data (leftmost visible logical index < 10 bars from the start).
     // Uses a ref-based callback so it never needs to unsubscribe/resubscribe.
+    // The batch size is derived from the currently visible range so zooming
+    // way out results in a larger batch (up to MAX_BATCH = 500).
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (!range) return;
       if (range.from > 10) return; // not near the left edge
       const oldest = oldestOpenTimeRef.current;
       const cb = onBackfillNeededRef.current;
-      if (oldest !== null && cb) cb(oldest);
+      if (oldest === null || !cb) return;
+      const visibleBars = range.to - range.from;
+      const requestedLimit = Math.min(Math.max(visibleBars * 1.2, MIN_BATCH), MAX_BATCH);
+      cb(oldest, Math.round(requestedLimit));
     });
 
     return () => {
@@ -348,6 +366,11 @@ export function MarketChart({
     <div className="relative">
       <div ref={containerRef} style={{ height }} className="w-full" />
       <Legend />
+      {backfillExhausted && (
+        <div className="absolute bottom-8 left-3 text-2xs text-muted2 pointer-events-none">
+          Loaded {candles.length} bars (max history reached)
+        </div>
+      )}
     </div>
   );
 }
