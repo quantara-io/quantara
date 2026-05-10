@@ -108,7 +108,7 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
       <div className="space-y-2">
         {bins.map((bin) => {
           const barWidth = `${(bin.winRate * 100).toFixed(1)}%`;
-          const idealWidth = `${((bin.binMin + bin.binMax) / 2 * 100).toFixed(1)}%`;
+          const idealWidth = `${(((bin.binMin + bin.binMax) / 2) * 100).toFixed(1)}%`;
           return (
             <div key={`${bin.binMin}-${bin.binMax}`} className="flex items-center gap-3 text-xs">
               <span className="text-slate-500 w-14 text-right font-mono shrink-0">
@@ -249,9 +249,7 @@ function RulesSection({
                       <td className={`py-1.5 font-mono ${winRateColor(row.tpRate)}`}>
                         {pct(row.tpRate)}
                       </td>
-                      <td className="py-1.5 text-slate-400 font-mono">
-                        {pct(row.avgConfidence)}
-                      </td>
+                      <td className="py-1.5 text-slate-400 font-mono">{pct(row.avgConfidence)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -493,7 +491,6 @@ export function Performance() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [since, pair, timeframe]);
 
   return (
@@ -539,9 +536,7 @@ export function Performance() {
           ))}
         </select>
 
-        {loading && (
-          <span className="text-xs text-slate-500 ml-2">Loading…</span>
-        )}
+        {loading && <span className="text-xs text-slate-500 ml-2">Loading…</span>}
       </div>
 
       {/* Error state */}

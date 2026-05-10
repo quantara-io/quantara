@@ -56,9 +56,7 @@ function sig(
 describe("computeCalibration", () => {
   it("suppresses bins with fewer than 10 signals", () => {
     // 9 signals in the 0.5-0.6 bin — should be suppressed.
-    const signals = Array.from({ length: 9 }, (_, i) =>
-      sig(`s${i}`, 0.55, [], 0),
-    );
+    const signals = Array.from({ length: 9 }, (_, i) => sig(`s${i}`, 0.55, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s) => [s.signalId, "correct"]),
     );
@@ -67,9 +65,7 @@ describe("computeCalibration", () => {
   });
 
   it("includes bins with exactly 10 signals", () => {
-    const signals = Array.from({ length: 10 }, (_, i) =>
-      sig(`s${i}`, 0.65, [], 0),
-    );
+    const signals = Array.from({ length: 10 }, (_, i) => sig(`s${i}`, 0.65, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s) => [s.signalId, "correct"]),
     );
@@ -82,9 +78,7 @@ describe("computeCalibration", () => {
   });
 
   it("computes win rate correctly (6 wins out of 10)", () => {
-    const signals = Array.from({ length: 10 }, (_, i) =>
-      sig(`s${i}`, 0.75, [], 0),
-    );
+    const signals = Array.from({ length: 10 }, (_, i) => sig(`s${i}`, 0.75, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s, i) => [s.signalId, i < 6 ? "correct" : "incorrect"]),
     );
@@ -95,9 +89,7 @@ describe("computeCalibration", () => {
 
   it("excludes neutral outcomes from win-rate calculation", () => {
     // 10 signals: 5 correct, 5 neutral → winRate = 5/5 = 1 (neutral excluded)
-    const signals = Array.from({ length: 10 }, (_, i) =>
-      sig(`s${i}`, 0.25, [], 0),
-    );
+    const signals = Array.from({ length: 10 }, (_, i) => sig(`s${i}`, 0.25, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s, i) => [s.signalId, i < 5 ? "correct" : "neutral"]),
     );
@@ -193,18 +185,13 @@ describe("computePerRule", () => {
 
   it("uses 0 tpRate when no directional outcomes are available", () => {
     const signals = [sig("s1", 0.5, ["volume_spike"])];
-    const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([
-      ["s1", "neutral"],
-    ]);
+    const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([["s1", "neutral"]]);
     const result = computePerRule(signals, outcomes);
     expect(result[0].tpRate).toBe(0);
   });
 
   it("computes avgConfidence per rule", () => {
-    const signals = [
-      sig("s1", 0.6, ["macd_cross"]),
-      sig("s2", 0.8, ["macd_cross"]),
-    ];
+    const signals = [sig("s1", 0.6, ["macd_cross"]), sig("s2", 0.8, ["macd_cross"])];
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([
       ["s1", "correct"],
       ["s2", "correct"],
@@ -233,10 +220,7 @@ describe("computePerRule", () => {
 describe("computeCoOccurrence", () => {
   it("detects pairwise co-occurrence (not 3-way)", () => {
     // signal with 3 rules → 3 pairs, not 1 triple
-    const signals = [
-      sig("s1", 0.7, ["A", "B", "C"]),
-      sig("s2", 0.7, ["A", "B", "C"]),
-    ];
+    const signals = [sig("s1", 0.7, ["A", "B", "C"]), sig("s2", 0.7, ["A", "B", "C"])];
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([
       ["s1", "correct"],
       ["s2", "correct"],
@@ -266,10 +250,7 @@ describe("computeCoOccurrence", () => {
   });
 
   it("uses canonical (sorted) key so (A,B) and (B,A) are the same pair", () => {
-    const signals = [
-      sig("s1", 0.7, ["Z", "A"]),
-      sig("s2", 0.7, ["A", "Z"]),
-    ];
+    const signals = [sig("s1", 0.7, ["Z", "A"]), sig("s2", 0.7, ["A", "Z"])];
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([
       ["s1", "correct"],
       ["s2", "correct"],
@@ -288,10 +269,7 @@ describe("computeCoOccurrence", () => {
   });
 
   it("skips signals with only one rule", () => {
-    const signals = [
-      sig("s1", 0.7, ["lone_rule"]),
-      sig("s2", 0.7, ["lone_rule"]),
-    ];
+    const signals = [sig("s1", 0.7, ["lone_rule"]), sig("s2", 0.7, ["lone_rule"])];
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([
       ["s1", "correct"],
       ["s2", "correct"],
@@ -395,5 +373,123 @@ describe("computeByVolatility", () => {
     const highBucket = result.find((b) => b.atrPercentile === 75)!;
     expect(highBucket).toBeDefined();
     expect(highBucket.winRate).toBeCloseTo(0.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DynamoDB fetch layer — assert QueryCommand inputs
+//
+// These tests use the dynamoSend mock declared at the top of the file. They
+// guard against schema drift (wrong key names, wrong table refs, wrong filter
+// expressions) and the per-signal fan-out regression (one Query per signal
+// vs. one Query per (pair, tf) group).
+// ---------------------------------------------------------------------------
+
+describe("getGenieDeepDive — DDB fetch layer", () => {
+  it("queries indicator_state with the real range key (asOf), not asOfMs", async () => {
+    const closeMs = Date.parse("2026-04-15T00:00:00.000Z");
+    dynamoSend.mockImplementation((cmd: { input: Record<string, unknown> }) => {
+      const table = cmd.input.TableName as string;
+      if (table === "quantara-dev-signals-v2") {
+        return Promise.resolve({
+          Items: [
+            {
+              pair: "BTC/USDT",
+              signalId: "s1",
+              confidence: 0.7,
+              rulesFired: ["r1"],
+              closeTime: closeMs,
+            },
+          ],
+        });
+      }
+      if (table === "quantara-dev-signal-outcomes") {
+        return Promise.resolve({ Items: [] });
+      }
+      if (table === "quantara-dev-indicator-state") {
+        return Promise.resolve({
+          Items: [{ asOf: "2026-04-15T00:00:00.000Z", atr14: 42 }],
+        });
+      }
+      return Promise.resolve({ Items: [] });
+    });
+
+    const { getGenieDeepDive } = await import("./genie-deepdive.service.js");
+    await getGenieDeepDive("2026-04-01T00:00:00.000Z", "BTC/USDT", "1h");
+
+    const indicatorCall = dynamoSend.mock.calls.find(
+      (c) => (c[0].input as Record<string, unknown>).TableName === "quantara-dev-indicator-state",
+    );
+    expect(indicatorCall).toBeDefined();
+    const indicatorInput = indicatorCall![0].input as Record<string, unknown>;
+    const exprNames = indicatorInput.ExpressionAttributeNames as Record<string, string>;
+    // The KeyConditionExpression's sort key alias must resolve to `asOf`,
+    // NOT `asOfMs`. `asOfMs` is a non-key attribute and would Query nothing.
+    expect(exprNames["#sk"]).toBe("asOf");
+    expect(exprNames["#pk"]).toBe("pk");
+    const exprValues = indicatorInput.ExpressionAttributeValues as Record<string, unknown>;
+    expect(typeof exprValues[":since"]).toBe("string");
+    expect(typeof exprValues[":until"]).toBe("string");
+    expect(exprValues[":pk"]).toBe("BTC/USDT#consensus#1h");
+  });
+
+  it("issues one indicator-state Query per (pair, tf) group, not per signal", async () => {
+    const baseTime = Date.parse("2026-04-15T00:00:00.000Z");
+    const signals = Array.from({ length: 5 }, (_, i) => ({
+      pair: "BTC/USDT",
+      signalId: `s${i}`,
+      confidence: 0.7,
+      rulesFired: ["r1"],
+      closeTime: baseTime + i * 3600_000,
+    }));
+
+    dynamoSend.mockImplementation((cmd: { input: Record<string, unknown> }) => {
+      const table = cmd.input.TableName as string;
+      if (table === "quantara-dev-signals-v2") {
+        return Promise.resolve({ Items: signals });
+      }
+      return Promise.resolve({ Items: [] });
+    });
+
+    const { getGenieDeepDive } = await import("./genie-deepdive.service.js");
+    await getGenieDeepDive("2026-04-01T00:00:00.000Z", "BTC/USDT", "1h");
+
+    const indicatorCalls = dynamoSend.mock.calls.filter(
+      (c) => (c[0].input as Record<string, unknown>).TableName === "quantara-dev-indicator-state",
+    );
+    // 5 signals, 1 (pair, tf) group → exactly 1 Query.
+    // Regression guard: the original code issued one Query per closeTime.
+    expect(indicatorCalls).toHaveLength(1);
+  });
+
+  it("queries signals_v2 with the canonical (pair, sk-prefix) shape", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieDeepDive } = await import("./genie-deepdive.service.js");
+    await getGenieDeepDive("2026-04-01T00:00:00.000Z", "BTC/USDT", "1h");
+
+    const signalsCall = dynamoSend.mock.calls.find(
+      (c) => (c[0].input as Record<string, unknown>).TableName === "quantara-dev-signals-v2",
+    );
+    expect(signalsCall).toBeDefined();
+    const input = signalsCall![0].input as Record<string, unknown>;
+    expect(input.KeyConditionExpression).toBe("#pair = :pair AND #sk BETWEEN :lo AND :hi");
+    const names = input.ExpressionAttributeNames as Record<string, string>;
+    expect(names["#pair"]).toBe("pair");
+    expect(names["#sk"]).toBe("sk");
+  });
+
+  it("queries signal_outcomes with createdAt filter", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getGenieDeepDive } = await import("./genie-deepdive.service.js");
+    await getGenieDeepDive("2026-04-01T00:00:00.000Z", "BTC/USDT", "1h");
+
+    const outcomesCall = dynamoSend.mock.calls.find(
+      (c) => (c[0].input as Record<string, unknown>).TableName === "quantara-dev-signal-outcomes",
+    );
+    expect(outcomesCall).toBeDefined();
+    const input = outcomesCall![0].input as Record<string, unknown>;
+    expect(input.FilterExpression).toBe("#createdAt BETWEEN :since AND :until");
   });
 });
