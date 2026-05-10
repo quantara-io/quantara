@@ -13,6 +13,7 @@ import { Performance } from "./pages/Performance";
 import { Pipeline } from "./pages/Pipeline";
 import { Whitelist } from "./pages/Whitelist";
 import { Ratifications } from "./pages/Ratifications";
+import { Pnl } from "./pages/Pnl";
 
 export function App() {
   return (
@@ -115,6 +116,16 @@ export function App() {
             <AuthGate>
               <Layout>
                 <Activity />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/pnl"
+          element={
+            <AuthGate>
+              <Layout>
+                <Pnl />
               </Layout>
             </AuthGate>
           }

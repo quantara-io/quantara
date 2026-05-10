@@ -16,6 +16,7 @@ import {
   getPipelineHealth,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
+import { getPnlSimulation } from "../services/pnl-simulation.service.js";
 import { getGenieDeepDive } from "../services/genie-deepdive.service.js";
 
 const admin = new Hono();
@@ -321,6 +322,114 @@ admin.get("/genie-metrics", async (c) => {
 
   const metrics = await getGenieMetrics(sinceCanon, pair, timeframe);
   return c.json({ success: true, data: metrics });
+});
+
+// Allowed timeframes reused for pnl-simulation (same blended TF set).
+admin.get("/pnl-simulation", async (c) => {
+  // --- since ---
+  const sinceRaw = c.req.query("since");
+  let sinceCanon: string | undefined;
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    sinceCanon = parsed.toISOString();
+  }
+
+  // --- pair ---
+  const pairRaw = c.req.query("pair");
+  if (pairRaw !== undefined && !(PAIRS as readonly string[]).includes(pairRaw)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  // --- timeframe ---
+  const timeframeRaw = c.req.query("timeframe");
+  if (
+    timeframeRaw !== undefined &&
+    !(VALID_TIMEFRAMES as readonly string[]).includes(timeframeRaw)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  // --- positionSize ---
+  const positionSizeRaw = c.req.query("positionSize");
+  let positionSizeUsd: number | undefined;
+  if (positionSizeRaw !== undefined) {
+    positionSizeUsd = parseFloat(positionSizeRaw);
+    if (!isFinite(positionSizeUsd) || positionSizeUsd <= 0) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "positionSize must be a positive number" },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- feeBps ---
+  const feeBpsRaw = c.req.query("feeBps");
+  let feeBps: number | undefined;
+  if (feeBpsRaw !== undefined) {
+    feeBps = parseFloat(feeBpsRaw);
+    if (!isFinite(feeBps) || feeBps < 0) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "feeBps must be a non-negative number" },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- direction ---
+  const directionRaw = c.req.query("direction");
+  let direction: "both" | "long" | "short" | undefined;
+  if (directionRaw !== undefined) {
+    if (directionRaw !== "both" && directionRaw !== "long" && directionRaw !== "short") {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "direction must be one of: both, long, short" },
+        },
+        400,
+      );
+    }
+    direction = directionRaw;
+  }
+
+  const result = await getPnlSimulation({
+    since: sinceCanon,
+    pair: pairRaw,
+    timeframe: timeframeRaw,
+    positionSizeUsd,
+    feeBps,
+    direction,
+  });
+  return c.json({ success: true, data: result });
 });
 
 admin.get("/genie-deepdive", async (c) => {
