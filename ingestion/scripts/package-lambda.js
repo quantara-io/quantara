@@ -15,6 +15,7 @@ const LAMBDAS = [
   { entry: "news-backfill-handler.js", zip: "news-backfill.zip" },
   { entry: "enrichment-handler.js", zip: "enrichment.zip" },
   { entry: "indicator-handler.js", zip: "indicator-handler.zip" },
+  { entry: "indicator-handler-shadow.js", zip: "indicator-handler-shadow.zip" }, // Issue #133
   { entry: "aggregator-handler.js", zip: "aggregator-handler.zip" },
   { entry: "outcome-handler.js", zip: "outcome-handler.zip" },
   { entry: "close-quorum-monitor.js", zip: "close-quorum-monitor.zip" },

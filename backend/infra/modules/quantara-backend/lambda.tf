@@ -196,6 +196,8 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
           "${aws_dynamodb_table.ratifications.arn}/index/*",
           # Genie-metrics endpoint reads these for win-rate + cost metrics.
           aws_dynamodb_table.signal_outcomes.arn,
+          # Issue #133: admin /signals-shadow endpoint reads shadow signals.
+          aws_dynamodb_table.signals_collection.arn,
         ]
       },
     ]
@@ -289,8 +291,9 @@ resource "aws_lambda_function" "api" {
       TABLE_CAMPAIGNS       = aws_dynamodb_table.campaigns.name
       TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
       TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
-      TABLE_RATIFICATIONS   = aws_dynamodb_table.ratifications.name
-      TABLE_SIGNAL_OUTCOMES = aws_dynamodb_table.signal_outcomes.name
+      TABLE_RATIFICATIONS      = aws_dynamodb_table.ratifications.name
+      TABLE_SIGNAL_OUTCOMES    = aws_dynamodb_table.signal_outcomes.name
+      TABLE_SIGNALS_COLLECTION = aws_dynamodb_table.signals_collection.name
       CORS_ORIGIN           = var.cors_origin
       CLOUDFRONT_URL        = "https://${aws_cloudfront_distribution.api.domain_name}"
       ENVIRONMENT           = var.environment

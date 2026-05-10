@@ -55,6 +55,14 @@ await build({
   outfile: "dist/indicator-handler.js",
 });
 
+// Lambda: shadow indicator handler — 1m/5m data collection (Issue #133)
+// No LLM, no blend, no fanout. Writes to signals-collection table.
+await build({
+  ...shared,
+  entryPoints: ["src/indicator-handler-shadow.ts"],
+  outfile: "dist/indicator-handler-shadow.js",
+});
+
 // Lambda: SQS-triggered sentiment aggregation + EventBridge fallback (Phase 5b)
 await build({
   ...shared,
@@ -123,5 +131,5 @@ await build({
 });
 
 console.log(
-  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/aggregator-handler.js, dist/outcome-handler.js, dist/close-quorum-monitor.js, dist/higher-tf-poller-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js, dist/events-fanout.js",
+  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/indicator-handler-shadow.js, dist/aggregator-handler.js, dist/outcome-handler.js, dist/close-quorum-monitor.js, dist/higher-tf-poller-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js, dist/events-fanout.js",
 );

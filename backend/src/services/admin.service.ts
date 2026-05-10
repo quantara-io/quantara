@@ -26,6 +26,10 @@ const ENVIRONMENT = process.env.ENVIRONMENT ?? "dev";
 
 const SIGNALS_V2_TABLE =
   process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+
+const SIGNALS_COLLECTION_TABLE =
+  process.env.TABLE_SIGNALS_COLLECTION ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-collection`;
 const INDICATOR_STATE_TABLE =
   process.env.TABLE_INDICATOR_STATE ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
@@ -2169,4 +2173,105 @@ export async function getPipelineHealth(windowHours = 24): Promise<PipelineHealt
     lambdas,
     fargate,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Issue #133: shadow signals (1m/5m data-collection, no LLM, no fanout)
+// ---------------------------------------------------------------------------
+
+export interface ShadowSignalRow {
+  pair: string;
+  sk: string;
+  signalId: string;
+  emittedAt: string;
+  closeTime: number;
+  timeframe: string;
+  source: "shadow";
+  type: "buy" | "sell" | "hold";
+  confidence: number;
+  volatilityFlag: boolean;
+  gateReason: string | null;
+  rulesFired: string[];
+  bullishScore: number;
+  bearishScore: number;
+  asOf: number;
+  /** UI badge marker — always true for shadow rows. */
+  shadow: true;
+}
+
+/**
+ * Read the most recent shadow signals from signals-collection.
+ *
+ * Queries by pair. When no pair is specified, reads all PAIRS in parallel
+ * (each pair is a separate partition key). Results are merged and sorted
+ * by emittedAt descending, sliced to `limit`.
+ */
+export async function getShadowSignals(opts: {
+  pair?: string;
+  timeframe?: string;
+  since?: string;
+  limit: number;
+}): Promise<ShadowSignalRow[]> {
+  const { pair, timeframe, limit } = opts;
+  const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const sinceMs = new Date(since).getTime();
+
+  const pairs = pair ? [pair] : (SUPPORTED_PAIRS as readonly string[]).slice();
+  const shadowTfs = timeframe ? [timeframe] : ["1m", "5m"];
+
+  try {
+    const perPairTf = await Promise.all(
+      pairs.flatMap((p) =>
+        shadowTfs.map(async (tf) => {
+          const tfPrefix = `${tf}#`;
+          const result = await dynamo.send(
+            new QueryCommand({
+              TableName: SIGNALS_COLLECTION_TABLE,
+              KeyConditionExpression: "#pair = :pair AND #sk BETWEEN :lo AND :hi",
+              ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+              ExpressionAttributeValues: {
+                ":pair": p,
+                ":lo": `${tfPrefix}${sinceMs}`,
+                ":hi": `${tfPrefix}￿`,
+              },
+              ScanIndexForward: false,
+              Limit: limit,
+            }),
+          );
+          return result.Items ?? [];
+        }),
+      ),
+    );
+
+    const merged = perPairTf.flat();
+    merged.sort((a, b) => {
+      const aT = (a["emittedAt"] as string) ?? "";
+      const bT = (b["emittedAt"] as string) ?? "";
+      return bT.localeCompare(aT);
+    });
+
+    return merged.slice(0, limit).map(
+      (item): ShadowSignalRow => ({
+        pair: item["pair"] as string,
+        sk: item["sk"] as string,
+        signalId: item["signalId"] as string,
+        emittedAt: item["emittedAt"] as string,
+        closeTime: item["closeTime"] as number,
+        timeframe: item["timeframe"] as string,
+        source: "shadow",
+        type: item["type"] as "buy" | "sell" | "hold",
+        confidence: item["confidence"] as number,
+        volatilityFlag: (item["volatilityFlag"] as boolean) ?? false,
+        gateReason: (item["gateReason"] as string | null) ?? null,
+        rulesFired: (item["rulesFired"] as string[]) ?? [],
+        bullishScore: (item["bullishScore"] as number) ?? 0,
+        bearishScore: (item["bearishScore"] as number) ?? 0,
+        asOf: item["asOf"] as number,
+        shadow: true,
+      }),
+    );
+  } catch (err) {
+    console.error("[admin.service] getShadowSignals failed:", err);
+    return [];
+  }
 }
