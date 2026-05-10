@@ -142,7 +142,11 @@ export function Workstation() {
           ) : candles.length === 0 ? (
             <div className="text-sm text-muted2 py-6">Loading market…</div>
           ) : (
-            <MarketChart candles={candles} onBackfillNeeded={handleBackfillNeeded} />
+            <MarketChart
+              candles={candles}
+              timeframe={TIMEFRAME_TO_API[timeframe]}
+              onBackfillNeeded={handleBackfillNeeded}
+            />
           )}
         </div>
       </section>

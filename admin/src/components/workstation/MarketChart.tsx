@@ -23,6 +23,7 @@ const TIMEFRAME_SEC: Record<string, number> = {
   "1h": 3600,
   "4h": 14400,
   "1d": 86400,
+  "1w": 604800,
 };
 
 /**
