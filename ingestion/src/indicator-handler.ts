@@ -43,6 +43,7 @@ import { evaluateGates, narrowPair } from "./signals/gates.js";
 import { EXCHANGES } from "./exchanges/config.js";
 import { ratifySignal } from "./llm/ratify.js";
 import { buildSentimentBundle } from "./news/bundle.js";
+import { emitPipelineEventSafe } from "./lib/pipeline-events-store.js";
 
 // ---------------------------------------------------------------------------
 // DDB client
@@ -354,6 +355,17 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     console.log(
       `[IndicatorHandler] ${pair}/${timeframe}: stage-1 signal written (type=${stage1Signal.type} confidence=${stage1Signal.confidence.toFixed(3)} ratificationStatus=${stage1Signal.ratificationStatus ?? "n/a"}).`,
     );
+
+    // Activity feed: emit signal-emitted event (fire-and-forget, non-fatal).
+    emitPipelineEventSafe({
+      type: "signal-emitted",
+      pair,
+      timeframe,
+      signalType: stage1Signal.type,
+      confidence: stage1Signal.confidence,
+      closeTime: emittedAt,
+      ts: new Date().toISOString(),
+    });
   } catch (err) {
     // With @aws-sdk/lib-dynamodb the Document Client may surface conditional
     // failures as a generic Error with `.name` set rather than as an instance
@@ -606,6 +618,17 @@ async function computeBlendedSignal(
   });
 
   await putIndicatorState(state);
+
+  // Activity feed: emit indicator-state-updated event (fire-and-forget, non-fatal).
+  emitPipelineEventSafe({
+    type: "indicator-state-updated",
+    pair,
+    timeframe: tf,
+    barsSinceStart: state.barsSinceStart,
+    rsi14: state.rsi14 ?? undefined,
+    ts: new Date().toISOString(),
+  });
+
   await tickCooldowns(pair, tf);
   const lastFireBars = await getLastFireBars(pair, tf);
   const dispersionHistory = await appendDispersionHistory(pair, tf, canon.dispersion);

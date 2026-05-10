@@ -2,14 +2,18 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { AuthGate } from "./components/AuthGate";
 import { Layout } from "./components/Layout";
+import { Activity } from "./pages/Activity";
 import { Genie } from "./pages/Genie";
+import { Health } from "./pages/Health";
 import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Market } from "./pages/Market";
 import { News } from "./pages/News";
+import { Performance } from "./pages/Performance";
 import { Pipeline } from "./pages/Pipeline";
 import { Whitelist } from "./pages/Whitelist";
 import { Ratifications } from "./pages/Ratifications";
+import { Pnl } from "./pages/Pnl";
 
 export function App() {
   return (
@@ -77,11 +81,51 @@ export function App() {
           }
         />
         <Route
+          path="/performance"
+          element={
+            <AuthGate>
+              <Layout>
+                <Performance />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
           path="/pipeline"
           element={
             <AuthGate>
               <Layout>
                 <Pipeline />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/health"
+          element={
+            <AuthGate>
+              <Layout>
+                <Health />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/activity"
+          element={
+            <AuthGate>
+              <Layout>
+                <Activity />
+              </Layout>
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/pnl"
+          element={
+            <AuthGate>
+              <Layout>
+                <Pnl />
               </Layout>
             </AuthGate>
           }
