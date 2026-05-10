@@ -50,4 +50,19 @@ describe("backfill-handler", () => {
       /Missing required fields/,
     );
   });
+
+  it("forwards force=true to backfillCandles when provided", async () => {
+    const { handler } = await import("./backfill-handler.js");
+    await handler(
+      { exchange: "kraken", pair: "BTC/USDT", timeframe: "1h", days: 90, force: true },
+      fakeContext,
+    );
+    expect(backfillCandlesMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+  });
+
+  it("defaults force to false when not provided in the event payload", async () => {
+    const { handler } = await import("./backfill-handler.js");
+    await handler({ exchange: "kraken", pair: "BTC/USDT", timeframe: "1h", days: 7 }, fakeContext);
+    expect(backfillCandlesMock).toHaveBeenCalledWith(expect.objectContaining({ force: false }));
+  });
 });
