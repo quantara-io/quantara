@@ -132,7 +132,7 @@ export function App() {
           }
         />
         <Route
-          path="/glossary"
+          path="/admin/glossary"
           element={
             <AuthGate>
               <Layout>
