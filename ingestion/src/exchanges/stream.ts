@@ -354,6 +354,16 @@ export class MarketStreamManager {
         );
       });
 
+      // Treat a synthesized candle as freshness for the watchdog: the stream
+      // is "alive" in the sense that we are emitting an authoritative
+      // zero-volume bar for the silent window. Without this bump the
+      // watchdog continues to log `[Watchdog] Stream kraken:... stale` and
+      // can ultimately restart a stream that is functioning as designed
+      // during a Kraken silent window — part of issue #224's acceptance
+      // criteria.
+      const streamState = this.streams.get(key);
+      if (streamState) streamState.lastDataAt = Date.now();
+
       // Advance lastCloseTime and arm the timer for the next window so
       // consecutive silent minutes each get a synthesized candle.
       this.updateKrakenSynthState(key, symbol, pair, synthState.lastClose, expectedNextCloseTime);
