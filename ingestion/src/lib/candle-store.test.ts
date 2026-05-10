@@ -8,6 +8,7 @@ vi.mock("@aws-sdk/client-dynamodb", () => ({
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   DynamoDBDocumentClient: { from: () => ({ send }) },
   BatchWriteCommand: vi.fn().mockImplementation((input) => ({ __cmd: "BatchWrite", input })),
+  PutCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Put", input })),
   QueryCommand: vi.fn().mockImplementation((input) => ({ __cmd: "Query", input })),
 }));
 
@@ -120,5 +121,70 @@ describe("getCandles", () => {
     send.mockResolvedValue({});
     const { getCandles } = await import("./candle-store.js");
     expect(await getCandles("BTC/USDT", "binanceus", "1m")).toEqual([]);
+  });
+});
+
+describe("storeCandlesConditional", () => {
+  it("writes a backfill candle via PutCommand with the live-guard condition", async () => {
+    send.mockResolvedValue({});
+    const candle = makeCandle({ source: "backfill" });
+    const { storeCandlesConditional } = await import("./candle-store.js");
+    await storeCandlesConditional([candle]);
+    expect(send).toHaveBeenCalledOnce();
+    const cmd = send.mock.calls[0][0];
+    expect(cmd.__cmd).toBe("Put");
+    expect(cmd.input.ConditionExpression).toBe("attribute_not_exists(#src) OR #src <> :live");
+    expect(cmd.input.ExpressionAttributeNames).toEqual({ "#src": "source" });
+    expect(cmd.input.ExpressionAttributeValues).toEqual({ ":live": "live" });
+    expect(cmd.input.Item.source).toBe("backfill");
+  });
+
+  it("silently skips the write when an existing live row causes ConditionalCheckFailedException", async () => {
+    // Simulate DynamoDB rejecting the Put because source = "live" already exists.
+    const conditionalErr = Object.assign(new Error("ConditionalCheckFailed"), {
+      name: "ConditionalCheckFailedException",
+    });
+    send.mockRejectedValue(conditionalErr);
+    const candle = makeCandle({ source: "backfill" });
+    const { storeCandlesConditional } = await import("./candle-store.js");
+    // Should resolve without throwing — existing live row is preserved.
+    await expect(storeCandlesConditional([candle])).resolves.toBeUndefined();
+  });
+
+  it("re-throws non-conditional DynamoDB errors", async () => {
+    const provisionedErr = Object.assign(new Error("Throughput exceeded"), {
+      name: "ProvisionedThroughputExceededException",
+    });
+    send.mockRejectedValue(provisionedErr);
+    const candle = makeCandle({ source: "backfill" });
+    const { storeCandlesConditional } = await import("./candle-store.js");
+    await expect(storeCandlesConditional([candle])).rejects.toThrow("Throughput exceeded");
+  });
+
+  it("processes each candle independently — skipped live rows do not abort subsequent writes", async () => {
+    const conditionalErr = Object.assign(new Error("ConditionalCheckFailed"), {
+      name: "ConditionalCheckFailedException",
+    });
+    // First candle hits a live row; second candle is fresh.
+    send.mockRejectedValueOnce(conditionalErr).mockResolvedValueOnce({});
+    const candles = [
+      makeCandle({ openTime: 1700000000000, source: "backfill" }),
+      makeCandle({ openTime: 1700000060000, source: "backfill" }),
+    ];
+    const { storeCandlesConditional } = await import("./candle-store.js");
+    await expect(storeCandlesConditional(candles)).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws when source is missing", async () => {
+    const { storeCandlesConditional } = await import("./candle-store.js");
+    const candleWithoutSource = {
+      ...makeCandle(),
+      source: undefined,
+    } as unknown as import("@quantara/shared").Candle;
+    await expect(storeCandlesConditional([candleWithoutSource])).rejects.toThrow(
+      /candle\.source is required/,
+    );
+    expect(send).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,10 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, BatchWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  BatchWriteCommand,
+  PutCommand,
+  QueryCommand,
+} from "@aws-sdk/lib-dynamodb";
 import type { Candle, Timeframe } from "@quantara/shared";
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -68,6 +73,64 @@ export async function storeCandles(candles: Candle[]): Promise<void> {
   }
 
   console.log(`[CandleStore] Wrote ${candles.length} candles to ${CANDLES_TABLE}`);
+}
+
+/**
+ * Write candles one-by-one with a conditional expression that refuses to
+ * overwrite an existing row whose `source` is already `"live"`.
+ *
+ * Used by the backfill pipeline so that a backfill run covering the live
+ * window never demotes recent `source: live` rows to `source: backfill`,
+ * which would break the DDB-Streams filter on the indicator-handler.
+ *
+ * ConditionalCheckFailedException is silently swallowed (desired skip);
+ * all other errors are re-thrown.
+ */
+export async function storeCandlesConditional(candles: Candle[]): Promise<void> {
+  for (const c of candles) {
+    if (!c.source) {
+      throw new Error(
+        `[CandleStore] candle.source is required (pair=${c.pair} tf=${c.timeframe} openTime=${c.openTime}). Set "live" or "backfill".`,
+      );
+    }
+
+    const item = {
+      pair: c.pair,
+      sk: buildSortKey(c.exchange, c.timeframe, new Date(c.openTime).toISOString()),
+      exchange: c.exchange,
+      symbol: c.symbol,
+      timeframe: c.timeframe,
+      openTime: c.openTime,
+      closeTime: c.closeTime,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+      isClosed: c.isClosed,
+      source: c.source,
+      ttl: Math.floor(Date.now() / 1000) + TTL_SECONDS[c.timeframe as Timeframe],
+    };
+
+    await client
+      .send(
+        new PutCommand({
+          TableName: CANDLES_TABLE,
+          Item: item,
+          ConditionExpression: "attribute_not_exists(#src) OR #src <> :live",
+          ExpressionAttributeNames: { "#src": "source" },
+          ExpressionAttributeValues: { ":live": "live" },
+        }),
+      )
+      .catch((err: Error) => {
+        if (err.name === "ConditionalCheckFailedException") return; // live row — leave alone
+        throw err;
+      });
+  }
+
+  console.log(
+    `[CandleStore] Conditionally wrote up to ${candles.length} candles to ${CANDLES_TABLE}`,
+  );
 }
 
 export async function getCandles(
