@@ -400,15 +400,48 @@ function computeDispersion(prices: Array<Record<string, unknown>>, pair: string)
   return (max - min) / avg;
 }
 
-async function getRecentCandles(pair: string, exchange: string, timeframe: string, limit = 60) {
+async function getRecentCandles(
+  pair: string,
+  exchange: string,
+  timeframe: string,
+  limit = 60,
+  beforeMs?: number,
+) {
   try {
     const prefix = `${exchange}#${timeframe}#`;
+    // When `beforeMs` is provided, use a range comparison so DynamoDB returns
+    // only candles whose SK is lex-before the cursor. DynamoDB does not support
+    // combining begins_with() with < in the same KeyConditionExpression, so we
+    // switch to an explicit range:
+    //   sk >= "${prefix}"   (prefix itself is less than any candle SK because
+    //                        the next char is always an ISO digit '0'–'9')
+    //   sk < "${beforeSk}"  (strict upper bound = the cursor's ISO timestamp)
+    //
+    // Without `beforeMs`, falls back to the original begins_with pattern.
+    const keyCondition = beforeMs
+      ? "#pair = :pair AND #sk BETWEEN :prefixMin AND :beforeSk"
+      : "#pair = :pair AND begins_with(#sk, :prefix)";
+
+    // BETWEEN is inclusive on both ends. To simulate strict "<" on :beforeSk we
+    // subtract one millisecond: ISO timestamps have ms precision, so
+    // new Date(beforeMs - 1).toISOString() is strictly less than the cursor SK.
+    const expressionValues: Record<string, string> = beforeMs
+      ? {
+          ":pair": pair,
+          ":prefixMin": prefix,
+          ":beforeSk": `${exchange}#${timeframe}#${new Date(beforeMs - 1).toISOString()}`,
+        }
+      : {
+          ":pair": pair,
+          ":prefix": prefix,
+        };
+
     const result = await dynamo.send(
       new QueryCommand({
         TableName: `${PREFIX}-candles`,
-        KeyConditionExpression: "#pair = :pair AND begins_with(#sk, :prefix)",
+        KeyConditionExpression: keyCondition,
         ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
-        ExpressionAttributeValues: { ":pair": pair, ":prefix": prefix },
+        ExpressionAttributeValues: expressionValues,
         ScanIndexForward: false,
         Limit: limit,
       }),
@@ -428,10 +461,11 @@ export async function getMarket(
   exchange: string,
   timeframe: string = "1m",
   limit: number = 60,
+  beforeMs?: number,
 ) {
   const [prices, candles, fearGreed, indicators] = await Promise.all([
     getLatestPrices(),
-    getRecentCandles(pair, exchange, timeframe, limit),
+    getRecentCandles(pair, exchange, timeframe, limit, beforeMs),
     getFearGreed(),
     getIndicatorState(pair, exchange, timeframe),
   ]);

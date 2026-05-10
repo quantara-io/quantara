@@ -26,6 +26,12 @@ export interface Candle {
 interface MarketChartProps {
   candles: Candle[];
   height?: number;
+  /**
+   * Called when the user pans near the left edge of loaded data. The argument
+   * is the openTime (ms epoch) of the oldest currently-loaded candle — the
+   * parent should fetch candles before this timestamp and merge them in.
+   */
+  onBackfillNeeded?: (oldestOpenTime: number) => void;
 }
 
 function getCss(name: string): string {
@@ -56,13 +62,30 @@ function ema(values: number[], period: number): (number | null)[] {
   return out;
 }
 
-export function MarketChart({ candles, height = 380 }: MarketChartProps) {
+export function MarketChart({ candles, height = 380, onBackfillNeeded }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const ema20Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const ema50Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  // Stable ref so the range-change subscriber always sees the latest callback
+  // without needing to unsubscribe/resubscribe when the parent re-renders.
+  const onBackfillNeededRef = useRef(onBackfillNeeded);
+  // Oldest candle openTime (ms) currently loaded — updated whenever the candles
+  // prop changes. Used by the range-change handler to pass the right cursor.
+  const oldestOpenTimeRef = useRef<number | null>(null);
+  // Track the candle count from the previous render so we can detect the
+  // transition from 0 → N (first load / pair+timeframe switch) and call
+  // fitContent() exactly once per dataset, without calling it on live-poll
+  // updates or backfill merges (which would reset the user's pan position).
+  const prevCandleCountRef = useRef<number>(0);
+
+  // Keep callback ref current so the range-change subscriber always calls the
+  // latest version without re-subscribing on every render.
+  useEffect(() => {
+    onBackfillNeededRef.current = onBackfillNeeded;
+  }, [onBackfillNeeded]);
 
   // Build chart once on mount; recompute colors when the theme class changes.
   useEffect(() => {
@@ -118,6 +141,17 @@ export function MarketChart({ candles, height = 380 }: MarketChartProps) {
       scaleMargins: { top: 0.78, bottom: 0 },
     });
 
+    // Fire onBackfillNeeded when the user pans near the left edge of loaded
+    // data (leftmost visible logical index < 10 bars from the start).
+    // Uses a ref-based callback so it never needs to unsubscribe/resubscribe.
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range) return;
+      if (range.from > 10) return; // not near the left edge
+      const oldest = oldestOpenTimeRef.current;
+      const cb = onBackfillNeededRef.current;
+      if (oldest !== null && cb) cb(oldest);
+    });
+
     return () => {
       chart.remove();
       chartRef.current = null;
@@ -166,12 +200,20 @@ export function MarketChart({ candles, height = 380 }: MarketChartProps) {
     const volSeries = volumeSeriesRef.current;
     const chart = chartRef.current;
     if (!candleSeries || !ema20Series || !ema50Series || !volSeries || !chart) return;
-    if (!candles || candles.length === 0) return;
+    if (!candles || candles.length === 0) {
+      // Dataset was cleared (pair/timeframe switch). Reset the first-load flag
+      // so fitContent() fires again when the fresh batch arrives.
+      prevCandleCountRef.current = 0;
+      return;
+    }
 
     const sorted = [...candles].sort((a, b) => a.openTime - b.openTime);
     const dedupedMap = new Map<number, Candle>();
     for (const c of sorted) dedupedMap.set(Math.floor(c.openTime / 1000), c);
     const deduped = Array.from(dedupedMap.entries()).sort((a, b) => a[0] - b[0]);
+
+    // Track oldest loaded candle time for the backfill range-change handler.
+    oldestOpenTimeRef.current = sorted[0]?.openTime ?? null;
 
     const candleData: CandlestickData<Time>[] = deduped.map(([t, c]) => ({
       time: t as UTCTimestamp,
@@ -230,7 +272,24 @@ export function MarketChart({ candles, height = 380 }: MarketChartProps) {
     ema20Series.setData(ema20Data);
     ema50Series.setData(ema50Data);
     volSeries.setData(volData);
-    chart.timeScale().fitContent();
+
+    // Only fit the visible range on the very first candle load for this
+    // dataset (i.e. when the previous count was 0). This covers:
+    //   - Initial page load
+    //   - Pair or timeframe switch (Workstation calls setCandles([]) first,
+    //     so prevCandleCountRef drops to 0 before the fresh batch arrives)
+    //
+    // Calling fitContent() on every candles change would:
+    //   1. Reset the user's pan position on every 30 s live poll.
+    //   2. Chain-trigger backfills: after a backfill merge the visible range
+    //      snaps back to range.from ≈ 0, re-fires the range-change subscriber,
+    //      and fires another backfill request — violating the "one request per
+    //      pan" acceptance criterion.
+    const prevCount = prevCandleCountRef.current;
+    prevCandleCountRef.current = deduped.length;
+    if (prevCount === 0) {
+      chart.timeScale().fitContent();
+    }
   }, [candles]);
 
   return (

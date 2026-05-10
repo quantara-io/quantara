@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../lib/api";
 import { AlertsRail } from "../components/workstation/AlertsRail";
@@ -22,22 +22,36 @@ interface MarketData {
 }
 
 const POLL_MS = 30_000;
+/** Initial candle load size. */
+const INITIAL_LIMIT = 500;
+/** Candles to fetch per backfill request. */
+const BACKFILL_LIMIT = 200;
 
 export function Workstation() {
   const [activePair, setActivePair] = useState<string>(DEFAULT_PAIR);
   const [timeframe, setTimeframe] = useState<Timeframe>("1H");
   const [data, setData] = useState<MarketData | null>(null);
+  const [candles, setCandles] = useState<Candle[]>([]);
   const [error, setError] = useState("");
 
+  // Backfill state — all refs so the subscriber closure always has current
+  // values without causing extra re-renders.
+  /** True while a backfill request is in flight — coalesces rapid pan events. */
+  const backfillInFlightRef = useRef(false);
+  /** Set to true when the backend returns 0 candles (history exhausted). */
+  const backfillExhaustedRef = useRef(false);
+
+  // Reset backfill state and re-load initial candles when pair or timeframe change.
   useEffect(() => {
+    backfillInFlightRef.current = false;
+    backfillExhaustedRef.current = false;
+    setCandles([]);
+
     let cancelled = false;
     async function load() {
       const apiTf = TIMEFRAME_TO_API[timeframe];
-      // 500 = backend max. Pre-loading the full window gives users zoom-out
-      // headroom without round-trips. Lazy-backfill on pan-to-edge is the
-      // proper fix — see the follow-up issue.
       const res = await apiFetch<MarketData>(
-        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=500`,
+        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=${INITIAL_LIMIT}`,
       );
       if (cancelled) return;
       if (res.success && res.data) {
@@ -55,8 +69,55 @@ export function Workstation() {
     };
   }, [activePair, timeframe]);
 
+  // Keep latest live candles from polling in sync without discarding backfilled
+  // older candles. The poll returns the most recent window, so we keep any
+  // candle that is older than the earliest candle in the poll result.
+  useEffect(() => {
+    if (!data) return;
+    const fresh = data.candles ?? [];
+    if (fresh.length === 0) return;
+    const freshOldest = Math.min(...fresh.map((c) => c.openTime));
+    setCandles((prev) => {
+      // Keep backfilled candles (older than poll window) + full fresh set.
+      const backfilled = prev.filter((c) => c.openTime < freshOldest);
+      const merged = [...backfilled, ...fresh];
+      // Dedup by openTime and sort ascending.
+      const map = new Map<number, Candle>();
+      for (const c of merged) map.set(c.openTime, c);
+      return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+    });
+  }, [data]);
+
+  const handleBackfillNeeded = useCallback(
+    (oldestOpenTime: number) => {
+      if (backfillInFlightRef.current) return;
+      if (backfillExhaustedRef.current) return;
+
+      backfillInFlightRef.current = true;
+      const apiTf = TIMEFRAME_TO_API[timeframe];
+
+      void apiFetch<MarketData>(
+        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=${BACKFILL_LIMIT}&before=${oldestOpenTime}`,
+      ).then((res) => {
+        backfillInFlightRef.current = false;
+        if (!res.success || !res.data) return;
+        const older = res.data.candles ?? [];
+        if (older.length === 0) {
+          backfillExhaustedRef.current = true;
+          return;
+        }
+        setCandles((prev) => {
+          const map = new Map<number, Candle>();
+          for (const c of [...older, ...prev]) map.set(c.openTime, c);
+          return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+        });
+      });
+    },
+    [activePair, timeframe],
+  );
+
   const meta = useMemo(() => metaForPair(activePair), [activePair]);
-  const stats = useMemo(() => deriveStats(data, activePair), [data, activePair]);
+  const stats = useMemo(() => deriveStats(data, candles, activePair), [data, candles, activePair]);
 
   return (
     <div className="grid grid-cols-[260px_minmax(0,1fr)_320px] min-h-[calc(100vh-5rem)]">
@@ -78,10 +139,10 @@ export function Workstation() {
             <div className="rounded border border-down/30 bg-down-soft text-down-strong text-sm p-3">
               {error}
             </div>
-          ) : !data ? (
+          ) : candles.length === 0 ? (
             <div className="text-sm text-muted2 py-6">Loading market…</div>
           ) : (
-            <MarketChart candles={data.candles ?? []} />
+            <MarketChart candles={candles} onBackfillNeeded={handleBackfillNeeded} />
           )}
         </div>
       </section>
@@ -97,8 +158,8 @@ export function Workstation() {
   );
 }
 
-function deriveStats(data: MarketData | null, pair: string): SymbolStats {
-  if (!data || !data.candles || data.candles.length === 0) {
+function deriveStats(data: MarketData | null, candles: Candle[], pair: string): SymbolStats {
+  if (!candles || candles.length === 0) {
     return {
       price: null,
       change24hPct: null,
@@ -108,14 +169,14 @@ function deriveStats(data: MarketData | null, pair: string): SymbolStats {
       fundingPct: null,
     };
   }
-  const candles = [...data.candles].sort((a, b) => a.openTime - b.openTime);
-  const last = candles[candles.length - 1];
-  const first = candles[0];
-  const high24h = candles.reduce((m, c) => Math.max(m, c.high), -Infinity);
-  const low24h = candles.reduce((m, c) => Math.min(m, c.low), Infinity);
-  const volume24h = candles.reduce((s, c) => s + c.volume, 0);
+  const sorted = [...candles].sort((a, b) => a.openTime - b.openTime);
+  const last = sorted[sorted.length - 1];
+  const first = sorted[0];
+  const high24h = sorted.reduce((m, c) => Math.max(m, c.high), -Infinity);
+  const low24h = sorted.reduce((m, c) => Math.min(m, c.low), Infinity);
+  const volume24h = sorted.reduce((s, c) => s + c.volume, 0);
   const change = first.open ? ((last.close - first.open) / first.open) * 100 : 0;
-  const livePrice = data.prices?.find((p) => p.pair === pair)?.price ?? last.close;
+  const livePrice = data?.prices?.find((p) => p.pair === pair)?.price ?? last.close;
   return {
     price: livePrice,
     change24hPct: change,

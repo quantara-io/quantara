@@ -139,7 +139,7 @@ describe("GET /market", () => {
     const app = await loadApp();
     const res = await app.request("/market");
     expect(res.status).toBe(200);
-    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus", "1m", 60);
+    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus", "1m", 60, undefined);
   });
 
   it("forwards pair and exchange query params", async () => {
@@ -153,7 +153,7 @@ describe("GET /market", () => {
     const app = await loadApp();
     const res = await app.request("/market?pair=ETH/USDT&exchange=kraken");
     expect(res.status).toBe(200);
-    expect(getMarketMock).toHaveBeenCalledWith("ETH/USDT", "kraken", "1m", 60);
+    expect(getMarketMock).toHaveBeenCalledWith("ETH/USDT", "kraken", "1m", 60, undefined);
   });
 
   it("forwards a supported timeframe and a custom limit", async () => {
@@ -167,7 +167,7 @@ describe("GET /market", () => {
     const app = await loadApp();
     const res = await app.request("/market?timeframe=1h&limit=80");
     expect(res.status).toBe(200);
-    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus", "1h", 80);
+    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus", "1h", 80, undefined);
   });
 
   it("rejects an unsupported timeframe", async () => {
@@ -186,6 +186,41 @@ describe("GET /market", () => {
     expect(tooBig.status).toBe(400);
     const garbage = await app.request("/market?limit=abc");
     expect(garbage.status).toBe(400);
+    expect(getMarketMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards a valid before param to getMarket", async () => {
+    getMarketMock.mockResolvedValue({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      prices: [],
+      candles: [],
+      fearGreed: null,
+    });
+    const app = await loadApp();
+    const beforeMs = 1700000000000;
+    const res = await app.request(`/market?before=${beforeMs}`);
+    expect(res.status).toBe(200);
+    expect(getMarketMock).toHaveBeenCalledWith("BTC/USDT", "binanceus", "1m", 60, beforeMs);
+  });
+
+  it("rejects before=0 (non-positive integer)", async () => {
+    const app = await loadApp();
+    const res = await app.request("/market?before=0");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getMarketMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects before=abc (non-numeric)", async () => {
+    const app = await loadApp();
+    const res = await app.request("/market?before=abc");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
     expect(getMarketMock).not.toHaveBeenCalled();
   });
 });
