@@ -27,7 +27,7 @@ import {
   GoneException,
 } from "@aws-sdk/client-apigatewaymanagementapi";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, QueryCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { DynamoDBStreamHandler, DynamoDBRecord } from "aws-lambda";
 import pino from "pino";
@@ -79,9 +79,12 @@ interface EventsRegistryRow {
 }
 
 /**
- * Scan connection-registry for all rows where channel = "events".
- * Full-table scan with FilterExpression — acceptable: registry is small
- * (bounded by active WebSocket connections which API GW limits to ~500k).
+ * Look up all `events`-channel connections via the connection-registry
+ * `channel-index` GSI. Every PipelineEvent triggers this lookup, so a
+ * Scan-with-FilterExpression would be 100-1000× the rate of signals-fanout
+ * (events fire on every indicator update / signal emit / ratification /
+ * news enrich). The GSI lets us Query a single partition (`events`) and
+ * read back exactly the matching rows.
  */
 export async function findEventSubscribers(): Promise<EventsRegistryRow[]> {
   const rows: EventsRegistryRow[] = [];
@@ -89,9 +92,10 @@ export async function findEventSubscribers(): Promise<EventsRegistryRow[]> {
 
   do {
     const result = await ddb.send(
-      new ScanCommand({
+      new QueryCommand({
         TableName: TABLE_CONNECTION_REGISTRY,
-        FilterExpression: "#ch = :events",
+        IndexName: "channel-index",
+        KeyConditionExpression: "#ch = :events",
         ExpressionAttributeNames: { "#ch": "channel" },
         ExpressionAttributeValues: { ":events": "events" },
         ExclusiveStartKey: lastKey,

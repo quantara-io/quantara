@@ -18,7 +18,11 @@ import { getAccessToken } from "../lib/auth";
 // Config
 // ---------------------------------------------------------------------------
 
-const WS_BASE = import.meta.env.VITE_WS_BASE ?? "";
+// Configured at build time via VITE_WS_BASE; falls back to a sensible dev URL
+// (matches the Genie page pattern). Without this, builds that forget to set
+// VITE_WS_BASE produce a malformed URL like "?channel=events&token=..." which
+// never reaches API Gateway.
+const WS_BASE = (import.meta.env.VITE_WS_BASE as string | undefined) ?? "wss://ws.dev.quantara.io";
 const MAX_EVENTS = 500;
 
 // ---------------------------------------------------------------------------
@@ -49,10 +53,28 @@ const ALL_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"] 
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract the relevant pair(s) from any event type. */
+/**
+ * Extract the relevant trading pair(s) from any event type.
+ *
+ * `news-enriched` events carry `mentionedPairs` from `tagPairs()`, which
+ * returns BARE SYMBOLS ("BTC", "ETH"). The filter UI uses full trading
+ * pairs ("BTC/USDT"). Normalize the news side to trading pairs by
+ * suffixing each symbol against the configured ALL_PAIRS list — that
+ * way news events match the active-pair filter the same way per-pair
+ * events do.
+ */
 function eventPairs(event: PipelineEvent): string[] {
   if ("pair" in event) return [event.pair];
-  if ("mentionedPairs" in event) return event.mentionedPairs;
+  if ("mentionedPairs" in event) {
+    const tradingPairs = ALL_PAIRS as readonly string[];
+    return event.mentionedPairs.flatMap((symbol) => {
+      // If already a trading pair, pass through; else find the matching pair
+      // (e.g. "BTC" → "BTC/USDT").
+      if (symbol.includes("/")) return [symbol];
+      const match = tradingPairs.find((p) => p.startsWith(`${symbol}/`));
+      return match ? [match] : [];
+    });
+  }
   return [];
 }
 

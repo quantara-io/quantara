@@ -155,9 +155,7 @@ describe("emitPipelineEventSafe", () => {
     // Allow the rejected promise to settle.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining("ratification-fired"),
-    );
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("ratification-fired"));
 
     consoleSpy.mockRestore();
   });

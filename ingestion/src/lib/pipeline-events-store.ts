@@ -57,8 +57,6 @@ export async function emitPipelineEvent(event: PipelineEvent): Promise<void> {
  */
 export function emitPipelineEventSafe(event: PipelineEvent): void {
   emitPipelineEvent(event).catch((err: unknown) => {
-    console.warn(
-      `[PipelineEvents] Failed to emit ${event.type} event: ${(err as Error).message}`,
-    );
+    console.warn(`[PipelineEvents] Failed to emit ${event.type} event: ${(err as Error).message}`);
   });
 }
