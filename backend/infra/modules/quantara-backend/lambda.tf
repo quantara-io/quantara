@@ -192,6 +192,41 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
   })
 }
 
+# Write perms for the admin /debug/* endpoints (manual debug controls page,
+# PR #208). These are best-effort, low-frequency operator actions:
+#
+#   - `inject-sentiment-shock`   → PutItem `ratifications`
+#   - `replay-news-enrichment`   → PutItem `ratifications`
+#   - `force-ratification` etc.  → PutItem `ratifications`
+#
+# Every debug endpoint also goes through `reserveIdempotency()` first, which
+# does a conditional PutItem on `ingestion_metadata` keyed
+# `admin-debug-idem#*` to prevent double-fires within a 60s window — so all
+# of them need PutItem on metadata regardless of which target table they
+# ultimately write to.
+#
+# Kept separate from `lambda_admin_ops` (which is read-only by intent) so a
+# future reader can see that the API role's WRITE blast radius for admin
+# routes is limited to these two tables on these specific endpoints.
+resource "aws_iam_role_policy" "lambda_admin_debug_writes" {
+  name = "${local.prefix}-admin-debug-writes"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["dynamodb:PutItem"]
+        Resource = [
+          aws_dynamodb_table.ingestion_metadata.arn,
+          aws_dynamodb_table.ratifications.arn,
+        ]
+      },
+    ]
+  })
+}
+
 # Build the app from source
 locals {
   source_hash = sha256(join("", [
