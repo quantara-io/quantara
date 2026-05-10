@@ -482,6 +482,7 @@ jobs:
           context: .
           file: ingestion/Dockerfile
           push: true
+          platforms: linux/arm64
           tags: |
             ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}:latest
             ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
