@@ -14,6 +14,9 @@ import {
   CloudWatchLogsClient,
   GetLogEventsCommand,
   DescribeLogStreamsCommand,
+  StartQueryCommand,
+  GetQueryResultsCommand,
+  QueryStatus,
 } from "@aws-sdk/client-cloudwatch-logs";
 import { LambdaClient, GetFunctionCommand } from "@aws-sdk/client-lambda";
 import { SSMClient, GetParameterCommand, PutParameterCommand } from "@aws-sdk/client-ssm";
@@ -2149,20 +2152,121 @@ async function getFargateHealth(windowStart: Date, windowEnd: Date): Promise<Far
   return { runningCount, desiredCount, lastRestartAt, cpuUtilizationPct, memoryUtilizationPct };
 }
 
+/** Maximum milliseconds spent polling for a Logs Insights query result.
+ *  Abort and return null when exceeded so the dashboard endpoint stays fast. */
+const INSIGHTS_POLL_TIMEOUT_MS = 3_000;
+/** Interval between Insights status polls. */
+const INSIGHTS_POLL_INTERVAL_MS = 250;
+
+/**
+ * Run a CloudWatch Logs Insights query against the ingestion watchdog log group
+ * and return restart counts per exchange over the given window.
+ *
+ * The watchdog emits: [Watchdog] Restarting stream <exchange>#<pair> (…)
+ * We `stats count() by exchange` after splitting that prefix.
+ *
+ * Returns null per exchange on timeout or IAM/permissions errors.
+ * Abort after INSIGHTS_POLL_TIMEOUT_MS to keep the dashboard endpoint under budget.
+ */
+export async function getExchangeRestartCounts(
+  windowStart: Date,
+  windowEnd: Date,
+): Promise<Record<string, number> | null> {
+  const logGroupName = `/ecs/${PREFIX}-ingestion`;
+  // Extract the exchange name from the stream key (format: <exchange>:<pair>).
+  // The watchdog log line: [Watchdog] Restarting stream <exchange>:<pair> (no data for …)
+  // Key shape comes from stream.ts: `${exchangeId}:${pair}` (colon separator, not #).
+  const queryString = [
+    "fields @message",
+    "| filter @message like /\\[Watchdog\\] Restarting stream /",
+    "| parse @message '[Watchdog] Restarting stream *:* ' as exchange, rest",
+    "| stats count() as restartCount by exchange",
+  ].join(" ");
+
+  let queryId: string | undefined;
+  try {
+    const startResult = await cwLogs.send(
+      new StartQueryCommand({
+        logGroupName,
+        startTime: Math.floor(windowStart.getTime() / 1000),
+        endTime: Math.floor(windowEnd.getTime() / 1000),
+        queryString,
+      }),
+    );
+    queryId = startResult.queryId;
+  } catch {
+    // IAM denied, log group missing, or transient — return null gracefully.
+    return null;
+  }
+
+  if (!queryId) return null;
+
+  // Poll for results with a hard timeout.
+  const deadline = Date.now() + INSIGHTS_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, INSIGHTS_POLL_INTERVAL_MS));
+    try {
+      const result = await cwLogs.send(new GetQueryResultsCommand({ queryId }));
+      const status = result.status;
+      if (
+        status === QueryStatus.Running ||
+        status === QueryStatus.Scheduled ||
+        status === QueryStatus.Unknown
+      ) {
+        continue;
+      }
+      if (status !== QueryStatus.Complete) {
+        // Failed, Cancelled, or other terminal non-complete state.
+        return null;
+      }
+      // Build exchange → count map from the result rows.
+      const counts: Record<string, number> = {};
+      for (const row of result.results ?? []) {
+        let exchange: string | undefined;
+        let count: number | undefined;
+        for (const field of row) {
+          if (field.field === "exchange") exchange = field.value;
+          if (field.field === "restartCount") count = Number(field.value);
+        }
+        if (exchange && count !== undefined && Number.isFinite(count)) {
+          counts[exchange] = count;
+        }
+      }
+      return counts;
+    } catch {
+      return null;
+    }
+  }
+  // Timed out — return null so the caller fills restartCount: null.
+  return null;
+}
+
 export async function getPipelineHealth(windowHours = 24): Promise<PipelineHealth> {
   const windowEnd = new Date();
   const windowStart = new Date(windowEnd.getTime() - windowHours * 60 * 60 * 1000);
 
   // --- Exchange health ---
-  const exchangeEntries = await Promise.all(
-    HEALTH_EXCHANGES.map(async (exchange) => {
-      const lastDataAt = await getExchangeLastDataAt(exchange);
-      const { streamHealth, stalenessSec } = toStreamHealth(lastDataAt, windowEnd.getTime());
-      // restartCount is null until the watchdog Insights query lands (see #212).
-      return [exchange, { lastDataAt, streamHealth, stalenessSec, restartCount: null }] as const;
-    }),
-  );
-  const exchanges = Object.fromEntries(exchangeEntries) as Record<Exchange, ExchangeHealth>;
+  // Run the Insights query concurrently with per-exchange DDB queries.
+  // getExchangeRestartCounts returns null on timeout or IAM error (restartCount stays null).
+  const [exchangeEntries, restartCountMap] = await Promise.all([
+    Promise.all(
+      HEALTH_EXCHANGES.map(async (exchange) => {
+        const lastDataAt = await getExchangeLastDataAt(exchange);
+        const { streamHealth, stalenessSec } = toStreamHealth(lastDataAt, windowEnd.getTime());
+        return [exchange, { lastDataAt, streamHealth, stalenessSec }] as const;
+      }),
+    ),
+    getExchangeRestartCounts(windowStart, windowEnd),
+  ]);
+  const exchanges = Object.fromEntries(
+    exchangeEntries.map(([exchange, health]) => [
+      exchange,
+      {
+        ...health,
+        restartCount: restartCountMap?.[exchange] ?? null,
+      } satisfies ExchangeHealth,
+    ]),
+  ) as Record<Exchange, ExchangeHealth>;
 
   // --- Quorum ---
   // Aggregate is a weighted average: sum(barsWithQuorum) / sum(totalBars)
