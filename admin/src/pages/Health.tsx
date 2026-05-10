@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { GLOSSARY } from "@quantara/shared";
 
 import { apiFetch } from "../lib/api";
+import { HelpTooltip } from "../components/HelpTooltip";
 
 // ---------------------------------------------------------------------------
 // Types (mirrors admin.service.ts PipelineHealth)
@@ -134,11 +136,17 @@ function ExchangePanel({ exchanges }: { exchanges: Record<string, ExchangeHealth
       <table className="w-full text-xs">
         <thead>
           <tr className="text-slate-500">
-            {["Exchange", "Status", "Last data", "Staleness"].map((h) => (
-              <th key={h} className="text-left font-medium pb-2">
-                {h}
-              </th>
-            ))}
+            <th className="text-left font-medium pb-2">Exchange</th>
+            <th className="text-left font-medium pb-2">
+              <span className="inline-flex items-center gap-1">
+                Status
+                <HelpTooltip label={GLOSSARY.streamHealth.label}>
+                  {GLOSSARY.streamHealth.body}
+                </HelpTooltip>
+              </span>
+            </th>
+            <th className="text-left font-medium pb-2">Last data</th>
+            <th className="text-left font-medium pb-2">Staleness</th>
           </tr>
         </thead>
         <tbody>
@@ -180,6 +188,10 @@ function QuorumHeatmap({ quorum }: { quorum: QuorumHealth }) {
 
   return (
     <Card title="Quorum success rate (pair × timeframe)">
+      <p className="text-[11px] text-slate-600 mb-2 inline-flex items-center gap-1">
+        ≥2 of 3 exchanges must agree on each bar close.
+        <HelpTooltip label={GLOSSARY.quorum.label}>{GLOSSARY.quorum.body}</HelpTooltip>
+      </p>
       <div className="overflow-x-auto">
         <table className="text-xs border-separate border-spacing-1">
           <thead>
@@ -227,11 +239,18 @@ function LambdaTable({ lambdas }: { lambdas: Record<string, LambdaHealth> }) {
       <table className="w-full text-xs">
         <thead>
           <tr className="text-slate-500">
-            {["Function", "Invocations", "Error rate", "Avg duration", "Throttles"].map((h) => (
-              <th key={h} className="text-left font-medium pb-2">
-                {h}
-              </th>
-            ))}
+            <th className="text-left font-medium pb-2">Function</th>
+            <th className="text-left font-medium pb-2">Invocations</th>
+            <th className="text-left font-medium pb-2">Error rate</th>
+            <th className="text-left font-medium pb-2">Avg duration</th>
+            <th className="text-left font-medium pb-2">
+              <span className="inline-flex items-center gap-1">
+                Throttles
+                <HelpTooltip label={GLOSSARY.lambdaThrottles.label}>
+                  {GLOSSARY.lambdaThrottles.body}
+                </HelpTooltip>
+              </span>
+            </th>
           </tr>
         </thead>
         <tbody>

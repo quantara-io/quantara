@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { PAIRS } from "@quantara/shared";
+import { PAIRS, GLOSSARY } from "@quantara/shared";
+
 import { apiFetch } from "../lib/api";
+import { HelpTooltip } from "../components/HelpTooltip";
 
 // ---------------------------------------------------------------------------
 // Types (mirror backend response shape)
@@ -100,8 +102,11 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
 
   return (
     <SectionCard title="Confidence Calibration">
-      <p className="text-xs text-slate-500 mb-3">
+      <p className="text-xs text-slate-500 mb-3 inline-flex items-center gap-1">
         Stated confidence (x) vs realized win rate (bar). Diagonal = perfect calibration.
+        <HelpTooltip label={GLOSSARY.confidenceCalibration.label}>
+          {GLOSSARY.confidenceCalibration.body}
+        </HelpTooltip>
       </p>
 
       {/* Simple bar chart */}
@@ -155,11 +160,15 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
         <table className="w-full text-xs">
           <thead>
             <tr className="text-slate-500">
-              {["Bin", "Avg Conf", "Win Rate", "Signals"].map((h) => (
-                <th key={h} className="text-left font-medium pb-2">
-                  {h}
-                </th>
-              ))}
+              <th className="text-left font-medium pb-2">Bin</th>
+              <th className="text-left font-medium pb-2">Avg Conf</th>
+              <th className="text-left font-medium pb-2">
+                <span className="inline-flex items-center gap-1">
+                  Win Rate
+                  <HelpTooltip label={GLOSSARY.winRate.label}>{GLOSSARY.winRate.body}</HelpTooltip>
+                </span>
+              </th>
+              <th className="text-left font-medium pb-2">Signals</th>
             </tr>
           </thead>
           <tbody>
@@ -212,13 +221,24 @@ function RulesSection({
     return sortDir === "desc" ? -diff : diff;
   });
 
-  const SortHeader = ({ k, label }: { k: RuleSortKey; label: string }) => (
+  const SortHeader = ({
+    k,
+    label,
+    tooltip,
+  }: {
+    k: RuleSortKey;
+    label: string;
+    tooltip?: React.ReactNode;
+  }) => (
     <th
       className="text-left font-medium pb-2 cursor-pointer select-none hover:text-slate-300"
       onClick={() => toggleSort(k)}
     >
-      {label}
-      {sortKey === k ? (sortDir === "desc" ? " v" : " ^") : ""}
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {tooltip}
+        {sortKey === k ? (sortDir === "desc" ? " v" : " ^") : ""}
+      </span>
     </th>
   );
 
@@ -237,7 +257,15 @@ function RulesSection({
                   <tr className="text-slate-500">
                     <th className="text-left font-medium pb-2">Rule</th>
                     <SortHeader k="fireCount" label="Fires" />
-                    <SortHeader k="tpRate" label="TP Rate" />
+                    <SortHeader
+                      k="tpRate"
+                      label="TP Rate"
+                      tooltip={
+                        <HelpTooltip label={GLOSSARY.tpRate.label}>
+                          {GLOSSARY.tpRate.body}
+                        </HelpTooltip>
+                      }
+                    />
                     <SortHeader k="avgConfidence" label="Avg Conf" />
                   </tr>
                 </thead>
@@ -260,8 +288,11 @@ function RulesSection({
 
         {/* Co-occurrence table */}
         <div>
-          <p className="text-[11px] text-slate-500 mb-2">
+          <p className="text-[11px] text-slate-500 mb-2 inline-flex items-center gap-1">
             Pairwise rule co-occurrence (rules that fire together on the same signal).
+            <HelpTooltip label={GLOSSARY.coOccurrence.label}>
+              {GLOSSARY.coOccurrence.body}
+            </HelpTooltip>
           </p>
           {coOccurrence.length === 0 ? (
             <p className="text-sm text-slate-500 py-2">No co-occurrence data available.</p>
@@ -272,7 +303,14 @@ function RulesSection({
                   <tr className="text-slate-500">
                     <th className="text-left font-medium pb-2 w-1/2">Rule Pair</th>
                     <th className="text-left font-medium pb-2">Joint Count</th>
-                    <th className="text-left font-medium pb-2">TP Rate</th>
+                    <th className="text-left font-medium pb-2">
+                      <span className="inline-flex items-center gap-1">
+                        TP Rate
+                        <HelpTooltip label={GLOSSARY.tpRate.label}>
+                          {GLOSSARY.tpRate.body}
+                        </HelpTooltip>
+                      </span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -325,7 +363,12 @@ function RegimeSection({
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* ATR Quartile bars */}
         <div>
-          <p className="text-[11px] text-slate-500 mb-3">Win rate by ATR volatility quartile.</p>
+          <p className="text-[11px] text-slate-500 mb-3 inline-flex items-center gap-1">
+            Win rate by ATR volatility quartile.
+            <HelpTooltip label={GLOSSARY.volatilityQuartile.label}>
+              {GLOSSARY.volatilityQuartile.body}
+            </HelpTooltip>
+          </p>
           {byVolatility.length === 0 ? (
             <p className="text-sm text-slate-500 py-2">No ATR data available.</p>
           ) : (
@@ -355,8 +398,9 @@ function RegimeSection({
 
         {/* 24-hour heat strip */}
         <div>
-          <p className="text-[11px] text-slate-500 mb-3">
+          <p className="text-[11px] text-slate-500 mb-3 inline-flex items-center gap-1">
             Win rate by UTC hour of signal close time.
+            <HelpTooltip label={GLOSSARY.hourBucket.label}>{GLOSSARY.hourBucket.body}</HelpTooltip>
           </p>
           {byHour.length === 0 ? (
             <p className="text-sm text-slate-500 py-2">No hourly data available.</p>

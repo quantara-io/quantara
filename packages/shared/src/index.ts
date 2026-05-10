@@ -34,6 +34,9 @@ export {
   HAIKU_MODEL_TAG,
 } from "./constants/llm-pricing.js";
 
+export { GLOSSARY } from "./constants/glossary.js";
+export type { GlossaryEntry, GlossaryKey } from "./constants/glossary.js";
+
 // Signal interpretation helper — Phase B2 (#171)
 export { buildInterpretation } from "./signals/interpretation.js";
 

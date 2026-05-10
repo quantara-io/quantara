@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PAIRS } from "@quantara/shared";
+import { PAIRS, GLOSSARY } from "@quantara/shared";
+
 import { apiFetch } from "../lib/api";
+import { HelpTooltip } from "../components/HelpTooltip";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,9 +148,23 @@ function Modal({ row, onClose }: { row: RatificationRow; onClose: () => void }) 
             <KV k="invokedReason" v={row.invokedReason} />
             <KV k="latencyMs" v={row.latencyMs} />
             <KV k="costUsd" v={row.costUsd?.toFixed(6)} />
-            <KV k="cacheHit" v={String(row.cacheHit)} />
+            <KV
+              k="cacheHit"
+              v={String(row.cacheHit)}
+              tooltip={
+                <HelpTooltip label={GLOSSARY.cacheHit.label}>{GLOSSARY.cacheHit.body}</HelpTooltip>
+              }
+            />
             <KV k="validationOk" v={String(row.validationOk)} />
-            <KV k="fellBackToAlgo" v={String(row.fellBackToAlgo)} />
+            <KV
+              k="fellBackToAlgo"
+              v={String(row.fellBackToAlgo)}
+              tooltip={
+                <HelpTooltip label={GLOSSARY.fellBackToAlgo.label}>
+                  {GLOSSARY.fellBackToAlgo.body}
+                </HelpTooltip>
+              }
+            />
             <KV k="model" v={row.llmModel ?? "—"} />
           </Section>
 
@@ -182,10 +198,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function KV({ k, v }: { k: string; v: unknown }) {
+function KV({ k, v, tooltip }: { k: string; v: unknown; tooltip?: React.ReactNode }) {
   return (
     <div className="flex gap-2">
-      <span className="text-slate-500 min-w-[140px]">{k}</span>
+      <span className="text-slate-500 min-w-[140px] inline-flex items-center gap-1">
+        {k}
+        {tooltip}
+      </span>
       <span className="text-slate-200 break-all">{String(v)}</span>
     </div>
   );
@@ -293,15 +312,26 @@ export function Ratifications() {
     }
   }
 
-  function SortHeader({ col, label }: { col: keyof RatificationRow; label: string }) {
+  function SortHeader({
+    col,
+    label,
+    tooltip,
+  }: {
+    col: keyof RatificationRow;
+    label: string;
+    tooltip?: React.ReactNode;
+  }) {
     const active = sortCol === col;
     return (
       <th
         onClick={() => toggleSort(col)}
         className="px-3 py-2 text-left text-[10px] uppercase tracking-wider text-slate-500 cursor-pointer select-none hover:text-slate-300 whitespace-nowrap"
       >
-        {label}
-        {active && <span className="ml-1 text-cyan-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
+        <span className="inline-flex items-center gap-1">
+          {label}
+          {tooltip}
+          {active && <span className="text-cyan-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
+        </span>
       </th>
     );
   }
@@ -395,11 +425,27 @@ export function Ratifications() {
               <SortHeader col="timeframe" label="TF" />
               <SortHeader col="triggerReason" label="Trigger" />
               <SortHeader col="llmModel" label="Model" />
-              <SortHeader col="cacheHit" label="Cache?" />
+              <SortHeader
+                col="cacheHit"
+                label="Cache?"
+                tooltip={
+                  <HelpTooltip label={GLOSSARY.cacheHit.label}>
+                    {GLOSSARY.cacheHit.body}
+                  </HelpTooltip>
+                }
+              />
               <SortHeader col="latencyMs" label="Latency" />
               <SortHeader col="costUsd" label="Cost" />
               <SortHeader col="algoCandidateType" label="Algo" />
-              <SortHeader col="ratifiedType" label="LLM" />
+              <SortHeader
+                col="ratifiedType"
+                label="LLM"
+                tooltip={
+                  <HelpTooltip label={GLOSSARY.ratificationVerdict.label}>
+                    {GLOSSARY.ratificationVerdict.body}
+                  </HelpTooltip>
+                }
+              />
               <SortHeader col="validationOk" label="Valid?" />
             </tr>
           </thead>
