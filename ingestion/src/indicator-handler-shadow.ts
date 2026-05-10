@@ -2,7 +2,8 @@
  * Indicator Handler Shadow — Issue #133 (1m/5m data-collection path).
  *
  * Triggered by DDB Streams on `quantara-{env}-candles` with FilterCriteria:
- *   { dynamodb.NewImage.source.S = "live", dynamodb.NewImage.timeframe.S in [1m,5m] }
+ *   { dynamodb.NewImage.source.S in ["live", "live-synthesized"],
+ *     dynamodb.NewImage.timeframe.S in [1m,5m] }
  *
  * This handler is intentionally separate from `indicator-handler.ts` (the
  * production 15m/1h/4h/1d path) to ensure:
@@ -105,7 +106,7 @@ interface StreamCandle {
   close: number;
   volume: number;
   symbol: string;
-  source: "live" | "backfill";
+  source: "live" | "live-synthesized" | "backfill";
 }
 
 // ---------------------------------------------------------------------------
@@ -123,9 +124,10 @@ export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent)
 
     // FilterCriteria should have excluded non-shadow timeframes and non-live
     // sources, but guard defensively — belt and suspenders against misconfigured
-    // ESM or stale FilterCriteria.
+    // ESM or stale FilterCriteria. Both `live` and `live-synthesized` are
+    // accepted (Kraken silent-window carry-forward; #224).
     if (!(SHADOW_TIMEFRAMES as string[]).includes(candle.timeframe)) continue;
-    if (candle.source !== "live") continue;
+    if (candle.source !== "live" && candle.source !== "live-synthesized") continue;
 
     try {
       await processShadowCandleClose(candle);

@@ -149,7 +149,14 @@ resource "aws_lambda_function" "indicator_handler" {
 # ---------------------------------------------------------------------------
 # DDB Streams event source mapping: candles → indicator_handler
 #
-# FilterCriteria: only fire on live candles with signal timeframes.
+# FilterCriteria: fire on live OR live-synthesized candles with signal
+# timeframes. The DDB Streams `S` filter is exact-string match — both
+# values must be enumerated explicitly, NOT relied on as "anything except
+# backfill". `live-synthesized` is emitted by the Kraken silent-window
+# carry-forward logic in stream.ts (#224) and must vote in close-quorum
+# alongside `live` candles, otherwise the 2-of-3 quorum drops to 1-of-2
+# during Kraken silences.
+#
 # batch_size=10 and maximum_batching_window_in_seconds=1 reduce the
 # number of Lambda invocations while keeping latency < ~5s.
 # maximum_retry_attempts=3 limits retries for permanent Lambda errors
@@ -168,7 +175,7 @@ resource "aws_lambda_event_source_mapping" "indicator_from_candles" {
         dynamodb = {
           NewImage = {
             timeframe = { S = ["15m", "1h", "4h", "1d"] }
-            source    = { S = ["live"] }
+            source    = { S = ["live", "live-synthesized"] }
           }
         }
       })
