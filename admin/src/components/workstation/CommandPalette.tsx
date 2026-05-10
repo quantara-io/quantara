@@ -71,13 +71,6 @@ const JUMP_ROWS: JumpRow[] = [
     href: "#positions",
     action: "noop",
   },
-  {
-    id: "settings",
-    label: "Settings",
-    sublabel: "Account settings",
-    href: "/settings",
-    action: "navigate",
-  },
 ];
 
 // ── Symbol meta lookup ────────────────────────────────────────────────────────
@@ -136,9 +129,6 @@ export function CommandPalette({ open, onClose, onSelectSymbol }: CommandPalette
     }
   }, [open]);
 
-  // Close on Escape is handled by cmdk's Command.Dialog via the onOpenChange
-  // prop; we additionally close on backdrop click (see overlay below).
-
   const handleSelectSymbol = useCallback(
     (symbol: string) => {
       const updated = pushRecentSymbol(symbol);
@@ -164,9 +154,17 @@ export function CommandPalette({ open, onClose, onSelectSymbol }: CommandPalette
 
   return (
     // Backdrop — dim overlay, clicking closes the palette.
+    // Escape on the wrapper closes the palette (cmdk's base Command primitive
+    // does not handle Escape; only Command.Dialog wraps Radix dialog).
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] px-4"
       aria-hidden="false"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+      }}
     >
       {/* Dim backdrop */}
       <div
@@ -184,7 +182,7 @@ export function CommandPalette({ open, onClose, onSelectSymbol }: CommandPalette
         // Prevent backdrop click from firing through the panel.
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <Command label="Command palette" shouldFilter={query.trim().length > 0} loop>
+        <Command label="Command palette" loop>
           {/* ── Search input ── */}
           <div className="flex items-center gap-2.5 px-4 border-b border-line">
             <SearchIcon />
@@ -213,60 +211,56 @@ export function CommandPalette({ open, onClose, onSelectSymbol }: CommandPalette
               No results for &quot;{query}&quot;
             </Command.Empty>
 
-            {/* Recent symbols section — shown when no query */}
-            {!query && (
-              <Command.Group
-                heading="Recent"
-                className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2"
-              >
-                {recent.map((sym, idx) => (
-                  <Command.Item
-                    key={sym}
-                    value={`recent-${sym}`}
-                    onSelect={() => handleSelectSymbol(sym)}
-                    className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
-                  >
-                    <span className="w-6 h-6 rounded-full bg-brand-soft flex items-center justify-center shrink-0">
-                      <span className="text-2xs font-semibold text-brand">{sym[0]}</span>
-                    </span>
-                    <span className="flex-1 min-w-0">
-                      <span className="font-medium">{sym}</span>
-                      <span className="ml-2 text-muted2 text-xs">{symbolLabel(sym)}</span>
-                    </span>
-                    {idx < 9 && (
-                      <kbd className="text-2xs text-muted2 font-mono bg-sunken border border-line rounded px-1 shrink-0">
-                        ⌘{idx + 1}
-                      </kbd>
-                    )}
-                  </Command.Item>
-                ))}
-              </Command.Group>
-            )}
+            {/* Recent symbols — always mounted so cmdk can fuzzy-filter against the typed query */}
+            <Command.Group
+              heading="Recent"
+              className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2"
+            >
+              {recent.map((sym, idx) => (
+                <Command.Item
+                  key={sym}
+                  value={`${sym} ${symbolLabel(sym)}`}
+                  onSelect={() => handleSelectSymbol(sym)}
+                  className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
+                >
+                  <span className="w-6 h-6 rounded-full bg-brand-soft flex items-center justify-center shrink-0">
+                    <span className="text-2xs font-semibold text-brand">{sym[0]}</span>
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="font-medium">{sym}</span>
+                    <span className="ml-2 text-muted2 text-xs">{symbolLabel(sym)}</span>
+                  </span>
+                  {idx < 9 && (
+                    <kbd className="text-2xs text-muted2 font-mono bg-sunken border border-line rounded px-1 shrink-0">
+                      ⌘{idx + 1}
+                    </kbd>
+                  )}
+                </Command.Item>
+              ))}
+            </Command.Group>
 
-            {/* Jump To section — shown when no query */}
-            {!query && (
-              <Command.Group
-                heading="Jump To"
-                className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
-              >
-                {JUMP_ROWS.map((row) => (
-                  <Command.Item
-                    key={row.id}
-                    value={`jump-${row.id}`}
-                    onSelect={() => handleSelectJump(row)}
-                    className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
-                  >
-                    <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0">
-                      <ArrowRightIcon />
-                    </span>
-                    <span className="flex-1 min-w-0">
-                      <span className="font-medium">{row.label}</span>
-                      <span className="ml-2 text-muted2 text-xs">{row.sublabel}</span>
-                    </span>
-                  </Command.Item>
-                ))}
-              </Command.Group>
-            )}
+            {/* Jump To — always mounted so cmdk can fuzzy-filter against the typed query */}
+            <Command.Group
+              heading="Jump To"
+              className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
+            >
+              {JUMP_ROWS.map((row) => (
+                <Command.Item
+                  key={row.id}
+                  value={`${row.label} ${row.sublabel}`}
+                  onSelect={() => handleSelectJump(row)}
+                  className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
+                >
+                  <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0">
+                    <ArrowRightIcon />
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="font-medium">{row.label}</span>
+                    <span className="ml-2 text-muted2 text-xs">{row.sublabel}</span>
+                  </span>
+                </Command.Item>
+              ))}
+            </Command.Group>
           </Command.List>
 
           {/* ── Footer hint ── */}
