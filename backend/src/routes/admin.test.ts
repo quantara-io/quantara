@@ -14,7 +14,8 @@ const getPnlSimulationMock = vi.fn();
 const getPipelineHealthMock = vi.fn();
 const getGenieDeepDiveMock = vi.fn();
 const forceRatificationMock = vi.fn();
-const replayNewsEnrichmentMock = vi.fn();
+const previewNewsEnrichmentMock = vi.fn();
+const reenrichNewsMock = vi.fn();
 const injectSentimentShockMock = vi.fn();
 const getActivityMock = vi.fn();
 const getShadowSignalsMock = vi.fn();
@@ -48,7 +49,8 @@ vi.mock("../services/genie-deepdive.service.js", () => ({
 
 vi.mock("../services/admin-debug.service.js", () => ({
   forceRatification: forceRatificationMock,
-  replayNewsEnrichment: replayNewsEnrichmentMock,
+  previewNewsEnrichment: previewNewsEnrichmentMock,
+  reenrichNews: reenrichNewsMock,
   injectSentimentShock: injectSentimentShockMock,
 }));
 
@@ -84,7 +86,8 @@ beforeEach(() => {
   getPipelineHealthMock.mockReset();
   getGenieDeepDiveMock.mockReset();
   forceRatificationMock.mockReset();
-  replayNewsEnrichmentMock.mockReset();
+  previewNewsEnrichmentMock.mockReset();
+  reenrichNewsMock.mockReset();
   injectSentimentShockMock.mockReset();
   getActivityMock.mockReset();
   getShadowSignalsMock.mockReset();
@@ -1240,13 +1243,13 @@ describe("POST /debug/force-ratification", () => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /debug/replay-news-enrichment
+// POST /debug/preview-news-enrichment
 // ---------------------------------------------------------------------------
 
-describe("POST /debug/replay-news-enrichment", () => {
+describe("POST /debug/preview-news-enrichment", () => {
   it("returns 400 when newsId is missing", async () => {
     const app = await loadApp();
-    const res = await app.request("/debug/replay-news-enrichment", {
+    const res = await app.request("/debug/preview-news-enrichment", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -1254,26 +1257,26 @@ describe("POST /debug/replay-news-enrichment", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("BAD_REQUEST");
-    expect(replayNewsEnrichmentMock).not.toHaveBeenCalled();
+    expect(previewNewsEnrichmentMock).not.toHaveBeenCalled();
   });
 
   it("returns 400 when newsId is an empty string", async () => {
     const app = await loadApp();
-    const res = await app.request("/debug/replay-news-enrichment", {
+    const res = await app.request("/debug/preview-news-enrichment", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ newsId: "   " }),
     });
     expect(res.status).toBe(400);
-    expect(replayNewsEnrichmentMock).not.toHaveBeenCalled();
+    expect(previewNewsEnrichmentMock).not.toHaveBeenCalled();
   });
 
-  it("returns 200 with replay result — mutated is always false", async () => {
+  it("returns 200 with preview result — mutated is always false", async () => {
     const mockResult = {
       newsId: "news-123",
       title: "BTC ETF approved",
       storedEnrichment: { sentiment: "bullish" },
-      replayedEnrichment: {
+      previewedEnrichment: {
         mentionedPairs: ["BTC"],
         sentiment: { score: 0.9, magnitude: 0.8, model: "anthropic.claude-haiku-4-5" },
         enrichedAt: "2026-05-09T12:00:00Z",
@@ -1282,9 +1285,9 @@ describe("POST /debug/replay-news-enrichment", () => {
       },
       mutated: false as const,
     };
-    replayNewsEnrichmentMock.mockResolvedValue(mockResult);
+    previewNewsEnrichmentMock.mockResolvedValue(mockResult);
     const app = await loadApp();
-    const res = await app.request("/debug/replay-news-enrichment", {
+    const res = await app.request("/debug/preview-news-enrichment", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ newsId: "news-123" }),
@@ -1294,22 +1297,148 @@ describe("POST /debug/replay-news-enrichment", () => {
     expect(body.success).toBe(true);
     expect(body.data.mutated).toBe(false);
     expect(body.data.newsId).toBe("news-123");
-    expect(replayNewsEnrichmentMock).toHaveBeenCalledWith({
+    expect(previewNewsEnrichmentMock).toHaveBeenCalledWith({
       newsId: "news-123",
       userId: "user_admin",
     });
   });
 
+  it("returns 409 when the service returns duplicate=true", async () => {
+    previewNewsEnrichmentMock.mockResolvedValue({
+      newsId: "news-123",
+      title: "",
+      storedEnrichment: null,
+      previewedEnrichment: {
+        mentionedPairs: [],
+        sentiment: { score: 0, magnitude: 0, model: "anthropic.claude-haiku-4-5" },
+        enrichedAt: "2026-05-09T12:00:00Z",
+        latencyMs: 0,
+        costUsd: 0,
+      },
+      mutated: false as const,
+      duplicate: true,
+    });
+    const app = await loadApp();
+    const res = await app.request("/debug/preview-news-enrichment", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "news-123" }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("DUPLICATE_REQUEST");
+  });
+
   it("is protected by requireAdmin — returns 403 for non-admin", async () => {
     currentAuth = { ...currentAuth, role: "user" };
     const app = await loadApp();
-    const res = await app.request("/debug/replay-news-enrichment", {
+    const res = await app.request("/debug/preview-news-enrichment", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ newsId: "news-123" }),
     });
     expect(res.status).toBe(403);
-    expect(replayNewsEnrichmentMock).not.toHaveBeenCalled();
+    expect(previewNewsEnrichmentMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /debug/reenrich-news
+// ---------------------------------------------------------------------------
+
+describe("POST /debug/reenrich-news", () => {
+  it("returns 400 when newsId is missing", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/reenrich-news", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ publishedAt: "2026-05-01T12:00:00Z" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(reenrichNewsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when publishedAt is missing", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/reenrich-news", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "news-123" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(reenrichNewsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when newsId is an empty string", async () => {
+    const app = await loadApp();
+    const res = await app.request("/debug/reenrich-news", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "   ", publishedAt: "2026-05-01T12:00:00Z" }),
+    });
+    expect(res.status).toBe(400);
+    expect(reenrichNewsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 with messageId and hint on success", async () => {
+    reenrichNewsMock.mockResolvedValue({
+      newsId: "news-123",
+      messageId: "sqs-msg-abc",
+      hint: "Re-enrichment queued. Typically completes within seconds as the enrichment Lambda picks up the message.",
+    });
+    const app = await loadApp();
+    const res = await app.request("/debug/reenrich-news", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "news-123", publishedAt: "2026-05-01T12:00:00Z" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { newsId: string; messageId: string; hint: string };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.messageId).toBe("sqs-msg-abc");
+    expect(body.data.hint).toMatch(/queued/i);
+    expect(reenrichNewsMock).toHaveBeenCalledWith({
+      newsId: "news-123",
+      publishedAt: "2026-05-01T12:00:00Z",
+      userId: "user_admin",
+    });
+  });
+
+  it("returns 409 when the service returns duplicate=true", async () => {
+    reenrichNewsMock.mockResolvedValue({
+      newsId: "news-123",
+      messageId: "",
+      hint: "",
+      duplicate: true,
+    });
+    const app = await loadApp();
+    const res = await app.request("/debug/reenrich-news", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "news-123", publishedAt: "2026-05-01T12:00:00Z" }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("DUPLICATE_REQUEST");
+  });
+
+  it("is protected by requireAdmin — returns 403 for non-admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/debug/reenrich-news", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newsId: "news-123", publishedAt: "2026-05-01T12:00:00Z" }),
+    });
+    expect(res.status).toBe(403);
+    expect(reenrichNewsMock).not.toHaveBeenCalled();
   });
 });
 

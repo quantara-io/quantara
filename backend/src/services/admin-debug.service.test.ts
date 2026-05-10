@@ -1,9 +1,10 @@
 /**
  * admin-debug.service.test.ts
  *
- * Tests for the three admin debug service functions:
+ * Tests for the admin debug service functions:
  *   - forceRatification
- *   - replayNewsEnrichment
+ *   - previewNewsEnrichment (formerly replayNewsEnrichment)
+ *   - reenrichNews
  *   - injectSentimentShock
  *
  * All AWS SDK calls are mocked at the module boundary. No real AWS calls.
@@ -29,6 +30,17 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
   QueryCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: "Query" })),
   GetCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: "Get" })),
   PutCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: "Put" })),
+  UpdateCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: "Update" })),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock SQS
+// ---------------------------------------------------------------------------
+
+const sqsSend = vi.fn();
+vi.mock("@aws-sdk/client-sqs", () => ({
+  SQSClient: vi.fn().mockImplementation(() => ({ send: sqsSend })),
+  SendMessageCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: "SendMessage" })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -78,12 +90,16 @@ beforeEach(() => {
   vi.resetModules();
   dynamoSend.mockReset();
   bedrockSend.mockReset();
+  sqsSend.mockReset();
   delete process.env.TABLE_SIGNALS_V2;
   delete process.env.TABLE_RATIFICATIONS;
   delete process.env.TABLE_NEWS_EVENTS;
   delete process.env.TABLE_SENTIMENT_AGGREGATES;
   delete process.env.TABLE_INGESTION_METADATA;
   delete process.env.TABLE_PREFIX;
+  delete process.env.ENRICHMENT_QUEUE_URL;
+  delete process.env.AWS_ACCOUNT_ID;
+  delete process.env.AWS_REGION;
 });
 
 // ---------------------------------------------------------------------------
@@ -267,18 +283,18 @@ describe("forceRatification", () => {
 });
 
 // ---------------------------------------------------------------------------
-// replayNewsEnrichment
+// previewNewsEnrichment (formerly replayNewsEnrichment)
 // ---------------------------------------------------------------------------
 
-describe("replayNewsEnrichment", () => {
+describe("previewNewsEnrichment", () => {
   it("returns duplicate=true when idempotency reservation fails", async () => {
     const err = Object.assign(new Error("conditional"), {
       name: "ConditionalCheckFailedException",
     });
     dynamoSend.mockRejectedValueOnce(err);
 
-    const { replayNewsEnrichment } = await import("./admin-debug.service.js");
-    const result = await replayNewsEnrichment({ newsId: "news-123", userId: "user_admin" });
+    const { previewNewsEnrichment } = await import("./admin-debug.service.js");
+    const result = await previewNewsEnrichment({ newsId: "news-123", userId: "user_admin" });
 
     expect(result.duplicate).toBe(true);
   });
@@ -287,9 +303,9 @@ describe("replayNewsEnrichment", () => {
     mockIdempotencyOk();
     dynamoSend.mockResolvedValueOnce({ Items: [] });
 
-    const { replayNewsEnrichment } = await import("./admin-debug.service.js");
+    const { previewNewsEnrichment } = await import("./admin-debug.service.js");
     await expect(
-      replayNewsEnrichment({ newsId: "nonexistent-id", userId: "user_admin" }),
+      previewNewsEnrichment({ newsId: "nonexistent-id", userId: "user_admin" }),
     ).rejects.toThrow("News record not found");
   });
 
@@ -313,17 +329,17 @@ describe("replayNewsEnrichment", () => {
         body: bedrockBody('{"score":0.9,"magnitude":0.85,"topic":"ETF approval"}'),
       });
 
-    const { replayNewsEnrichment } = await import("./admin-debug.service.js");
-    const result = await replayNewsEnrichment({ newsId: "news-123", userId: "user_admin" });
+    const { previewNewsEnrichment } = await import("./admin-debug.service.js");
+    const result = await previewNewsEnrichment({ newsId: "news-123", userId: "user_admin" });
 
     expect(result.newsId).toBe("news-123");
     expect(result.title).toBe("Bitcoin ETF approved by SEC");
     expect(result.mutated).toBe(false);
     expect(result.storedEnrichment).toEqual({ sentiment: "bullish", confidence: 0.9 });
-    expect(result.replayedEnrichment.mentionedPairs).toContain("BTC");
-    expect(result.replayedEnrichment.sentiment.score).toBeCloseTo(0.9);
-    expect(result.replayedEnrichment.sentiment.magnitude).toBeCloseTo(0.85);
-    expect(result.replayedEnrichment.sentiment.model).toBe("anthropic.claude-haiku-4-5");
+    expect(result.previewedEnrichment.mentionedPairs).toContain("BTC");
+    expect(result.previewedEnrichment.sentiment.score).toBeCloseTo(0.9);
+    expect(result.previewedEnrichment.sentiment.magnitude).toBeCloseTo(0.85);
+    expect(result.previewedEnrichment.sentiment.model).toBe("anthropic.claude-haiku-4-5");
 
     // Only the idempotency Put + the news Query should hit DDB; no record-level
     // mutation. Filter out the idempotency Put (`metaKey` field) when checking.
@@ -351,12 +367,114 @@ describe("replayNewsEnrichment", () => {
       body: bedrockBody('{"score":0.6,"magnitude":0.7,"topic":"protocol upgrade"}'),
     });
 
-    const { replayNewsEnrichment } = await import("./admin-debug.service.js");
-    const result = await replayNewsEnrichment({ newsId: "news-456", userId: "user_admin" });
+    const { previewNewsEnrichment } = await import("./admin-debug.service.js");
+    const result = await previewNewsEnrichment({ newsId: "news-456", userId: "user_admin" });
 
-    expect(result.replayedEnrichment.mentionedPairs).toContain("SOL");
-    expect(result.replayedEnrichment.sentiment.score).toBeCloseTo(0.6);
+    expect(result.previewedEnrichment.mentionedPairs).toContain("SOL");
+    expect(result.previewedEnrichment.sentiment.score).toBeCloseTo(0.6);
     expect(result.mutated).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reenrichNews
+// ---------------------------------------------------------------------------
+
+describe("reenrichNews", () => {
+  it("returns duplicate=true when idempotency reservation fails", async () => {
+    const err = Object.assign(new Error("conditional"), {
+      name: "ConditionalCheckFailedException",
+    });
+    dynamoSend.mockRejectedValueOnce(err);
+
+    const { reenrichNews } = await import("./admin-debug.service.js");
+    const result = await reenrichNews({
+      newsId: "news-123",
+      publishedAt: "2026-05-01T12:00:00Z",
+      userId: "user_admin",
+    });
+
+    expect(result.duplicate).toBe(true);
+    expect(result.messageId).toBe("");
+    // No DDB UpdateItem or SQS SendMessage should have been called.
+    expect(sqsSend).not.toHaveBeenCalled();
+  });
+
+  it("resets status to raw and sends SQS message on success", async () => {
+    process.env.ENRICHMENT_QUEUE_URL = "https://sqs.us-west-2.amazonaws.com/123/test-enrichment";
+    mockIdempotencyOk();
+    // UpdateItem succeeds
+    dynamoSend.mockResolvedValueOnce({});
+    // SQS SendMessage succeeds
+    sqsSend.mockResolvedValueOnce({ MessageId: "sqs-msg-id-abc" });
+
+    const { reenrichNews } = await import("./admin-debug.service.js");
+    const result = await reenrichNews({
+      newsId: "news-123",
+      publishedAt: "2026-05-01T12:00:00Z",
+      userId: "user_admin",
+    });
+
+    expect(result.newsId).toBe("news-123");
+    expect(result.messageId).toBe("sqs-msg-id-abc");
+    expect(result.hint).toMatch(/queued/i);
+    expect(result.duplicate).toBeUndefined();
+
+    // DDB: idempotency Put + UpdateItem
+    expect(dynamoSend).toHaveBeenCalledTimes(2);
+    const updateCall = dynamoSend.mock.calls[1][0] as {
+      _type: string;
+      UpdateExpression: string;
+    };
+    expect(updateCall._type).toBe("Update");
+    expect(updateCall.UpdateExpression).toContain(":raw");
+
+    // SQS: SendMessage
+    expect(sqsSend).toHaveBeenCalledTimes(1);
+    const sqsCall = sqsSend.mock.calls[0][0] as {
+      QueueUrl: string;
+      MessageBody: string;
+    };
+    expect(sqsCall.QueueUrl).toBe("https://sqs.us-west-2.amazonaws.com/123/test-enrichment");
+    const sqsBody = JSON.parse(sqsCall.MessageBody) as {
+      type: string;
+      data: { newsId: string; publishedAt: string };
+    };
+    expect(sqsBody.type).toBe("enrich_news");
+    expect(sqsBody.data.newsId).toBe("news-123");
+    expect(sqsBody.data.publishedAt).toBe("2026-05-01T12:00:00Z");
+  });
+
+  it("propagates DynamoDB UpdateItem errors", async () => {
+    mockIdempotencyOk();
+    dynamoSend.mockRejectedValueOnce(new Error("DDB access denied"));
+
+    const { reenrichNews } = await import("./admin-debug.service.js");
+    await expect(
+      reenrichNews({
+        newsId: "news-123",
+        publishedAt: "2026-05-01T12:00:00Z",
+        userId: "user_admin",
+      }),
+    ).rejects.toThrow("DDB access denied");
+
+    expect(sqsSend).not.toHaveBeenCalled();
+  });
+
+  it("propagates SQS SendMessage errors", async () => {
+    process.env.ENRICHMENT_QUEUE_URL = "https://sqs.us-west-2.amazonaws.com/123/test-enrichment";
+    mockIdempotencyOk();
+    dynamoSend.mockResolvedValueOnce({});
+    sqsSend.mockRejectedValueOnce(new Error("SQS access denied"));
+
+    const { reenrichNews } = await import("./admin-debug.service.js");
+    await expect(
+      reenrichNews({
+        newsId: "news-123",
+        publishedAt: "2026-05-01T12:00:00Z",
+        userId: "user_admin",
+      }),
+    ).rejects.toThrow("SQS access denied");
   });
 });
 

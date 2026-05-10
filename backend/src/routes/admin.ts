@@ -22,7 +22,8 @@ import { getPnlSimulation } from "../services/pnl-simulation.service.js";
 import { getGenieDeepDive } from "../services/genie-deepdive.service.js";
 import {
   forceRatification,
-  replayNewsEnrichment,
+  previewNewsEnrichment,
+  reenrichNews,
   injectSentimentShock,
 } from "../services/admin-debug.service.js";
 
@@ -619,14 +620,14 @@ admin.post("/debug/force-ratification", async (c) => {
 });
 
 /**
- * POST /api/admin/debug/replay-news-enrichment
+ * POST /api/admin/debug/preview-news-enrichment
  * Body: { newsId }
- * Re-runs Phase 5a enrichment (pair-tagging + sentiment) for the article.
- * Does NOT mutate the stored row — read-only diff tool. Server-side
- * idempotency: duplicate requests within 60s for the same (admin user,
- * newsId) collapse to 409.
+ * Re-runs Phase 5a enrichment (pair-tagging + sentiment) for the article
+ * in-memory and returns the recomputed result. Read-only diff tool — does
+ * not overwrite the stored row. Server-side idempotency: duplicate requests
+ * within 60s for the same (admin user, newsId) collapse to 409.
  */
-admin.post("/debug/replay-news-enrichment", async (c) => {
+admin.post("/debug/preview-news-enrichment", async (c) => {
   const body = await c.req.json<{ newsId?: unknown }>();
   const auth = c.get("auth");
 
@@ -640,7 +641,7 @@ admin.post("/debug/replay-news-enrichment", async (c) => {
     );
   }
 
-  const result = await replayNewsEnrichment({
+  const result = await previewNewsEnrichment({
     newsId: body.newsId.trim(),
     userId: auth.userId,
   });
@@ -652,7 +653,80 @@ admin.post("/debug/replay-news-enrichment", async (c) => {
         error: {
           code: "DUPLICATE_REQUEST",
           message:
-            "Duplicate replay-news-enrichment within 60s window for the same (user, newsId). The first request is still processing.",
+            "Duplicate preview-news-enrichment within 60s window for the same (user, newsId). The first request is still processing.",
+        },
+      },
+      409,
+    );
+  }
+
+  return c.json({ success: true, data: result });
+});
+
+/**
+ * POST /api/admin/debug/reenrich-news
+ * Body: { newsId, publishedAt }
+ * Resets the news_events row status to "raw" and publishes a message to the
+ * enrichment SQS queue so the enrichment Lambda re-processes the article and
+ * overwrites the stored enrichment fields. Async — re-enrichment typically
+ * completes within seconds. Server-side idempotency: duplicate requests within
+ * 60s for the same (admin user, newsId) collapse to 409.
+ */
+admin.post("/debug/reenrich-news", async (c) => {
+  const body = await c.req.json<{ newsId?: unknown; publishedAt?: unknown }>();
+  const auth = c.get("auth");
+
+  if (typeof body.newsId !== "string" || body.newsId.trim() === "") {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "newsId must be a non-empty string" },
+      },
+      400,
+    );
+  }
+
+  if (typeof body.publishedAt !== "string" || body.publishedAt.trim() === "") {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "publishedAt must be a non-empty string" },
+      },
+      400,
+    );
+  }
+  // publishedAt is a DDB sort key. Reject anything that isn't a parseable
+  // date — without this, a typo (e.g. "yesterday") is forwarded to DDB and
+  // would create a phantom row via the default UpdateCommand-creates-if-
+  // missing behavior. The service-layer ConditionExpression catches it too,
+  // but failing fast at the route gives a cleaner 400 instead of a 500.
+  if (!Number.isFinite(Date.parse(body.publishedAt))) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: "publishedAt must be a valid ISO 8601 date string",
+        },
+      },
+      400,
+    );
+  }
+
+  const result = await reenrichNews({
+    newsId: body.newsId.trim(),
+    publishedAt: body.publishedAt.trim(),
+    userId: auth.userId,
+  });
+
+  if (result.duplicate) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "DUPLICATE_REQUEST",
+          message:
+            "Duplicate reenrich-news within 60s window for the same (user, newsId). The first request is still processing.",
         },
       },
       409,

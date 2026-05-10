@@ -35,8 +35,10 @@ import {
   QueryCommand,
   GetCommand,
   PutCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { randomUUID, createHash } from "crypto";
 
 import { PAIRS } from "@quantara/shared";
@@ -470,19 +472,19 @@ function emptyForceResult(
 }
 
 // ---------------------------------------------------------------------------
-// 2. Replay news enrichment
+// 2. Preview news enrichment (read-only diff tool)
 // ---------------------------------------------------------------------------
 
-export interface ReplayNewsEnrichmentInput {
+export interface PreviewNewsEnrichmentInput {
   newsId: string;
   userId: string;
 }
 
-export interface ReplayNewsEnrichmentResult {
+export interface PreviewNewsEnrichmentResult {
   newsId: string;
   title: string;
   storedEnrichment: Record<string, unknown> | null;
-  replayedEnrichment: {
+  previewedEnrichment: {
     mentionedPairs: string[];
     sentiment: { score: number; magnitude: number; model: string };
     enrichedAt: string;
@@ -492,6 +494,16 @@ export interface ReplayNewsEnrichmentResult {
   mutated: false;
   duplicate?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Backwards-compat aliases (keep the old export names so existing callers and
+// tests compile without changes — remove in a follow-up once all call-sites
+// are updated).
+// ---------------------------------------------------------------------------
+/** @deprecated Use PreviewNewsEnrichmentInput */
+export type ReplayNewsEnrichmentInput = PreviewNewsEnrichmentInput;
+/** @deprecated Use PreviewNewsEnrichmentResult */
+export type ReplayNewsEnrichmentResult = PreviewNewsEnrichmentResult;
 
 const PAIR_PATTERNS: Record<string, RegExp> = {
   BTC: /\b(BTC|XBT|bitcoin)\b/i,
@@ -541,22 +553,24 @@ async function invokeHaikuForReplay<T>(
 }
 
 /**
- * Re-run Phase 5a enrichment (pair-tagging + sentiment) for a single news
- * article by newsId. Read-only — does NOT mutate the stored row.
+ * Preview Phase 5a enrichment (pair-tagging + sentiment) for a single news
+ * article by newsId. Read-only — does NOT mutate the stored row. Returns the
+ * recomputed enrichment alongside the stored enrichment so the caller can diff
+ * them in-place.
  */
-export async function replayNewsEnrichment(
-  input: ReplayNewsEnrichmentInput,
-): Promise<ReplayNewsEnrichmentResult> {
+export async function previewNewsEnrichment(
+  input: PreviewNewsEnrichmentInput,
+): Promise<PreviewNewsEnrichmentResult> {
   const { newsId, userId } = input;
 
-  const idemKey = buildIdempotencyKey(userId, "replay-news-enrichment", { newsId });
+  const idemKey = buildIdempotencyKey(userId, "preview-news-enrichment", { newsId });
   const reserved = await reserveIdempotency(idemKey);
   if (!reserved) {
     return {
       newsId,
       title: "",
       storedEnrichment: null,
-      replayedEnrichment: {
+      previewedEnrichment: {
         mentionedPairs: [],
         sentiment: { score: 0, magnitude: 0, model: HAIKU_MODEL_TAG },
         enrichedAt: new Date().toISOString(),
@@ -653,7 +667,7 @@ Include only pairs the article would influence — not just mentioned.`,
     newsId,
     title,
     storedEnrichment: (item["enrichment"] as Record<string, unknown> | null | undefined) ?? null,
-    replayedEnrichment: {
+    previewedEnrichment: {
       mentionedPairs,
       sentiment: { score: sentimentScore, magnitude: sentimentMagnitude, model: HAIKU_MODEL_TAG },
       enrichedAt: new Date().toISOString(),
@@ -664,8 +678,118 @@ Include only pairs the article would influence — not just mentioned.`,
   };
 }
 
+/** @deprecated Use previewNewsEnrichment — kept for backwards compatibility with existing callers */
+export async function replayNewsEnrichment(
+  input: ReplayNewsEnrichmentInput,
+): Promise<ReplayNewsEnrichmentResult> {
+  return previewNewsEnrichment(input);
+}
+
 // ---------------------------------------------------------------------------
-// 3. Inject synthetic sentiment shock
+// 3a. Re-enrich news (writes back to stored row)
+// ---------------------------------------------------------------------------
+
+export interface ReenrichNewsInput {
+  newsId: string;
+  publishedAt: string;
+  userId: string;
+}
+
+export interface ReenrichNewsResult {
+  newsId: string;
+  messageId: string;
+  hint: string;
+  duplicate?: boolean;
+}
+
+/**
+ * Reset the news_events row's status to "raw" so the enrichment Lambda's
+ * early-return guard (`if (status === "enriched") continue;`) doesn't skip it,
+ * then publish a message to the enrichment SQS queue to trigger re-enrichment.
+ *
+ * Idempotent within a 60-second window keyed on (userId, "reenrich-news",
+ * newsId) — a second call within that window returns 409.
+ *
+ * IAM requirements (not yet wired — see tracking issue):
+ *   - dynamodb:UpdateItem on news_events table
+ *   - sqs:SendMessage on the enrichment queue
+ */
+export async function reenrichNews(input: ReenrichNewsInput): Promise<ReenrichNewsResult> {
+  const { newsId, publishedAt, userId } = input;
+
+  const idemKey = buildIdempotencyKey(userId, "reenrich-news", { newsId });
+  const reserved = await reserveIdempotency(idemKey);
+  if (!reserved) {
+    return {
+      newsId,
+      messageId: "",
+      hint: "",
+      duplicate: true,
+    };
+  }
+
+  // Reset status to "raw" so the enrichment Lambda's early-return guard
+  // (`if (status === "enriched") continue;`) doesn't skip this article.
+  // ConditionExpression: "attribute_exists(newsId)" prevents DDB's default
+  // "create if missing" behavior from writing a phantom row when the caller
+  // passes a typo'd newsId/publishedAt — the enrichment Lambda would then
+  // dequeue an incomplete row and fail on missing fields. Surface the bad
+  // input as a ConditionalCheckFailedException instead of corrupting state.
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: NEWS_TABLE,
+        Key: { newsId, publishedAt },
+        UpdateExpression: "SET #status = :raw",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":raw": "raw" },
+        ConditionExpression: "attribute_exists(newsId)",
+      }),
+    );
+  } catch (err) {
+    if ((err as { name?: string }).name === "ConditionalCheckFailedException") {
+      throw new Error(
+        `News article not found: newsId=${newsId} publishedAt=${publishedAt}. ` +
+          `Verify both fields match an existing row.`,
+      );
+    }
+    throw err;
+  }
+
+  // Send the article to the enrichment SQS queue.
+  const ENRICHMENT_QUEUE_URL =
+    process.env.ENRICHMENT_QUEUE_URL ??
+    (() => {
+      const prefix = (process.env.TABLE_PREFIX ?? "quantara-dev-").replace(/-$/, "");
+      const region = process.env.AWS_REGION ?? "us-west-2";
+      const accountId = process.env.AWS_ACCOUNT_ID ?? "";
+      return `https://sqs.${region}.amazonaws.com/${accountId}/${prefix}-enrichment`;
+    })();
+
+  const sqsClient = new SQSClient({});
+  const sqsResult = await sqsClient.send(
+    new SendMessageCommand({
+      QueueUrl: ENRICHMENT_QUEUE_URL,
+      MessageBody: JSON.stringify({
+        type: "enrich_news",
+        data: { newsId, publishedAt },
+        timestamp: new Date().toISOString(),
+      }),
+    }),
+  );
+
+  const messageId = sqsResult.MessageId ?? "";
+  logger.info({ newsId, messageId }, "[AdminDebug] reenrich-news: SQS message sent");
+
+  return {
+    newsId,
+    messageId,
+    hint: "Re-enrichment queued. Typically completes within seconds as the enrichment Lambda picks up the message.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 3b. Inject synthetic sentiment shock
 // ---------------------------------------------------------------------------
 
 export interface InjectSentimentShockInput {
