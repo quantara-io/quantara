@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { LogicalRange } from "lightweight-charts";
 import {
   CandlestickSeries,
   ColorType,
@@ -55,6 +56,35 @@ export function fillGaps<T extends { time: UTCTimestamp }>(
     }
   }
   return out;
+}
+
+/**
+ * Compute the new visible logical range after a backfill prepend.
+ *
+ * Returns `null` when the expansion should NOT fire — i.e. when:
+ *   - This is the initial load (prevCount === 0), not a backfill.
+ *   - No new bars were actually prepended (newCount <= prevCount).
+ *   - The before-range is unavailable.
+ *   - The user was not near the left edge (before.from >= 10) — meaning
+ *     the backfill wasn't triggered by a zoom-out/pan-left gesture.
+ *
+ * When it does return a range, the caller should pass it to
+ * `chart.timeScale().setVisibleLogicalRange(...)`.
+ */
+export function computeBackfillExpansion(
+  before: LogicalRange | null,
+  prevCount: number,
+  newCount: number,
+): { from: number; to: number } | null {
+  if (prevCount === 0) return null; // initial load — let fitContent handle it
+  if (newCount <= prevCount) return null; // no new bars prepended
+  if (!before) return null; // range not yet available
+  if (before.from >= 10) return null; // user wasn't near the left edge
+  const newBars = newCount - prevCount;
+  return {
+    from: 0,
+    to: before.to + newBars,
+  };
 }
 
 export interface Candle {
@@ -137,6 +167,10 @@ export function MarketChart({
   // fitContent() exactly once per dataset, without calling it on live-poll
   // updates or backfill merges (which would reset the user's pan position).
   const prevCandleCountRef = useRef<number>(0);
+  // Set to true immediately before we call setVisibleLogicalRange as part of a
+  // backfill expansion so the range-change subscriber can skip that synthetic
+  // event and avoid chain-triggering another backfill.
+  const backfillExpansionInFlightRef = useRef<boolean>(false);
 
   // Keep callback ref current so the range-change subscriber always calls the
   // latest version without re-subscribing on every render.
@@ -209,6 +243,12 @@ export function MarketChart({
     // The batch size is derived from the currently visible range so zooming
     // way out results in a larger batch (up to MAX_BATCH = 500).
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      // Skip the synthetic range change we emit ourselves after a backfill
+      // expansion — consuming it here prevents a chain-trigger loop.
+      if (backfillExpansionInFlightRef.current) {
+        backfillExpansionInFlightRef.current = false;
+        return;
+      }
       if (!range) return;
       if (range.from > 10) return; // not near the left edge
       const oldest = oldestOpenTimeRef.current;
@@ -281,6 +321,12 @@ export function MarketChart({
 
     // Track oldest loaded candle time for the backfill range-change handler.
     oldestOpenTimeRef.current = sorted[0]?.openTime ?? null;
+
+    // Capture the visible logical range BEFORE overwriting series data.
+    // lightweight-charts preserves the visible time range after setData, which
+    // means a prepend of N bars silently shifts logical indices 0..K → N..N+K.
+    // We need the pre-setData range to compute how much to expand leftward.
+    const beforeRange = chart.timeScale().getVisibleLogicalRange();
 
     const rawCandleData: CandlestickData<UTCTimestamp>[] = deduped.map(([t, c]) => ({
       time: t as UTCTimestamp,
@@ -356,9 +402,22 @@ export function MarketChart({
     //      and fires another backfill request — violating the "one request per
     //      pan" acceptance criterion.
     const prevCount = prevCandleCountRef.current;
-    prevCandleCountRef.current = deduped.length;
+    const newCount = deduped.length;
+    prevCandleCountRef.current = newCount;
+
     if (prevCount === 0) {
+      // Initial load or pair/timeframe switch — fit all bars into view exactly once.
       chart.timeScale().fitContent();
+    } else {
+      // Backfill path: if new bars were prepended while the user was near the
+      // left edge, expand the visible logical range leftward so the new bars
+      // come into view immediately (instead of staying off-screen until the
+      // user pans).
+      const expansion = computeBackfillExpansion(beforeRange, prevCount, newCount);
+      if (expansion) {
+        backfillExpansionInFlightRef.current = true;
+        chart.timeScale().setVisibleLogicalRange(expansion);
+      }
     }
   }, [candles, timeframe]);
 

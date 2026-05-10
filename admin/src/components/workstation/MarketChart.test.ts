@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
-import type { UTCTimestamp } from "lightweight-charts";
-import { fillGaps } from "./MarketChart";
+
+import type { UTCTimestamp, Logical } from "lightweight-charts";
+
+import { fillGaps, computeBackfillExpansion } from "./MarketChart";
+
+// Cast helpers so test fixtures satisfy the Logical branded type
+function lr(from: number, to: number) {
+  return { from: from as Logical, to: to as Logical };
+}
 
 // Helpers to build minimal typed rows ----------------------------------------
 
@@ -102,5 +109,68 @@ describe("fillGaps", () => {
     expect(result).toHaveLength(6);
     expect(isWhitespace(result[1])).toBe(true);
     expect(isWhitespace(result[4])).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeBackfillExpansion
+// ---------------------------------------------------------------------------
+
+describe("computeBackfillExpansion", () => {
+  const nearEdge = lr(5, 205); // from < 10 → user was near left edge
+  const farFromEdge = lr(50, 250); // from >= 10 → user was not at left edge
+
+  it("returns null on initial load (prevCount === 0)", () => {
+    expect(computeBackfillExpansion(nearEdge, 0, 200)).toBeNull();
+  });
+
+  it("returns null when no new bars were prepended (newCount === prevCount)", () => {
+    // live-poll update — bar count stays the same
+    expect(computeBackfillExpansion(nearEdge, 200, 200)).toBeNull();
+  });
+
+  it("returns null when newCount < prevCount (dedup reduced rows)", () => {
+    expect(computeBackfillExpansion(nearEdge, 200, 195)).toBeNull();
+  });
+
+  it("returns null when before is null (range not yet available)", () => {
+    expect(computeBackfillExpansion(null, 200, 300)).toBeNull();
+  });
+
+  it("returns null when user was NOT near left edge (before.from >= 10)", () => {
+    expect(computeBackfillExpansion(farFromEdge, 200, 300)).toBeNull();
+  });
+
+  it("returns the correct expansion when all conditions are met", () => {
+    // 200 → 300: 100 new bars prepended; user was near left edge (from=5)
+    const result = computeBackfillExpansion(nearEdge, 200, 300);
+    expect(result).not.toBeNull();
+    expect(result!.from).toBe(0);
+    // to = before.to + newBars = 205 + 100 = 305
+    expect(result!.to).toBe(305);
+  });
+
+  it("anchors from at 0 regardless of before.from value", () => {
+    // even if before.from is 3 (not zero), expansion always starts at 0
+    const result = computeBackfillExpansion(lr(3, 100), 50, 100);
+    expect(result).not.toBeNull();
+    expect(result!.from).toBe(0);
+  });
+
+  it("uses exactly the number of new bars for to-anchor shift", () => {
+    const result = computeBackfillExpansion(lr(0, 400), 500, 750);
+    expect(result).not.toBeNull();
+    // newBars = 250; to = 400 + 250 = 650
+    expect(result!.to).toBe(650);
+  });
+
+  it("boundary: from === 9 (just inside the threshold) triggers expansion", () => {
+    const result = computeBackfillExpansion(lr(9, 209), 100, 150);
+    expect(result).not.toBeNull();
+  });
+
+  it("boundary: from === 10 (exactly at threshold) does NOT trigger expansion", () => {
+    const result = computeBackfillExpansion(lr(10, 210), 100, 150);
+    expect(result).toBeNull();
   });
 });
