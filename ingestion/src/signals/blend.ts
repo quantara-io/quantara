@@ -15,6 +15,15 @@ import { TIMEFRAMES } from "@quantara/shared";
 /**
  * Default per-timeframe weights. Single vector for v1 across all pairs (§5.7).
  * Per-pair overrides land in Phase 8 calibration.
+ *
+ * DESIGN NOTE (§5.10): With these weights and BLEND_THRESHOLD_T = 0.25, a
+ * directional vote on 15m (max contribution ±0.15) or 1h (max contribution
+ * ±0.20) cannot drive the blended scalar past T on its own — even at perfect
+ * confidence. Short-TF directional signals are intentionally suppressed unless
+ * a longer-TF vote (4h or 1d) co-fires. This filters whipsaw at the cost of
+ * missing high-conviction short-TF entries on quiet long-TF backgrounds.
+ * Revisit once calibration data from the Performance page exists.
+ * See docs/SIGNALS_AND_RISK.md §5.10 for the full decision record.
  */
 export const DEFAULT_TIMEFRAME_WEIGHTS: Record<Timeframe, number> = {
   "1m": 0,
@@ -27,6 +36,12 @@ export const DEFAULT_TIMEFRAME_WEIGHTS: Record<Timeframe, number> = {
 
 /**
  * Threshold T above which |blended| maps to a directional signal (§5.3).
+ *
+ * DESIGN NOTE (§5.10): T = 0.25 means 15m (weight 0.15) and 1h (weight 0.20)
+ * cannot produce a directional blended signal in isolation. This is intentional
+ * for v1 — long-TF votes dominate to reduce whipsaw noise. Do not lower this
+ * value without empirical win-rate data from the Performance page calibration
+ * view. See docs/SIGNALS_AND_RISK.md §5.10 for options (B), (C), and (D).
  */
 export const BLEND_THRESHOLD_T = 0.25;
 
