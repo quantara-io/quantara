@@ -17,6 +17,7 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
   for (const record of event.Records) {
     const message = JSON.parse(record.body);
     const { newsId, publishedAt } = message.data;
+    const force = message.force === true;
 
     console.log(`[Enrichment] Processing ${newsId}`);
 
@@ -34,9 +35,12 @@ export async function handler(event: SQSEvent, _context: Context): Promise<void>
       continue;
     }
 
-    if (newsRecord.status === "enriched") {
+    if (newsRecord.status === "enriched" && !force) {
       console.log(`[Enrichment] Already enriched: ${newsId}`);
       continue;
+    }
+    if (newsRecord.status === "enriched" && force) {
+      console.log(`[Enrichment] Re-enriching ${newsId} (force=true)`);
     }
 
     try {
