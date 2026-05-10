@@ -33,8 +33,11 @@ export function Workstation() {
     let cancelled = false;
     async function load() {
       const apiTf = TIMEFRAME_TO_API[timeframe];
+      // 500 = backend max. Pre-loading the full window gives users zoom-out
+      // headroom without round-trips. Lazy-backfill on pan-to-edge is the
+      // proper fix — see the follow-up issue.
       const res = await apiFetch<MarketData>(
-        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=80`,
+        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=500`,
       );
       if (cancelled) return;
       if (res.success && res.data) {
