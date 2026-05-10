@@ -42,10 +42,22 @@ jobs:
   request:
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
+    # Best-effort: Copilot review is advisory. If the workflow can't add
+    # Copilot (typically because GITHUB_TOKEN lacks scope and no PAT is
+    # configured), log loudly but don't fail the job — we don't want a
+    # noisy red check on every PR for a non-blocking nicety.
+    continue-on-error: true
     steps:
       - name: Request Copilot as reviewer (GraphQL)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer a fine-grained PAT (`COPILOT_REVIEW_TOKEN` repo secret,
+          # scoped to "Pull requests: Read and write") because the default
+          # GITHUB_TOKEN cannot add bot reviewers via `requestReviews` —
+          # the mutation appears to succeed but returns an empty reviewer
+          # set. Fall back to GITHUB_TOKEN if the PAT isn't configured;
+          # the script will detect the empty-set failure mode and surface
+          # the setup instructions in the log.
+          GH_TOKEN: ${{ secrets.COPILOT_REVIEW_TOKEN || secrets.GITHUB_TOKEN }}
           PR_NODE_ID: ${{ github.event.pull_request.node_id }}
         run: |
           set -e
@@ -108,12 +120,23 @@ jobs:
             echo "✅ Copilot is now in the requested-reviewers set ($REVIEWER_COUNT total)"
           elif [ "$REVIEWER_COUNT" = "0" ]; then
             # Empty reviewer set + we union'd Copilot in → mutation didn't
-            # actually add the bot. This usually means the workflow token
-            # lacks permission to assign Copilot. Surface as a failure.
-            echo "❌ Mutation returned empty reviewer set despite union:true — token likely lacks permission to assign Copilot."
-            echo "   Common cause: GITHUB_TOKEN can't add bot reviewers; configure a fine-grained PAT with"
-            echo "   'Pull requests: Read and write' as a repo secret (e.g. COPILOT_REVIEW_TOKEN) and reference it here."
-            exit 1
+            # actually add the bot. The default GITHUB_TOKEN can't assign
+            # Copilot via requestReviews; a PAT is required.
+            echo "::warning title=Copilot reviewer not added::Mutation returned an empty reviewer set despite union:true."
+            echo ""
+            echo "The default \`GITHUB_TOKEN\` cannot add Copilot as a reviewer via \`requestReviews\`."
+            echo "To enable auto-Copilot review on every PR, create a fine-grained PAT and store it as a"
+            echo "repo secret named \`COPILOT_REVIEW_TOKEN\`:"
+            echo ""
+            echo "  1. github.com → Settings → Developer settings → Personal access tokens → Fine-grained"
+            echo "  2. Repository access: Only quantara-io/quantara"
+            echo "  3. Permissions → Repository → Pull requests: Read and write"
+            echo "  4. Copy the token; in repo Settings → Secrets and variables → Actions → New secret:"
+            echo "       Name:  COPILOT_REVIEW_TOKEN"
+            echo "       Value: <the PAT>"
+            echo ""
+            echo "Until that's set, this workflow will continue to no-op on every PR."
+            echo "(continue-on-error: true is set so this warning does not fail the check.)"
           else
             # Other reviewers present but not Copilot → already reviewed,
             # GitHub removed Copilot from the requested list. Not an error.
