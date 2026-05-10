@@ -160,13 +160,16 @@ export function blendTimeframeVotes(
   }
 
   // Step 4 + 5: Compute blended scalar.
+  // strong-buy / strong-sell carry the same sign as buy / sell — they map to
+  // the same scalar direction, so the blend remains a linear combination.
+  // The 5-tier distinction is preserved on TimeframeVote.type for per-TF transparency.
   let blended = 0;
   for (const tf of votingTfs) {
     const vote = perTimeframeVotes[tf]!;
     let scalar: number;
-    if (vote.type === "buy") {
+    if (vote.type === "buy" || vote.type === "strong-buy") {
       scalar = +vote.confidence;
-    } else if (vote.type === "sell") {
+    } else if (vote.type === "sell" || vote.type === "strong-sell") {
       scalar = -vote.confidence;
     } else {
       scalar = 0; // hold

@@ -1,8 +1,11 @@
 import type { TimeframeVote } from "./rules.js";
 import type { Timeframe } from "./ingestion.js";
 import type { RiskRecommendation } from "./risk.js";
+import type { SignalTag } from "./signal-tags.js";
+export { SIGNAL_TAGS } from "./signal-tags.js";
+export type { SignalTag } from "./signal-tags.js";
 
-export const SIGNAL_TYPES = ["buy", "sell", "hold"] as const;
+export const SIGNAL_TYPES = ["strong-buy", "buy", "hold", "sell", "strong-sell"] as const;
 export type SignalType = (typeof SIGNAL_TYPES)[number];
 
 export interface Signal {
@@ -11,6 +14,10 @@ export interface Signal {
   type: SignalType;
   confidence: number;
   reasoning: string;
+  /** Auxiliary tags populated independently of the tier verdict. May be empty. Added in v2 Phase 2 (#253). */
+  tags: SignalTag[];
+  /** Consolidated user-facing narrative. null when Genie has not run for this signal. Added in v2 Phase 2 (#253). */
+  interpretation: SignalInterpretation | null;
   exchangeData: ExchangePricePoint[];
   volatilityFlag: boolean;
   createdAt: string;
@@ -64,7 +71,12 @@ export interface SignalInterpretation {
    * When source is "llm-downgraded", shows the original algo verdict for transparency.
    * Maps from the existing algoVerdict field.
    */
-  originalAlgo?: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string };
+  /** Old rows may have type "buy" | "sell" | "hold". */
+  originalAlgo?: {
+    type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
+    confidence: number;
+    reasoning: string;
+  };
 }
 
 /**
@@ -75,7 +87,8 @@ export interface SignalInterpretation {
  */
 export interface BlendedSignal {
   pair: string;
-  type: "buy" | "sell" | "hold";
+  /** Signal direction. Expanded to 5 tiers in v2 Phase 2 (#253). Old rows have "buy" | "sell" | "hold". */
+  type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
   confidence: number; // ordinal in v1; calibrated in Phase 8
   volatilityFlag: boolean;
   gateReason: "vol" | "dispersion" | "stale" | null;
@@ -130,8 +143,9 @@ export interface BlendedSignal {
   // `source` distinguishes a real LLM verdict from the graceful fallback
   // path that copies the algo verdict when the LLM call fails. Absent on
   // pre-B2 rows; treated as "llm" by readers for back-compat.
+  /** Verdict from LLM ratification. Old rows may have type "buy" | "sell" | "hold". */
   ratificationVerdict?: {
-    type: "buy" | "sell" | "hold";
+    type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
     confidence: number;
     reasoning: string;
     source?: "llm" | "algo-fallback";
@@ -139,5 +153,10 @@ export interface BlendedSignal {
 
   // Populated when status is "downgraded". Preserves the original algo signal so the UI
   // can show what changed (e.g. "Algo: buy 0.75 → LLM: hold 0.55").
-  algoVerdict?: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string } | null;
+  /** Populated when status is "downgraded". Old rows may have only "buy" | "sell" | "hold". */
+  algoVerdict?: {
+    type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
+    confidence: number;
+    reasoning: string;
+  } | null;
 }

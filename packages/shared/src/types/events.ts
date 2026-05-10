@@ -21,7 +21,8 @@ export type PipelineEvent =
       type: "signal-emitted";
       pair: string;
       timeframe: string;
-      signalType: "buy" | "sell" | "hold";
+      /** Signal type. Expanded to 5 tiers in v2 Phase 2 (#253). Old rows have "buy" | "sell" | "hold". */
+      signalType: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
       confidence: number;
       closeTime: string;
       ts: string;

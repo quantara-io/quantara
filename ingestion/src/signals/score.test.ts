@@ -428,13 +428,16 @@ describe("Observation #2 — gateResult parameter replaces rule-direction infere
   it("gateResult.fired=false does not gate — normal scoring applies", () => {
     const gateResult: GateResult = { fired: false, reason: null };
     const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
-    expect(vote.type).toBe("buy");
+    // bullRule strength=5.0 exceeds STRONG_CONFLUENCE=3.0 with net=5.0 >= STRONG_NET_MARGIN=2.0
+    // so the 5-tier ladder correctly emits "strong-buy" (not "buy") — gate does not fire.
+    expect(vote.type).toBe("strong-buy");
     expect(vote.volatilityFlag).toBe(false);
   });
 
   it("gateResult=null (omitted) does not gate — normal scoring applies", () => {
     const vote = scoreTimeframe(state, [bullRule], {}) as TimeframeVote;
-    expect(vote.type).toBe("buy");
+    // strength=5.0 → strong-buy per 5-tier ladder
+    expect(vote.type).toBe("strong-buy");
   });
 
   it("gateResult overrides even a strong directional signal", () => {
@@ -830,7 +833,8 @@ describe("scoreTimeframe — gated hold via gateResult", () => {
   it("gateResult.fired=false does not gate", () => {
     const gateResult: GateResult = { fired: false, reason: null };
     const vote = scoreTimeframe(state, [bullRule], {}, { gateResult }) as TimeframeVote;
-    expect(vote.type).toBe("buy");
+    // strength=5.0 → strong-buy per 5-tier ladder (bull=5.0 >= STRONG_CONFLUENCE=3.0, net=5.0 >= STRONG_NET_MARGIN=2.0)
+    expect(vote.type).toBe("strong-buy");
     expect(vote.volatilityFlag).toBe(false);
   });
 });
@@ -1098,8 +1102,18 @@ describe("Observation #4 — hold-confidence clamped to ≤ 1.0", () => {
         requiresPrior: 0,
       },
     ];
-    // With minConfluence=100, bullish 6.0 < 100 so we reach the hold branch.
-    const vote = scoreTimeframe(state, rules, {}, { minConfluence: 100 }) as TimeframeVote;
+    // With minConfluence=100 AND strongConfluence=100, both thresholds are unreachable
+    // so we reach the hold branch. Without strongConfluence override, the 5-tier ladder
+    // would emit "strong-buy" (bull=6.0 >= STRONG_CONFLUENCE=3.0).
+    const vote = scoreTimeframe(
+      state,
+      rules,
+      {},
+      {
+        minConfluence: 100,
+        strongConfluence: 100,
+      },
+    ) as TimeframeVote;
     expect(vote.type).toBe("hold");
     // Without clamp: 0.5 + 0.1 * (6.0 - 0.5) = 0.5 + 0.55 = 1.05 → OVERFLOW
     // With clamp:    min(1, 1.05) = 1.0
@@ -1109,6 +1123,8 @@ describe("Observation #4 — hold-confidence clamped to ≤ 1.0", () => {
 
   it("hold confidence is exactly 1.0 when unclamped value would be 1.0", () => {
     // diff = 5.0 → 0.5 + 0.1*5.0 = 1.0 (no clamp needed, boundary case)
+    // Must override strongConfluence=100 too, otherwise bull=5.0 >= STRONG_CONFLUENCE=3.0
+    // with net=5.0 >= STRONG_NET_MARGIN=2.0 → would emit "strong-buy" instead of "hold".
     const state = makeState();
     const rules: Rule[] = [
       {
@@ -1120,7 +1136,15 @@ describe("Observation #4 — hold-confidence clamped to ≤ 1.0", () => {
         requiresPrior: 0,
       },
     ];
-    const vote = scoreTimeframe(state, rules, {}, { minConfluence: 100 }) as TimeframeVote;
+    const vote = scoreTimeframe(
+      state,
+      rules,
+      {},
+      {
+        minConfluence: 100,
+        strongConfluence: 100,
+      },
+    ) as TimeframeVote;
     expect(vote.confidence).toBeCloseTo(1.0, 10);
     expect(vote.confidence).toBeLessThanOrEqual(1.0);
   });
@@ -1521,5 +1545,206 @@ describe("Calibration scenarios — Phase 1 (#252): should remain hold", () => {
     expect(vote.type).toBe("hold");
     expect(vote.bullishScore).toBeCloseTo(1.5, 10);
     expect(vote.bearishScore).toBeCloseTo(1.5, 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5-tier ladder — v2 Phase 2 (#253)
+//
+// Verifies STRONG_CONFLUENCE + STRONG_NET_MARGIN gating per the issue spec:
+//   bull >= 3.0 && net >= 2.0  → strong-buy
+//   bull >= 1.5 && net > 0     → buy
+//   bear >= 1.5 && net < 0     → sell
+//   bear >= 3.0 && net <= -2.0 → strong-sell
+//   otherwise                  → hold
+// ---------------------------------------------------------------------------
+
+function makeTierState(overrides: Partial<IndicatorState> = {}): IndicatorState {
+  return makeCalibrationState({ timeframe: "1h", ...overrides });
+}
+
+/** Helper: one directional rule with given strength. */
+function tierRule(name: string, direction: "bullish" | "bearish", strength: number): Rule {
+  return {
+    name,
+    direction,
+    strength,
+    when: (_s) => true,
+    appliesTo: ["1h"],
+    requiresPrior: 0,
+  };
+}
+
+describe("5-tier ladder — Phase 2 (#253)", () => {
+  it("strong-buy: bull=3.5, bear=0 → bull≥3.0 && net=3.5≥2.0", () => {
+    const vote = scoreTimeframe(
+      makeTierState(),
+      [tierRule("bull1", "bullish", 3.5)],
+      {},
+    ) as TimeframeVote;
+    expect(vote.type).toBe("strong-buy");
+    expect(vote.bullishScore).toBeCloseTo(3.5, 10);
+    expect(vote.bearishScore).toBe(0);
+  });
+
+  it("buy: bull=1.6, bear=0 → bull≥1.5 && net=1.6>0 (below strong threshold)", () => {
+    const vote = scoreTimeframe(
+      makeTierState(),
+      [tierRule("bull1", "bullish", 1.6)],
+      {},
+    ) as TimeframeVote;
+    expect(vote.type).toBe("buy");
+    expect(vote.bullishScore).toBeCloseTo(1.6, 10);
+  });
+
+  it("hold: bull=1.0, bear=1.0 → tied (below MIN_CONFLUENCE)", () => {
+    const vote = scoreTimeframe(
+      makeTierState(),
+      [tierRule("bull1", "bullish", 1.0), tierRule("bear1", "bearish", 1.0)],
+      {},
+    ) as TimeframeVote;
+    expect(vote.type).toBe("hold");
+    expect(vote.bullishScore).toBeCloseTo(1.0, 10);
+    expect(vote.bearishScore).toBeCloseTo(1.0, 10);
+  });
+
+  it("sell: bear=1.6, bull=0 → bear≥1.5 && net=-1.6<0 (below strong threshold)", () => {
+    const vote = scoreTimeframe(
+      makeTierState(),
+      [tierRule("bear1", "bearish", 1.6)],
+      {},
+    ) as TimeframeVote;
+    expect(vote.type).toBe("sell");
+    expect(vote.bearishScore).toBeCloseTo(1.6, 10);
+    expect(vote.bullishScore).toBe(0);
+  });
+
+  it("strong-sell: bear=3.5, bull=0 → bear≥3.0 && net=-3.5≤-2.0", () => {
+    const vote = scoreTimeframe(
+      makeTierState(),
+      [tierRule("bear1", "bearish", 3.5)],
+      {},
+    ) as TimeframeVote;
+    expect(vote.type).toBe("strong-sell");
+    expect(vote.bearishScore).toBeCloseTo(3.5, 10);
+    expect(vote.bullishScore).toBe(0);
+  });
+
+  it("margin enforcement: bull=3.0, bear=2.5 → buy (not strong-buy, net=0.5<STRONG_NET_MARGIN=2.0)", () => {
+    const vote = scoreTimeframe(
+      makeTierState(),
+      [tierRule("bull1", "bullish", 3.0), tierRule("bear1", "bearish", 2.5)],
+      {},
+    ) as TimeframeVote;
+    // bull=3.0 >= STRONG_CONFLUENCE but net=0.5 < STRONG_NET_MARGIN=2.0 → falls to buy
+    expect(vote.type).toBe("buy");
+    expect(vote.bullishScore).toBeCloseTo(3.0, 10);
+    expect(vote.bearishScore).toBeCloseTo(2.5, 10);
+  });
+
+  it("gate override: bull=10.0, bear=0, gateResult.fired=true → hold with volatilityFlag=true", () => {
+    const gateResult: GateResult = { fired: true, reason: "vol" };
+    const vote = scoreTimeframe(
+      makeTierState(),
+      [tierRule("mega-bull", "bullish", 10.0)],
+      {},
+      { gateResult },
+    ) as TimeframeVote;
+    expect(vote.type).toBe("hold");
+    expect(vote.volatilityFlag).toBe(true);
+    expect(vote.bullishScore).toBe(0); // gate suppresses all rule scores
+    expect(vote.rulesFired).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectTags — v2 Phase 2 (#253)
+// ---------------------------------------------------------------------------
+
+import { detectTags } from "./score.js";
+import type { FiredRule } from "@quantara/shared";
+
+describe("detectTags — Phase 2 (#253)", () => {
+  function makeTagState(overrides: Partial<IndicatorState> = {}): IndicatorState {
+    return makeState(overrides);
+  }
+
+  function makeFiredRule(name: string, direction: "bullish" | "bearish" = "bullish"): FiredRule {
+    return { name, direction, strength: 1.0, group: name };
+  }
+
+  it("empty tags when RSI is neutral and no volume spike fired", () => {
+    const state = makeTagState({ rsi14: 50 });
+    const tags = detectTags(state, []);
+    expect(tags).toEqual([]);
+  });
+
+  it("rsi-oversold-watch when rsi14 < 30", () => {
+    const state = makeTagState({ rsi14: 25 });
+    const tags = detectTags(state, []);
+    expect(tags).toContain("rsi-oversold-watch");
+  });
+
+  it("rsi-oversold-watch at boundary: rsi14 = 29", () => {
+    const state = makeTagState({ rsi14: 29 });
+    const tags = detectTags(state, []);
+    expect(tags).toContain("rsi-oversold-watch");
+  });
+
+  it("no rsi-oversold-watch at boundary: rsi14 = 30", () => {
+    const state = makeTagState({ rsi14: 30 });
+    const tags = detectTags(state, []);
+    expect(tags).not.toContain("rsi-oversold-watch");
+  });
+
+  it("rsi-overbought-watch when rsi14 > 70", () => {
+    const state = makeTagState({ rsi14: 75 });
+    const tags = detectTags(state, []);
+    expect(tags).toContain("rsi-overbought-watch");
+  });
+
+  it("rsi-overbought-watch at boundary: rsi14 = 71", () => {
+    const state = makeTagState({ rsi14: 71 });
+    const tags = detectTags(state, []);
+    expect(tags).toContain("rsi-overbought-watch");
+  });
+
+  it("no rsi-overbought-watch at boundary: rsi14 = 70", () => {
+    const state = makeTagState({ rsi14: 70 });
+    const tags = detectTags(state, []);
+    expect(tags).not.toContain("rsi-overbought-watch");
+  });
+
+  it("volume-spike-bull tag when volume-spike-bull rule fired", () => {
+    const state = makeTagState({ rsi14: 50 });
+    const tags = detectTags(state, [makeFiredRule("volume-spike-bull")]);
+    expect(tags).toContain("volume-spike-bull");
+  });
+
+  it("volume-spike-bear tag when volume-spike-bear rule fired", () => {
+    const state = makeTagState({ rsi14: 50 });
+    const tags = detectTags(state, [makeFiredRule("volume-spike-bear", "bearish")]);
+    expect(tags).toContain("volume-spike-bear");
+  });
+
+  it("multiple tags can fire simultaneously (rsi-oversold + volume-spike-bull)", () => {
+    const state = makeTagState({ rsi14: 25 });
+    const tags = detectTags(state, [makeFiredRule("volume-spike-bull")]);
+    expect(tags).toContain("rsi-oversold-watch");
+    expect(tags).toContain("volume-spike-bull");
+  });
+
+  it("tags populate on hold (empty rulesFired) — always present", () => {
+    const state = makeTagState({ rsi14: 28 });
+    const tags = detectTags(state, []);
+    expect(Array.isArray(tags)).toBe(true);
+    expect(tags).toContain("rsi-oversold-watch");
+  });
+
+  it("rsi14=null does not throw — no RSI tags", () => {
+    const state = makeTagState({ rsi14: null });
+    const tags = detectTags(state, []);
+    expect(tags).not.toContain("rsi-oversold-watch");
+    expect(tags).not.toContain("rsi-overbought-watch");
   });
 });

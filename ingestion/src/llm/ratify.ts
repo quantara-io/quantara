@@ -580,7 +580,11 @@ async function runLlmStream(params: LlmStreamParams): Promise<void> {
 
 async function invokeStage2Fallback(params: {
   context: RatifyContext;
-  algoVerdict: { type: "buy" | "sell" | "hold"; confidence: number; reasoning: string };
+  algoVerdict: {
+    type: "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
+    confidence: number;
+    reasoning: string;
+  };
   onStage2?: OnStage2Callback;
 }): Promise<void> {
   const { context, algoVerdict, onStage2 } = params;

@@ -3,8 +3,9 @@
  *
  * Design: §4.1 – §4.5 of docs/SIGNALS_AND_RISK.md
  *
- * Three terminal states (§4.5):
- *   - TimeframeVote { type: "buy" | "sell", ... }  — a directional signal above threshold
+ * Five terminal states (§4.5, extended in v2 Phase 2 #253):
+ *   - TimeframeVote { type: "strong-buy" | "buy", ... }  — bullish signal above threshold
+ *   - TimeframeVote { type: "strong-sell" | "sell", ... } — bearish signal above threshold
  *   - TimeframeVote { type: "hold", volatilityFlag: true, gateReason }  — gated hold
  *   - null  — no opinion (no eligible rule can evaluate; all warm-ups failed)
  *
@@ -12,8 +13,13 @@
  */
 
 import type { IndicatorState } from "@quantara/shared";
-import type { Rule, FiredRule, TimeframeVote, GateResult } from "@quantara/shared";
-import { MIN_CONFLUENCE } from "@quantara/shared";
+import type { Rule, FiredRule, TimeframeVote, GateResult, SignalTag } from "@quantara/shared";
+import {
+  MIN_CONFLUENCE,
+  STRONG_CONFLUENCE,
+  STRONG_NET_MARGIN,
+  explainRules,
+} from "@quantara/shared";
 
 // GateResult is declared in @quantara/shared (packages/shared/src/types/rules.ts) —
 // single source of truth shared with gates.ts. Re-exported here so importers that
@@ -26,6 +32,35 @@ export type { GateResult } from "@quantara/shared";
  */
 function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x / 2));
+}
+
+// ---------------------------------------------------------------------------
+// detectTags
+// ---------------------------------------------------------------------------
+
+/**
+ * Populate auxiliary tags independent of the tier verdict.
+ *
+ * Tags are emitted on every signal emission (including holds).
+ * May return an empty array when no conditions fire.
+ *
+ * Design: v2 Phase 2 (#253) — tags channel.
+ */
+export function detectTags(state: IndicatorState, fired: FiredRule[]): SignalTag[] {
+  const tags: SignalTag[] = [];
+
+  // RSI watch — always emit regardless of confluence.
+  if (state.rsi14 !== null && state.rsi14 < 30) tags.push("rsi-oversold-watch");
+  if (state.rsi14 !== null && state.rsi14 > 70) tags.push("rsi-overbought-watch");
+
+  // Volume spike — derived from which directional rule fired.
+  if (fired.some((r) => r.name === "volume-spike-bull")) tags.push("volume-spike-bull");
+  if (fired.some((r) => r.name === "volume-spike-bear")) tags.push("volume-spike-bear");
+
+  // bull-div / bear-div / breakout-up / breakout-down: requires new rules.
+  // Tag types are reserved in SIGNAL_TAGS — deferred to a follow-up issue.
+
+  return tags;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,11 +151,22 @@ export function scoreRules(
  *
  * Returns a TimeframeVote (possibly `type: "hold"`) otherwise.
  *
+ * 5-tier ladder (v2 Phase 2 #253):
+ *   bull >= STRONG_CONFLUENCE && net >= STRONG_NET_MARGIN → strong-buy
+ *   bull >= MIN_CONFLUENCE   && net > 0                  → buy
+ *   bear >= STRONG_CONFLUENCE && net <= -STRONG_NET_MARGIN → strong-sell
+ *   bear >= MIN_CONFLUENCE   && net < 0                  → sell
+ *   otherwise                                             → hold
+ *
+ * Gate logic always forces hold regardless of conviction.
+ *
  * @param state        - Current indicator state. Never mutated.
  * @param rules        - Rule definitions. Never mutated.
  * @param lastFireBars - Caller-managed cooldown tracking (see scoreRules).
- * @param options.minConfluence - Override MIN_CONFLUENCE (default 1.5).
- * @param options.gateResult   - Explicit gate decision from evaluateGates()
+ * @param options.minConfluence     - Override MIN_CONFLUENCE (default 1.5).
+ * @param options.strongConfluence  - Override STRONG_CONFLUENCE (default 3.0).
+ * @param options.strongNetMargin   - Override STRONG_NET_MARGIN (default 2.0).
+ * @param options.gateResult        - Explicit gate decision from evaluateGates()
  *   (gates.ts, Issue D / #45). When `gateResult.fired === true` the vote is
  *   forced to `type: "hold"` with `gateReason = gateResult.reason` and
  *   `rulesFired = []` (the gate is caller-supplied, not rule-encoded). When
@@ -131,9 +177,16 @@ export function scoreTimeframe(
   state: IndicatorState,
   rules: Rule[],
   lastFireBars: Record<string, number>,
-  options?: { minConfluence?: number; gateResult?: GateResult | null },
+  options?: {
+    minConfluence?: number;
+    strongConfluence?: number;
+    strongNetMargin?: number;
+    gateResult?: GateResult | null;
+  },
 ): TimeframeVote | null {
   const minConfluence = options?.minConfluence ?? MIN_CONFLUENCE;
+  const strongConfluence = options?.strongConfluence ?? STRONG_CONFLUENCE;
+  const strongNetMargin = options?.strongNetMargin ?? STRONG_NET_MARGIN;
   const gateResult = options?.gateResult ?? null;
 
   // Null guard: return null only when no rule is eligible to evaluate.
@@ -162,6 +215,8 @@ export function scoreTimeframe(
       bearishScore: 0,
       volatilityFlag: true,
       gateReason: gateResult.reason,
+      reasoning: explainRules([], gateResult.reason),
+      tags: detectTags(state, []),
       asOf: state.asOf,
     };
   }
@@ -177,10 +232,29 @@ export function scoreTimeframe(
     else if (r.direction === "bearish") bearishScore += r.strength;
   }
 
-  // 4. Determine direction.
+  // 4. Determine direction — 5-tier ladder (v2 Phase 2 #253).
+  const net = bullishScore - bearishScore;
   const rulesFired = fired.map((r) => r.name);
+  const tags = detectTags(state, fired);
 
-  if (bullishScore > bearishScore && bullishScore >= minConfluence) {
+  // Strong-buy: high bullish conviction with clear net margin.
+  if (bullishScore >= strongConfluence && net >= strongNetMargin) {
+    return {
+      type: "strong-buy",
+      confidence: sigmoid(bullishScore - bearishScore),
+      rulesFired,
+      bullishScore,
+      bearishScore,
+      volatilityFlag: false,
+      gateReason: null,
+      reasoning: explainRules(rulesFired, null),
+      tags,
+      asOf: state.asOf,
+    };
+  }
+
+  // Buy: bullish score above threshold with positive net.
+  if (bullishScore >= minConfluence && net > 0) {
     return {
       type: "buy",
       confidence: sigmoid(bullishScore - bearishScore),
@@ -189,11 +263,30 @@ export function scoreTimeframe(
       bearishScore,
       volatilityFlag: false,
       gateReason: null,
+      reasoning: explainRules(rulesFired, null),
+      tags,
       asOf: state.asOf,
     };
   }
 
-  if (bearishScore > bullishScore && bearishScore >= minConfluence) {
+  // Strong-sell: high bearish conviction with clear net margin.
+  if (bearishScore >= strongConfluence && net <= -strongNetMargin) {
+    return {
+      type: "strong-sell",
+      confidence: sigmoid(bearishScore - bullishScore),
+      rulesFired,
+      bullishScore,
+      bearishScore,
+      volatilityFlag: false,
+      gateReason: null,
+      reasoning: explainRules(rulesFired, null),
+      tags,
+      asOf: state.asOf,
+    };
+  }
+
+  // Sell: bearish score above threshold with negative net.
+  if (bearishScore >= minConfluence && net < 0) {
     return {
       type: "sell",
       confidence: sigmoid(bearishScore - bullishScore),
@@ -202,11 +295,13 @@ export function scoreTimeframe(
       bearishScore,
       volatilityFlag: false,
       gateReason: null,
+      reasoning: explainRules(rulesFired, null),
+      tags,
       asOf: state.asOf,
     };
   }
 
-  // Below threshold or tied: hold with weak confidence, clamped to [0, 1].
+  // Below threshold or tied: hold with templated reasoning and score context.
   return {
     type: "hold",
     confidence: Math.min(1, 0.5 + 0.1 * Math.abs(bullishScore - bearishScore)),
@@ -215,6 +310,8 @@ export function scoreTimeframe(
     bearishScore,
     volatilityFlag: false,
     gateReason: null,
+    reasoning: explainRules(rulesFired, null, { bullishScore, bearishScore }),
+    tags,
     asOf: state.asOf,
   };
 }

@@ -364,22 +364,39 @@ describe("ratifySignal — successful LLM ratification", () => {
 // ---------------------------------------------------------------------------
 
 describe("ratifySignal — validation failures", () => {
-  it("falls back to algo on hold→buy violation", async () => {
+  it("hold signals are gated before LLM (hold→buy violation never reaches validation)", async () => {
+    // v2 Phase 2 (#253): hold signals never invoke Genie — they are gated out at the
+    // shouldInvokeRatification level before the LLM stream starts.
+    // This test verifies hold signals return not-required without LLM interaction.
     const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } =
       await import("./ratify.js");
     _resetValidationFailureCount();
-    // confidence 0.7 passes the gate; type hold means LLM must return hold
     const ctx = makeContext({ type: "hold", confidence: 0.7 });
     setupDdbForCacheMiss();
-    // LLM returns buy — forbidden from hold
+    const result = await ratifySignal(ctx);
+    // Hold gate fires: no kickoffRatification returned.
+    expect(result.kickoffRatification).toBeUndefined();
+    expect(result.signal.ratificationStatus).toBe("not-required");
+    // No LLM call means no validation failure count increment.
+    expect(getValidationFailureCount()).toBe(0);
+  });
+
+  it("buy signal falls back to algo on LLM confidence increase violation", async () => {
+    // Tests the validation path is still exercised for buy signals.
+    const { ratifySignal, _resetValidationFailureCount, getValidationFailureCount } =
+      await import("./ratify.js");
+    _resetValidationFailureCount();
+    // confidence 0.7 passes the gate; buy type is valid for LLM invocation
+    const ctx = makeContext({ type: "buy", confidence: 0.7 });
+    setupDdbForCacheMiss();
+    // LLM returns higher confidence — forbidden (confidence increase)
     anthropicStreamMock.mockReturnValueOnce(
-      makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
+      makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.9 })),
     );
     const result = await ratifySignal(ctx);
     // Phase B1: validation failures happen in the async LLM stream; await completion.
     await result.kickoffRatification?.();
     // For validation failures, fellBackToAlgo is signalled via the stage-2 callback.
-    // The synchronous result.fellBackToAlgo reflects only the pre-stream gate check.
     expect(getValidationFailureCount()).toBe(1);
   });
 
@@ -461,11 +478,12 @@ describe("getValidationFailureCount", () => {
     _resetValidationFailureCount();
     expect(getValidationFailureCount()).toBe(0);
 
-    // confidence 0.7 passes the gate; type hold means LLM must return hold
-    const ctx = makeContext({ type: "hold", confidence: 0.7 });
+    // Use buy type so the LLM is invoked (holds are gated out in v2 Phase 2 #253)
+    // confidence 0.7 passes the gate; LLM returns confidence increase — validation fails
+    const ctx = makeContext({ type: "buy", confidence: 0.7 });
     setupDdbForCacheMiss();
     anthropicStreamMock.mockReturnValueOnce(
-      makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.6 })),
+      makeStreamMock(makeLlmTextContent({ type: "buy", confidence: 0.95 })),
     );
     const result = await ratifySignal(ctx);
     // Phase B1: validation happens in the async LLM stream — await completion.

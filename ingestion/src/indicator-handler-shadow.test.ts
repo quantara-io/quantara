@@ -174,6 +174,8 @@ function makeVote(type: "buy" | "sell" | "hold" = "hold"): TimeframeVote {
     bearishScore: 0,
     volatilityFlag: false,
     gateReason: null,
+    reasoning: "RSI extreme oversold",
+    tags: ["rsi-oversold-watch"],
     asOf: TEST_CLOSE_TIME,
   };
 }

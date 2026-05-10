@@ -35,6 +35,8 @@ function makeSignal(overrides: Partial<BlendedSignal> = {}): BlendedSignal {
         bearishScore: 0,
         volatilityFlag: false,
         gateReason: null,
+        reasoning: "EMA stack bullish",
+        tags: [],
         asOf: 1700000000000,
       },
       "1h": null,
