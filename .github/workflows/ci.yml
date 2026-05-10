@@ -2,6 +2,11 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "LICENSE*"
   push:
     branches: [main]
 
@@ -118,6 +123,22 @@ jobs:
       - name: Build web
         run: npm run build --workspace=web
 
+      - name: Package Lambda zips
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          npm run package --workspace=quantara-backend
+          npm run package --workspace=quantara-ingestion
+
+      - name: Upload Lambda zips for deploy-code-dev
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zips
+          path: |
+            backend/dist/lambda.zip
+            ingestion/dist/*.zip
+          retention-days: 1
+
   test:
     runs-on: ubuntu-latest
     permissions:
@@ -144,12 +165,22 @@ jobs:
         if: steps.cache-modules.outputs.cache-hit != 'true'
         run: npm ci --prefer-offline --no-audit --no-fund
 
-      - name: Test backend (with coverage)
-        run: npm run test:coverage --workspace=quantara-backend
+      - name: Test backend
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            npm run test:coverage --workspace=quantara-backend
+          else
+            npm run test --workspace=quantara-backend
+          fi
         continue-on-error: true
 
-      - name: Test ingestion (with coverage)
-        run: npm run test:coverage --workspace=quantara-ingestion
+      - name: Test ingestion
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            npm run test:coverage --workspace=quantara-ingestion
+          else
+            npm run test --workspace=quantara-ingestion
+          fi
         continue-on-error: true
 
       - name: Upload coverage reports
@@ -390,10 +421,13 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # --- Backend API Lambda ---
-      - name: Build backend
-        run: npm run package --workspace=quantara-backend
+      - name: Download pre-built Lambda zips
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-zips
+          path: .
 
+      # --- Backend API Lambda ---
       - name: Deploy backend Lambda
         run: |
           aws lambda update-function-code \
@@ -402,9 +436,6 @@ jobs:
             --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
 
       # --- Ingestion Lambdas ---
-      - name: Package ingestion Lambdas
-        run: npm run package --workspace=quantara-ingestion
-
       - name: Deploy ingestion Lambda
         run: |
           aws lambda update-function-code \
