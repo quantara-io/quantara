@@ -10,6 +10,7 @@ const getSignalsMock = vi.fn();
 const getGenieMetricsMock = vi.fn();
 const getRatificationsMock = vi.fn();
 const getPipelineStateMock = vi.fn();
+const getPipelineHealthMock = vi.fn();
 const getGenieDeepDiveMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
@@ -22,6 +23,7 @@ vi.mock("../services/admin.service.js", () => ({
   getSignals: getSignalsMock,
   getGenieMetrics: getGenieMetricsMock,
   getRatifications: getRatificationsMock,
+  getPipelineHealth: getPipelineHealthMock,
 }));
 
 vi.mock("../services/pipeline-state.service.js", () => ({
@@ -60,6 +62,7 @@ beforeEach(() => {
   getGenieMetricsMock.mockReset();
   getRatificationsMock.mockReset();
   getPipelineStateMock.mockReset();
+  getPipelineHealthMock.mockReset();
   getGenieDeepDiveMock.mockReset();
   currentAuth = {
     userId: "user_admin",
@@ -675,6 +678,97 @@ describe("GET /genie-metrics", () => {
     const res = await app.request("/genie-metrics");
     expect(res.status).toBe(403);
     expect(getGenieMetricsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /pipeline-health", () => {
+  const mockHealth = {
+    windowStart: "2026-05-08T00:00:00.000Z",
+    windowEnd: "2026-05-09T00:00:00.000Z",
+    exchanges: {
+      binanceus: {
+        lastDataAt: "2026-05-09T00:00:00Z",
+        streamHealth: "healthy",
+        stalenessSec: 30,
+        restartCount: null,
+      },
+      kraken: {
+        lastDataAt: "2026-05-08T23:55:00Z",
+        streamHealth: "stale",
+        stalenessSec: 360,
+        restartCount: null,
+      },
+      coinbase: { lastDataAt: null, streamHealth: "down", stalenessSec: null, restartCount: null },
+    },
+    quorum: {
+      successRate: 0.95,
+      perPair: { "BTC/USDT": { perTf: { "15m": 0.95, "1h": 0.97, "4h": 0.9 } } },
+    },
+    lambdas: {
+      api: { invocations: 1200, errors: 3, errorRate: 0.0025, avgDurationMs: 85, throttles: 0 },
+    },
+    fargate: {
+      runningCount: 1,
+      desiredCount: 1,
+      lastRestartAt: "2026-05-08T06:00:00.000Z",
+      cpuUtilizationPct: 12.4,
+      memoryUtilizationPct: 38.1,
+    },
+  };
+
+  it("returns 200 with health data from the service", async () => {
+    getPipelineHealthMock.mockResolvedValue(mockHealth);
+    const app = await loadApp();
+    const res = await app.request("/pipeline-health");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: typeof mockHealth };
+    expect(body.success).toBe(true);
+    expect(body.data.exchanges.binanceus.streamHealth).toBe("healthy");
+    expect(body.data.quorum.successRate).toBe(0.95);
+    expect(getPipelineHealthMock).toHaveBeenCalledWith(24);
+  });
+
+  it("forwards windowHours query param to the service", async () => {
+    getPipelineHealthMock.mockResolvedValue(mockHealth);
+    const app = await loadApp();
+    const res = await app.request("/pipeline-health?windowHours=48");
+    expect(res.status).toBe(200);
+    expect(getPipelineHealthMock).toHaveBeenCalledWith(48);
+  });
+
+  it("returns 400 when windowHours is below 1", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pipeline-health?windowHours=0");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPipelineHealthMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when windowHours exceeds 168", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pipeline-health?windowHours=169");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPipelineHealthMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when windowHours is not a number", async () => {
+    const app = await loadApp();
+    const res = await app.request("/pipeline-health?windowHours=abc");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+    expect(getPipelineHealthMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/pipeline-health");
+    expect(res.status).toBe(403);
+    expect(getPipelineHealthMock).not.toHaveBeenCalled();
   });
 });
 
