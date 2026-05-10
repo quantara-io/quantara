@@ -59,40 +59,38 @@ export function Whitelist() {
   return (
     <div className="space-y-4 max-w-2xl">
       <div>
-        <h1 className="text-base font-semibold text-slate-100">Docs IP Allowlist</h1>
-        <p className="text-xs text-slate-500 mt-1">
-          Controls who can access <code className="text-slate-400">/api/docs/*</code>. Accepts
-          single IPs or CIDR blocks (IPv4 or IPv6). Cached 5 min on the Lambda.
+        <h1 className="text-base font-semibold text-ink">Docs IP Allowlist</h1>
+        <p className="text-xs text-muted2 mt-1">
+          Controls who can access <code className="text-muted">/api/docs/*</code>. Accepts single
+          IPs or CIDR blocks (IPv4 or IPv6). Cached 5 min on the Lambda.
         </p>
       </div>
 
       {error && (
-        <div className="p-2 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+        <div className="p-2 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
           {error}
         </div>
       )}
       {info && (
-        <div className="p-2 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-900 text-sm">
+        <div className="p-2 rounded bg-up-soft text-up-strong border border-up/30 text-sm">
           {info}
         </div>
       )}
 
       {loading ? (
-        <div className="text-sm text-slate-500">Loading…</div>
+        <div className="text-sm text-muted2">Loading…</div>
       ) : (
         <>
-          <div className="rounded-lg border border-slate-800 bg-slate-900 p-3 space-y-2">
+          <div className="rounded-lg border border-line bg-surface p-3 space-y-2">
             {ips.length === 0 && (
-              <p className="text-xs text-slate-500">
-                No entries — list is empty (denies everyone).
-              </p>
+              <p className="text-xs text-muted2">No entries — list is empty (denies everyone).</p>
             )}
             {ips.map((ip) => (
               <div key={ip} className="flex items-center justify-between text-sm">
-                <code className="text-slate-300 font-mono">{ip}</code>
+                <code className="text-ink2 font-mono">{ip}</code>
                 <button
                   onClick={() => remove(ip)}
-                  className="text-xs text-red-400 hover:text-red-300"
+                  className="text-xs text-down hover:text-down-strong"
                 >
                   Remove
                 </button>
@@ -106,11 +104,11 @@ export function Whitelist() {
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && add()}
               placeholder="e.g. 1.2.3.4 or 1.2.3.0/24"
-              className="flex-1 rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 font-mono focus:outline-none focus:border-indigo-500"
+              className="flex-1 rounded-md bg-paper border border-line px-3 py-2 text-sm text-ink font-mono focus:outline-none focus:border-brand"
             />
             <button
               onClick={add}
-              className="rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm text-slate-100"
+              className="rounded-md bg-sunken hover:bg-line px-3 py-2 text-sm text-ink"
             >
               Add
             </button>
@@ -120,14 +118,14 @@ export function Whitelist() {
             <button
               onClick={() => setIps(original)}
               disabled={!dirty || busy}
-              className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+              className="rounded-md border border-line px-3 py-2 text-sm text-ink2 hover:bg-sunken disabled:opacity-40"
             >
               Revert
             </button>
             <button
               onClick={save}
               disabled={!dirty || busy}
-              className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
+              className="rounded-md bg-brand-strong hover:bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
             >
               {busy ? "Saving…" : "Save"}
             </button>

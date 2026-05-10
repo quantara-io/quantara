@@ -74,23 +74,23 @@ function ago(iso: string | null): string {
 }
 
 function healthChipClass(health: "healthy" | "stale" | "down"): string {
-  if (health === "healthy") return "bg-emerald-900/40 text-emerald-300 border-emerald-700";
-  if (health === "stale") return "bg-yellow-900/40 text-yellow-300 border-yellow-700";
-  return "bg-red-900/40 text-red-300 border-red-700";
+  if (health === "healthy") return "bg-up-soft/40 text-up-strong border-up/40";
+  if (health === "stale") return "bg-warn-soft text-warn border-warn/40";
+  return "bg-down-soft/40 text-down-strong border-down/40";
 }
 
 function quorumColor(rate: number | null): string {
-  if (rate === null) return "bg-slate-800 text-slate-500";
-  if (rate >= 0.95) return "bg-emerald-900/60 text-emerald-300";
-  if (rate >= 0.8) return "bg-yellow-900/60 text-yellow-300";
-  return "bg-red-900/60 text-red-300";
+  if (rate === null) return "bg-sunken text-muted2";
+  if (rate >= 0.95) return "bg-up-soft/60 text-up-strong";
+  if (rate >= 0.8) return "bg-warn-soft text-warn";
+  return "bg-down-soft/60 text-down-strong";
 }
 
 function errorRateColor(rate: number | null): string {
-  if (rate === null) return "text-slate-500";
-  if (rate === 0) return "text-emerald-400";
-  if (rate < 0.01) return "text-yellow-400";
-  return "text-red-400";
+  if (rate === null) return "text-muted2";
+  if (rate === 0) return "text-up";
+  if (rate < 0.01) return "text-warn";
+  return "text-down";
 }
 
 // ---------------------------------------------------------------------------
@@ -99,8 +99,8 @@ function errorRateColor(rate: number | null): string {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <h2 className="text-xs uppercase tracking-widest text-slate-500 mb-3">{title}</h2>
+    <div className="rounded-lg border border-line bg-surface p-4">
+      <h2 className="text-xs uppercase tracking-widest text-muted2 mb-3">{title}</h2>
       {children}
     </div>
   );
@@ -118,10 +118,10 @@ function Hero({
   valueClass?: string;
 }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
-      <div className={`text-2xl font-semibold mt-1 ${valueClass ?? "text-slate-100"}`}>{value}</div>
-      {sub && <div className="text-xs text-slate-500 mt-1">{sub}</div>}
+    <div className="rounded-lg border border-line bg-surface p-4">
+      <div className="text-[10px] uppercase tracking-widest text-muted2">{label}</div>
+      <div className={`text-2xl font-semibold mt-1 ${valueClass ?? "text-ink"}`}>{value}</div>
+      {sub && <div className="text-xs text-muted2 mt-1">{sub}</div>}
     </div>
   );
 }
@@ -135,7 +135,7 @@ function ExchangePanel({ exchanges }: { exchanges: Record<string, ExchangeHealth
     <Card title="Exchange stream health">
       <table className="w-full text-xs">
         <thead>
-          <tr className="text-slate-500">
+          <tr className="text-muted2">
             <th className="text-left font-medium pb-2">Exchange</th>
             <th className="text-left font-medium pb-2">
               <span className="inline-flex items-center gap-1">
@@ -151,8 +151,8 @@ function ExchangePanel({ exchanges }: { exchanges: Record<string, ExchangeHealth
         </thead>
         <tbody>
           {Object.entries(exchanges).map(([name, ex]) => (
-            <tr key={name} className="border-t border-slate-800">
-              <td className="py-1.5 font-mono text-slate-300">{name}</td>
+            <tr key={name} className="border-t border-line">
+              <td className="py-1.5 font-mono text-ink2">{name}</td>
               <td className="py-1.5">
                 <span
                   className={`text-[9px] px-1.5 py-0.5 rounded border ${healthChipClass(ex.streamHealth)}`}
@@ -160,8 +160,8 @@ function ExchangePanel({ exchanges }: { exchanges: Record<string, ExchangeHealth
                   {ex.streamHealth}
                 </span>
               </td>
-              <td className="py-1.5 text-slate-400">{ago(ex.lastDataAt)}</td>
-              <td className="py-1.5 text-slate-400">
+              <td className="py-1.5 text-muted">{ago(ex.lastDataAt)}</td>
+              <td className="py-1.5 text-muted">
                 {ex.stalenessSec !== null ? `${ex.stalenessSec}s` : "—"}
               </td>
             </tr>
@@ -181,14 +181,14 @@ function QuorumHeatmap({ quorum }: { quorum: QuorumHealth }) {
   if (pairs.length === 0) {
     return (
       <Card title="Quorum success rate">
-        <p className="text-xs text-slate-600">No quorum data available for this window.</p>
+        <p className="text-xs text-muted2">No quorum data available for this window.</p>
       </Card>
     );
   }
 
   return (
     <Card title="Quorum success rate (pair × timeframe)">
-      <p className="text-[11px] text-slate-600 mb-2 inline-flex items-center gap-1">
+      <p className="text-[11px] text-muted2 mb-2 inline-flex items-center gap-1">
         ≥2 of 3 exchanges must agree on each bar close.
         <HelpTooltip label={GLOSSARY.quorum.label}>{GLOSSARY.quorum.body}</HelpTooltip>
       </p>
@@ -196,9 +196,9 @@ function QuorumHeatmap({ quorum }: { quorum: QuorumHealth }) {
         <table className="text-xs border-separate border-spacing-1">
           <thead>
             <tr>
-              <th className="text-left font-medium text-slate-500 pb-1 pr-2 w-28">Pair</th>
+              <th className="text-left font-medium text-muted2 pb-1 pr-2 w-28">Pair</th>
               {QUORUM_TIMEFRAMES.map((tf) => (
-                <th key={tf} className="text-center font-medium text-slate-500 pb-1 w-16">
+                <th key={tf} className="text-center font-medium text-muted2 pb-1 w-16">
                   {tf}
                 </th>
               ))}
@@ -207,7 +207,7 @@ function QuorumHeatmap({ quorum }: { quorum: QuorumHealth }) {
           <tbody>
             {pairs.map((pair) => (
               <tr key={pair}>
-                <td className="font-mono text-slate-400 pr-2 py-0.5 text-[11px]">{pair}</td>
+                <td className="font-mono text-muted pr-2 py-0.5 text-[11px]">{pair}</td>
                 {QUORUM_TIMEFRAMES.map((tf) => {
                   const rate = quorum.perPair[pair]?.perTf[tf] ?? null;
                   return (
@@ -238,7 +238,7 @@ function LambdaTable({ lambdas }: { lambdas: Record<string, LambdaHealth> }) {
     <Card title="Lambda metrics (CloudWatch, last window)">
       <table className="w-full text-xs">
         <thead>
-          <tr className="text-slate-500">
+          <tr className="text-muted2">
             <th className="text-left font-medium pb-2">Function</th>
             <th className="text-left font-medium pb-2">Invocations</th>
             <th className="text-left font-medium pb-2">Error rate</th>
@@ -255,22 +255,22 @@ function LambdaTable({ lambdas }: { lambdas: Record<string, LambdaHealth> }) {
         </thead>
         <tbody>
           {Object.entries(lambdas).map(([name, l]) => (
-            <tr key={name} className="border-t border-slate-800">
-              <td className="py-1.5 font-mono text-slate-300">{name}</td>
-              <td className="py-1.5 text-slate-300">{num(l.invocations)}</td>
+            <tr key={name} className="border-t border-line">
+              <td className="py-1.5 font-mono text-ink2">{name}</td>
+              <td className="py-1.5 text-ink2">{num(l.invocations)}</td>
               <td className={`py-1.5 font-mono ${errorRateColor(l.errorRate)}`}>
                 {pct(l.errorRate)}
               </td>
-              <td className="py-1.5 text-slate-300">
+              <td className="py-1.5 text-ink2">
                 {l.avgDurationMs !== null ? `${num(l.avgDurationMs, 0)}ms` : "—"}
               </td>
-              <td className="py-1.5 text-slate-300">{num(l.throttles)}</td>
+              <td className="py-1.5 text-ink2">{num(l.throttles)}</td>
             </tr>
           ))}
         </tbody>
       </table>
       {Object.values(lambdas).every((l) => l.invocations === null) && (
-        <p className="text-[10px] text-slate-600 mt-2">
+        <p className="text-[10px] text-muted2 mt-2">
           CloudWatch metrics unavailable. Possible causes: missing IAM permissions, no recent
           activity, or transient API failure.
         </p>
@@ -291,15 +291,15 @@ function FargatePanel({ fargate }: { fargate: FargateHealth }) {
         <Stat
           label="Tasks"
           value={`${fargate.runningCount}/${fargate.desiredCount}`}
-          valueClass={taskHealthy ? "text-emerald-400" : "text-red-400"}
+          valueClass={taskHealthy ? "text-up" : "text-down"}
         />
         <Stat
           label="CPU util"
           value={fargate.cpuUtilizationPct !== null ? `${num(fargate.cpuUtilizationPct, 1)}%` : "—"}
           valueClass={
             fargate.cpuUtilizationPct !== null && fargate.cpuUtilizationPct > 80
-              ? "text-red-400"
-              : "text-slate-300"
+              ? "text-down"
+              : "text-ink2"
           }
         />
         <Stat
@@ -309,8 +309,8 @@ function FargatePanel({ fargate }: { fargate: FargateHealth }) {
           }
           valueClass={
             fargate.memoryUtilizationPct !== null && fargate.memoryUtilizationPct > 85
-              ? "text-red-400"
-              : "text-slate-300"
+              ? "text-down"
+              : "text-ink2"
           }
         />
         <Stat label="Last restart" value={ago(fargate.lastRestartAt)} />
@@ -322,10 +322,8 @@ function FargatePanel({ fargate }: { fargate: FargateHealth }) {
 function Stat({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
-      <div className={`text-lg font-semibold mt-0.5 ${valueClass ?? "text-slate-200"}`}>
-        {value}
-      </div>
+      <div className="text-[10px] uppercase tracking-widest text-muted2">{label}</div>
+      <div className={`text-lg font-semibold mt-0.5 ${valueClass ?? "text-ink"}`}>{value}</div>
     </div>
   );
 }
@@ -360,12 +358,12 @@ export function Health() {
 
   if (error) {
     return (
-      <div className="p-4 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+      <div className="p-4 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
         {error}
       </div>
     );
   }
-  if (!data) return <div className="text-sm text-slate-500">Loading…</div>;
+  if (!data) return <div className="text-sm text-muted2">Loading…</div>;
 
   // Derive top-row summary values
   const exchangeList = Object.values(data.exchanges);
@@ -387,7 +385,7 @@ export function Health() {
           label="Exchanges"
           value={`${healthyCount} / ${totalExchanges}`}
           sub="healthy streams"
-          valueClass={healthyCount === totalExchanges ? "text-emerald-400" : "text-yellow-400"}
+          valueClass={healthyCount === totalExchanges ? "text-up" : "text-warn"}
         />
         <Hero
           label="Quorum rate"
@@ -395,8 +393,8 @@ export function Health() {
           sub="bar-closes with consensus"
           valueClass={
             data.quorum.successRate !== null && data.quorum.successRate >= 0.95
-              ? "text-emerald-400"
-              : "text-yellow-400"
+              ? "text-up"
+              : "text-warn"
           }
         />
         <Hero
@@ -409,7 +407,7 @@ export function Health() {
           label="Fargate tasks"
           value={`${data.fargate.runningCount} / ${data.fargate.desiredCount}`}
           sub={data.fargate.runningCount > 0 ? "running" : "down"}
-          valueClass={data.fargate.runningCount > 0 ? "text-emerald-400" : "text-red-400"}
+          valueClass={data.fargate.runningCount > 0 ? "text-up" : "text-down"}
         />
       </div>
 
@@ -423,7 +421,7 @@ export function Health() {
 
       <LambdaTable lambdas={data.lambdas} />
 
-      <p className="text-xs text-slate-600">
+      <p className="text-xs text-muted2">
         Window: {new Date(data.windowStart).toLocaleString()} &mdash;{" "}
         {new Date(data.windowEnd).toLocaleString()} · refreshes every 30s
       </p>

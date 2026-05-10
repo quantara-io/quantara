@@ -15,8 +15,8 @@ function NotAdmin() {
   return (
     <div className="min-h-full flex items-center justify-center px-4 py-12">
       <div className="max-w-sm text-center">
-        <h1 className="text-lg font-semibold text-slate-100 mb-2">Admin access required</h1>
-        <p className="text-sm text-slate-400 mb-4">
+        <h1 className="text-lg font-semibold text-ink mb-2">Admin access required</h1>
+        <p className="text-sm text-muted mb-4">
           Your account is signed in but does not have the admin role.
         </p>
         <button
@@ -24,7 +24,7 @@ function NotAdmin() {
             localStorage.clear();
             window.location.href = "/login";
           }}
-          className="rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm text-slate-100"
+          className="rounded-md bg-sunken hover:bg-line px-3 py-2 text-sm text-ink"
         >
           Sign out
         </button>

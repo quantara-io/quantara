@@ -128,11 +128,11 @@ export function Genie() {
 
   if (error)
     return (
-      <div className="p-3 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+      <div className="p-3 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
         {error}
       </div>
     );
-  if (loading) return <div className="text-sm text-slate-500">Loading…</div>;
+  if (loading) return <div className="text-sm text-muted2">Loading…</div>;
 
   // Render in canonical PAIRS order so the layout is stable as updates arrive.
   const orderedSignals = PAIRS.map((pair) => signalsByPair.get(pair)).filter(
@@ -143,13 +143,13 @@ export function Genie() {
     <div className="space-y-4">
       <WsStatusBanner status={wsStatus} />
       {orderedSignals.length === 0 ? (
-        <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 text-center text-sm text-slate-400">
+        <div className="rounded-lg border border-line bg-surface p-6 text-center text-sm text-muted">
           No signals available yet — pipeline may be warming up.
         </div>
       ) : (
         orderedSignals.map((signal) => <SignalCard key={signal.pair} signal={signal} />)
       )}
-      {disclaimer && <p className="text-[11px] text-slate-600 text-center">{disclaimer}</p>}
+      {disclaimer && <p className="text-[11px] text-muted2 text-center">{disclaimer}</p>}
     </div>
   );
 }
@@ -164,43 +164,41 @@ function WsStatusBanner({ status }: { status: "connecting" | "open" | "closed" |
         : "Realtime feed unavailable — initial snapshot only.";
   const cls =
     status === "error"
-      ? "bg-red-950/40 text-red-300 border-red-900"
-      : "bg-slate-900 text-slate-400 border-slate-800";
+      ? "bg-down-soft text-down-strong border-down/30"
+      : "bg-surface text-muted border-line";
   return <div className={`rounded border px-3 py-1.5 text-[11px] ${cls}`}>{text}</div>;
 }
 
 function SignalCard({ signal }: { signal: BlendedSignal }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4 space-y-3">
+    <div className="rounded-lg border border-line bg-surface p-4 space-y-3">
       {/* Invalidation banner */}
       {signal.invalidatedAt != null && (
-        <div className="rounded bg-yellow-950/60 border border-yellow-800 px-3 py-2 text-xs text-yellow-300 flex items-center gap-2">
+        <div className="rounded bg-warn-soft border border-warn/30 px-3 py-2 text-xs text-warn flex items-center gap-2">
           <span className="font-medium">Refreshing</span>
           {signal.invalidationReason && (
-            <span className="text-yellow-400/80">{signal.invalidationReason}</span>
+            <span className="text-warn/80">{signal.invalidationReason}</span>
           )}
         </div>
       )}
 
       {/* Header row */}
       <div className="flex items-center gap-3 flex-wrap">
-        <h2 className="text-base font-semibold text-slate-100">{signal.pair}</h2>
+        <h2 className="text-base font-semibold text-ink">{signal.pair}</h2>
         <TypeBadge type={signal.type} />
-        <span className="text-sm text-slate-300 font-mono">
-          {Math.round(signal.confidence * 100)}%
-        </span>
+        <span className="text-sm text-ink2 font-mono">{Math.round(signal.confidence * 100)}%</span>
         {signal.volatilityFlag && <VolatilityChip />}
         {signal.gateReason != null && <GateChip reason={signal.gateReason} />}
       </div>
 
       {/* Timestamps */}
-      <div className="flex gap-4 text-[11px] text-slate-500">
+      <div className="flex gap-4 text-[11px] text-muted2">
         <span>
-          <span className="text-slate-600">asOf </span>
+          <span className="text-muted2">asOf </span>
           {new Date(signal.asOf).toLocaleString()}
         </span>
         <span>
-          <span className="text-slate-600">emitting </span>
+          <span className="text-muted2">emitting </span>
           {signal.emittingTimeframe}
         </span>
       </div>
@@ -217,15 +215,15 @@ function SignalCard({ signal }: { signal: BlendedSignal }) {
         />
       ) : (
         /* Pre-B2 fallback: render rulesFired list as before */
-        <div className="text-sm text-slate-300">
+        <div className="text-sm text-ink2">
           {signal.rulesFired.length > 0 ? (
-            <ul className="list-disc list-inside space-y-0.5 text-slate-400 text-xs">
+            <ul className="list-disc list-inside space-y-0.5 text-muted text-xs">
               {signal.rulesFired.map((rule) => (
                 <li key={rule}>{rule}</li>
               ))}
             </ul>
           ) : (
-            <span className="text-slate-600 text-xs italic">No rules attributed</span>
+            <span className="text-muted2 text-xs italic">No rules attributed</span>
           )}
         </div>
       )}
@@ -259,10 +257,10 @@ function InterpretationBlock({
 
   const sourceClass =
     interpretation.source === "llm-ratified"
-      ? "bg-emerald-950/40 border-emerald-900 text-emerald-400"
+      ? "bg-up-soft border-up/30 text-up"
       : interpretation.source === "llm-downgraded"
         ? "bg-amber-950/40 border-amber-900 text-amber-400"
-        : "bg-slate-900 border-slate-800 text-slate-400";
+        : "bg-surface border-line text-muted";
 
   return (
     <div className={`rounded border px-3 py-2 space-y-1.5 ${sourceClass}`}>
@@ -276,9 +274,9 @@ function InterpretationBlock({
       </div>
       <p className="text-sm leading-snug">{interpretation.text}</p>
       {interpretation.source === "llm-downgraded" && interpretation.originalAlgo && (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-muted2">
           Algo:{" "}
-          <span className="font-mono text-slate-400">
+          <span className="font-mono text-muted">
             {interpretation.originalAlgo.type}{" "}
             {Math.round(interpretation.originalAlgo.confidence * 100)}%
           </span>{" "}
@@ -295,10 +293,10 @@ function InterpretationBlock({
 function TypeBadge({ type }: { type: "buy" | "sell" | "hold" }) {
   const classes =
     type === "buy"
-      ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+      ? "bg-up-soft text-up-strong border border-up/30"
       : type === "sell"
-        ? "bg-red-950 text-red-300 border border-red-800"
-        : "bg-slate-800 text-slate-400 border border-slate-700";
+        ? "bg-down-soft text-down-strong border border-down/30"
+        : "bg-sunken text-muted border border-line";
   return (
     <span
       className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wide ${classes}`}
@@ -310,7 +308,7 @@ function TypeBadge({ type }: { type: "buy" | "sell" | "hold" }) {
 
 function VolatilityChip() {
   return (
-    <span className="px-1.5 py-0.5 rounded bg-yellow-950 text-yellow-400 border border-yellow-800 text-[11px]">
+    <span className="px-1.5 py-0.5 rounded bg-warn-soft text-warn border border-warn/30 text-[11px]">
       high vol
     </span>
   );
@@ -318,7 +316,7 @@ function VolatilityChip() {
 
 function GateChip({ reason }: { reason: "vol" | "dispersion" | "stale" }) {
   return (
-    <span className="px-1.5 py-0.5 rounded bg-orange-950 text-orange-400 border border-orange-800 text-[11px]">
+    <span className="px-1.5 py-0.5 rounded bg-warn-soft text-warn border border-warn/30 text-[11px]">
       gate: {reason}
     </span>
   );
@@ -333,12 +331,10 @@ function PerTimeframeTable({
 }) {
   return (
     <div>
-      <p className="text-[11px] text-slate-600 uppercase tracking-widest mb-1">
-        Timeframe breakdown
-      </p>
+      <p className="text-[11px] text-muted2 uppercase tracking-widest mb-1">Timeframe breakdown</p>
       <table className="w-full text-xs">
         <thead>
-          <tr className="text-slate-500">
+          <tr className="text-muted2">
             {["TF", "Vote", "Confidence", "Weight"].map((h) => (
               <th key={h} className="text-left font-medium pb-1">
                 {h}
@@ -351,19 +347,19 @@ function PerTimeframeTable({
             const vote: TimeframeVote | null | undefined = perTimeframe[tf];
             const weight: number | undefined = weightsUsed[tf];
             return (
-              <tr key={tf} className="border-t border-slate-800/60">
-                <td className="py-1 text-slate-400 font-mono">{tf}</td>
+              <tr key={tf} className="border-t border-line/60">
+                <td className="py-1 text-muted font-mono">{tf}</td>
                 <td className="py-1">
                   {vote != null ? (
                     <TypeBadge type={vote.type} />
                   ) : (
-                    <span className="text-slate-600">—</span>
+                    <span className="text-muted2">—</span>
                   )}
                 </td>
-                <td className="py-1 text-slate-300 font-mono">
+                <td className="py-1 text-ink2 font-mono">
                   {vote != null ? `${Math.round(vote.confidence * 100)}%` : "—"}
                 </td>
-                <td className="py-1 text-slate-500 font-mono">
+                <td className="py-1 text-muted2 font-mono">
                   {weight != null ? weight.toFixed(2) : "—"}
                 </td>
               </tr>
@@ -377,25 +373,25 @@ function PerTimeframeTable({
 
 function RiskBlock({ risk }: { risk: RiskRecommendation }) {
   return (
-    <div className="rounded border border-slate-700 bg-slate-950/60 p-3 space-y-2">
-      <p className="text-[11px] text-slate-600 uppercase tracking-widest">Risk recommendation</p>
+    <div className="rounded border border-line bg-paper/60 p-3 space-y-2">
+      <p className="text-[11px] text-muted2 uppercase tracking-widest">Risk recommendation</p>
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <span className="text-slate-500">Position size</span>
-        <span className="text-slate-300 font-mono">
+        <span className="text-muted2">Position size</span>
+        <span className="text-ink2 font-mono">
           {(risk.positionSizePct * 100).toFixed(1)}%
-          <span className="text-slate-600 ml-1">({risk.positionSizeModel})</span>
+          <span className="text-muted2 ml-1">({risk.positionSizeModel})</span>
         </span>
-        <span className="text-slate-500">Stop loss</span>
-        <span className="text-slate-300 font-mono">{formatPrice(risk.stopLoss)}</span>
-        <span className="text-slate-500">Invalidation</span>
-        <span className="text-slate-300">{risk.invalidationCondition}</span>
+        <span className="text-muted2">Stop loss</span>
+        <span className="text-ink2 font-mono">{formatPrice(risk.stopLoss)}</span>
+        <span className="text-muted2">Invalidation</span>
+        <span className="text-ink2">{risk.invalidationCondition}</span>
       </div>
       {risk.takeProfit.length > 0 && (
         <div>
-          <p className="text-[11px] text-slate-600 mb-1">Take-profit ladder</p>
+          <p className="text-[11px] text-muted2 mb-1">Take-profit ladder</p>
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-slate-500">
+              <tr className="text-muted2">
                 {["Level", "Price", "Close %", "R-multiple"].map((h) => (
                   <th key={h} className="text-left font-medium pb-0.5">
                     {h}
@@ -405,13 +401,11 @@ function RiskBlock({ risk }: { risk: RiskRecommendation }) {
             </thead>
             <tbody>
               {risk.takeProfit.map((tp, i) => (
-                <tr key={i} className="border-t border-slate-800/60">
-                  <td className="py-0.5 text-slate-500">TP{i + 1}</td>
-                  <td className="py-0.5 text-emerald-400 font-mono">{formatPrice(tp.price)}</td>
-                  <td className="py-0.5 text-slate-300 font-mono">
-                    {(tp.closePct * 100).toFixed(0)}%
-                  </td>
-                  <td className="py-0.5 text-slate-300 font-mono">{tp.rMultiple.toFixed(1)}R</td>
+                <tr key={i} className="border-t border-line/60">
+                  <td className="py-0.5 text-muted2">TP{i + 1}</td>
+                  <td className="py-0.5 text-up font-mono">{formatPrice(tp.price)}</td>
+                  <td className="py-0.5 text-ink2 font-mono">{(tp.closePct * 100).toFixed(0)}%</td>
+                  <td className="py-0.5 text-ink2 font-mono">{tp.rMultiple.toFixed(1)}R</td>
                 </tr>
               ))}
             </tbody>

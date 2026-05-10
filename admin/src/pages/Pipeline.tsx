@@ -108,10 +108,10 @@ const TF_DURATION_S: Record<string, number> = {
 // ---------------------------------------------------------------------------
 
 function ageColor(ageSeconds: number | null, tfDurationSeconds: number): string {
-  if (ageSeconds === null) return "text-slate-500";
-  if (ageSeconds < tfDurationSeconds) return "text-emerald-400";
-  if (ageSeconds < tfDurationSeconds * 2) return "text-yellow-400";
-  return "text-red-400";
+  if (ageSeconds === null) return "text-muted2";
+  if (ageSeconds < tfDurationSeconds) return "text-up";
+  if (ageSeconds < tfDurationSeconds * 2) return "text-warn";
+  return "text-down";
 }
 
 function fmt(v: number | null, decimals = 2): string {
@@ -127,17 +127,17 @@ function fmtAge(s: number | null): string {
 }
 
 function signalTypeColor(type: string | null): string {
-  if (type === "buy") return "text-emerald-400";
-  if (type === "sell") return "text-red-400";
-  if (type === "hold") return "text-yellow-400";
-  return "text-slate-500";
+  if (type === "buy") return "text-up";
+  if (type === "sell") return "text-down";
+  if (type === "hold") return "text-warn";
+  return "text-muted2";
 }
 
 function ratificationBadge(status: string | null): string {
-  if (status === "ratified") return "bg-emerald-900/40 text-emerald-300 border-emerald-700";
-  if (status === "downgraded") return "bg-orange-900/40 text-orange-300 border-orange-700";
-  if (status === "pending") return "bg-yellow-900/40 text-yellow-300 border-yellow-700";
-  return "bg-slate-800 text-slate-500 border-slate-700";
+  if (status === "ratified") return "bg-up-soft/40 text-up-strong border-up/40";
+  if (status === "downgraded") return "bg-warn-soft text-warn border-warn/40";
+  if (status === "pending") return "bg-warn-soft text-warn border-warn/40";
+  return "bg-sunken text-muted2 border-line";
 }
 
 // ---------------------------------------------------------------------------
@@ -157,13 +157,11 @@ function Stat({
 }) {
   return (
     <div className="flex items-baseline justify-between gap-1">
-      <span className="text-[10px] text-slate-500 shrink-0 inline-flex items-center gap-0.5">
+      <span className="text-[10px] text-muted2 shrink-0 inline-flex items-center gap-0.5">
         {label}
         {tooltip}
       </span>
-      <span
-        className={`text-[11px] font-mono tabular-nums truncate ${valueClass ?? "text-slate-300"}`}
-      >
+      <span className={`text-[11px] font-mono tabular-nums truncate ${valueClass ?? "text-ink2"}`}>
         {value}
       </span>
     </div>
@@ -172,7 +170,7 @@ function Stat({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[9px] uppercase tracking-widest text-slate-600 mb-0.5 mt-1.5 first:mt-0">
+    <div className="text-[9px] uppercase tracking-widest text-muted2 mb-0.5 mt-1.5 first:mt-0">
       {children}
     </div>
   );
@@ -213,14 +211,14 @@ function CellCard({
       className={`w-full text-left rounded-lg border p-2 transition-colors
         ${
           selected
-            ? "border-cyan-600 bg-cyan-950/30"
+            ? "border-brand bg-brand-soft"
             : isEmpty
-              ? "border-slate-800 bg-slate-950 opacity-50"
-              : "border-slate-800 bg-slate-900 hover:border-slate-700 hover:bg-slate-800/60"
+              ? "border-line bg-paper opacity-50"
+              : "border-line bg-surface hover:border-line hover:bg-sunken/60"
         }`}
     >
       {isEmpty ? (
-        <span className="text-[11px] text-slate-600">—</span>
+        <span className="text-[11px] text-muted2">—</span>
       ) : (
         <>
           <SectionLabel>Indicator</SectionLabel>
@@ -333,15 +331,15 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
   }
 
   return (
-    <div className="fixed inset-y-0 right-0 w-full max-w-xl bg-slate-950 border-l border-slate-800 overflow-y-auto z-20 shadow-2xl">
-      <div className="sticky top-0 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
+    <div className="fixed inset-y-0 right-0 w-full max-w-xl bg-paper border-l border-line overflow-y-auto z-20 shadow-2xl">
+      <div className="sticky top-0 bg-paper/95 backdrop-blur border-b border-line px-4 py-3 flex items-center justify-between">
         <div>
-          <span className="text-sm font-semibold text-slate-100">{cell.pair}</span>
-          <span className="ml-2 text-xs text-slate-400">{cell.timeframe}</span>
+          <span className="text-sm font-semibold text-ink">{cell.pair}</span>
+          <span className="ml-2 text-xs text-muted">{cell.timeframe}</span>
         </div>
         <button
           onClick={onClose}
-          className="text-slate-500 hover:text-slate-200 text-lg leading-none"
+          className="text-muted2 hover:text-ink text-lg leading-none"
           aria-label="Close panel"
         >
           &times;
@@ -351,15 +349,15 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
       <div className="p-4 space-y-4">
         {/* Debug: Force ratification */}
         <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">Debug Controls</h3>
+          <h3 className="text-xs uppercase tracking-widest text-muted2 mb-2">Debug Controls</h3>
           <div className="space-y-2">
             <button
               onClick={handleForceRatification}
               disabled={ratLoading}
               className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${
                 ratConfirmed
-                  ? "bg-red-900/60 border-red-700 text-red-200 hover:bg-red-800/80"
-                  : "bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500 hover:bg-slate-700"
+                  ? "bg-down-soft/60 border-down/40 text-down-strong hover:bg-down-soft"
+                  : "bg-sunken border-line text-ink2 hover:border-line-strong hover:bg-line"
               } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
               {ratLoading
@@ -371,31 +369,29 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
             {ratConfirmed && !ratLoading && (
               <button
                 onClick={() => setRatConfirmed(false)}
-                className="ml-2 text-xs text-slate-500 hover:text-slate-300 underline"
+                className="ml-2 text-xs text-muted2 hover:text-ink2 underline"
               >
                 Cancel
               </button>
             )}
-            {ratError && (
-              <p className="text-xs text-red-400 bg-red-950/30 rounded p-2">{ratError}</p>
-            )}
+            {ratError && <p className="text-xs text-down bg-down-soft rounded p-2">{ratError}</p>}
             {ratResult && (
-              <div className="text-[11px] bg-slate-900 rounded p-2 space-y-1">
+              <div className="text-[11px] bg-surface rounded p-2 space-y-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-slate-500">
+                  <span className="text-muted2">
                     {ratResult.algoSignalType ?? "—"}
                     {ratResult.algoConfidence !== null
                       ? ` ${(ratResult.algoConfidence * 100).toFixed(0)}%`
                       : ""}
                   </span>
-                  <span className="text-slate-600">→</span>
+                  <span className="text-muted2">→</span>
                   <span
                     className={`font-semibold ${
                       ratResult.verdictKind === "ratify"
-                        ? "text-emerald-400"
+                        ? "text-up"
                         : ratResult.verdictKind === "downgrade"
-                          ? "text-yellow-400"
-                          : "text-red-400"
+                          ? "text-warn"
+                          : "text-down"
                     }`}
                   >
                     {ratResult.verdictKind ?? "—"}
@@ -403,13 +399,13 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
                       ? ` ${(ratResult.ratifiedConfidence * 100).toFixed(0)}%`
                       : ""}
                   </span>
-                  <span className="ml-auto text-slate-500 font-mono">
+                  <span className="ml-auto text-muted2 font-mono">
                     {ratResult.latencyMs}ms · ${ratResult.costUsd.toFixed(5)}
                   </span>
                 </div>
-                {ratResult.reasoning && <p className="text-slate-400">{ratResult.reasoning}</p>}
+                {ratResult.reasoning && <p className="text-muted">{ratResult.reasoning}</p>}
                 {ratResult.fellBackToAlgo && (
-                  <p className="text-yellow-500">Fell back to algo signal (LLM failed)</p>
+                  <p className="text-warn">Fell back to algo signal (LLM failed)</p>
                 )}
               </div>
             )}
@@ -419,10 +415,10 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
         {/* Interpretation text */}
         {cell.signal.interpretationText && (
           <section>
-            <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
+            <h3 className="text-xs uppercase tracking-widest text-muted2 mb-2">
               Interpretation (truncated)
             </h3>
-            <p className="text-xs text-slate-300 bg-slate-900 rounded p-3">
+            <p className="text-xs text-ink2 bg-surface rounded p-3">
               {cell.signal.interpretationText}
             </p>
           </section>
@@ -432,11 +428,11 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
             audit table). For per-call LLM ratification history, use the
             Ratifications page (issue #185 / PR #196). */}
         <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
+          <h3 className="text-xs uppercase tracking-widest text-muted2 mb-2">
             Recent Signals (last {cell.signal.recentHistory.length})
           </h3>
           {cell.signal.recentHistory.length === 0 ? (
-            <p className="text-xs text-slate-600">No history</p>
+            <p className="text-xs text-muted2">No history</p>
           ) : (
             <div className="space-y-2">
               {cell.signal.recentHistory.map((row, i) => (
@@ -445,7 +441,7 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
                 // a row with no emit timestamp is already malformed).
                 <div
                   key={row.emittedAt ?? `idx-${i}`}
-                  className="text-[10px] bg-slate-900 rounded p-2"
+                  className="text-[10px] bg-surface rounded p-2"
                 >
                   <div className="flex items-center gap-2 mb-1">
                     <span className={`font-semibold ${signalTypeColor(row.type)}`}>
@@ -458,11 +454,11 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
                         {row.ratificationStatus}
                       </span>
                     )}
-                    <span className="ml-auto text-slate-500 font-mono">
+                    <span className="ml-auto text-muted2 font-mono">
                       {row.emittedAt ? new Date(row.emittedAt).toLocaleTimeString() : "—"}
                     </span>
                   </div>
-                  {row.reasoning && <p className="text-slate-400 line-clamp-2">{row.reasoning}</p>}
+                  {row.reasoning && <p className="text-muted line-clamp-2">{row.reasoning}</p>}
                 </div>
               ))}
             </div>
@@ -471,12 +467,10 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
 
         {/* Sentiment detail */}
         <section>
-          <h3 className="text-xs uppercase tracking-widest text-slate-500 mb-2">
-            Sentiment Detail
-          </h3>
+          <h3 className="text-xs uppercase tracking-widest text-muted2 mb-2">Sentiment Detail</h3>
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-slate-500">
+              <tr className="text-muted2">
                 {["Window", "Score", "Magnitude", "Articles", "Age"].map((h) => (
                   <th key={h} className="text-left font-medium pb-1.5">
                     {h}
@@ -489,13 +483,13 @@ function SidePanel({ cell, onClose }: { cell: PipelineCell; onClose: () => void 
                 { label: "4h", data: cell.sentiment4h, dur: TF_DURATION_S["4h"] },
                 { label: "24h", data: cell.sentiment24h, dur: TF_DURATION_S["4h"] },
               ].map(({ label, data, dur }) => (
-                <tr key={label} className="border-t border-slate-800">
-                  <td className="py-1.5 text-slate-400">{label}</td>
+                <tr key={label} className="border-t border-line">
+                  <td className="py-1.5 text-muted">{label}</td>
                   <td className={`py-1.5 font-mono ${ageColor(data.ageSeconds, dur)}`}>
                     {fmt(data.score, 3)}
                   </td>
-                  <td className="py-1.5 font-mono text-slate-300">{fmt(data.magnitude, 3)}</td>
-                  <td className="py-1.5 text-slate-300">{data.articleCount ?? "—"}</td>
+                  <td className="py-1.5 font-mono text-ink2">{fmt(data.magnitude, 3)}</td>
+                  <td className="py-1.5 text-ink2">{data.articleCount ?? "—"}</td>
                   <td className={`py-1.5 font-mono ${ageColor(data.ageSeconds, dur)}`}>
                     {fmtAge(data.ageSeconds)}
                   </td>
@@ -549,13 +543,10 @@ function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void
   return (
     <>
       <div className="fixed inset-0 bg-black/50 z-30" onClick={onClose} aria-hidden />
-      <div className="fixed inset-x-4 top-1/4 max-w-sm mx-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-40 p-5 space-y-4">
+      <div className="fixed inset-x-4 top-1/4 max-w-sm mx-auto bg-surface border border-line rounded-xl shadow-2xl z-40 p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-100">Inject Sentiment Shock</h2>
-          <button
-            onClick={onClose}
-            className="text-slate-500 hover:text-slate-200 text-lg leading-none"
-          >
+          <h2 className="text-sm font-semibold text-ink">Inject Sentiment Shock</h2>
+          <button onClick={onClose} className="text-muted2 hover:text-ink text-lg leading-none">
             &times;
           </button>
         </div>
@@ -567,13 +558,13 @@ function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void
 
         <div className="space-y-2">
           <div>
-            <label className="block text-[11px] text-slate-400 mb-1">Pair</label>
-            <div className="text-xs font-mono text-slate-200">{pair}</div>
+            <label className="block text-[11px] text-muted mb-1">Pair</label>
+            <div className="text-xs font-mono text-ink">{pair}</div>
           </div>
           <div>
-            <label className="block text-[11px] text-slate-400 mb-1">
+            <label className="block text-[11px] text-muted mb-1">
               Delta Score{" "}
-              <span className="text-slate-600">(added to current aggregate, range [-2, 2])</span>
+              <span className="text-muted2">(added to current aggregate, range [-2, 2])</span>
             </label>
             <input
               type="number"
@@ -585,13 +576,13 @@ function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void
                 setDeltaScore(e.target.value);
                 setConfirmed(false);
               }}
-              className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-slate-500"
+              className="w-full bg-sunken border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-line-strong"
             />
           </div>
           <div>
-            <label className="block text-[11px] text-slate-400 mb-1">
+            <label className="block text-[11px] text-muted mb-1">
               Delta Magnitude{" "}
-              <span className="text-slate-600">(added to current aggregate, range [-1, 1])</span>
+              <span className="text-muted2">(added to current aggregate, range [-1, 1])</span>
             </label>
             <input
               type="number"
@@ -603,7 +594,7 @@ function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void
                 setDeltaMagnitude(e.target.value);
                 setConfirmed(false);
               }}
-              className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-slate-500"
+              className="w-full bg-sunken border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-line-strong"
             />
           </div>
         </div>
@@ -614,36 +605,36 @@ function InjectShockModal({ pair, onClose }: { pair: string; onClose: () => void
             disabled={loading}
             className={`flex-1 py-1.5 rounded text-xs font-medium border transition-colors ${
               confirmed
-                ? "bg-red-900/60 border-red-700 text-red-200 hover:bg-red-800/80"
-                : "bg-indigo-700 border-indigo-600 text-white hover:bg-indigo-600"
+                ? "bg-down-soft/60 border-down/40 text-down-strong hover:bg-down-soft"
+                : "bg-brand-strong border-brand text-white hover:bg-brand-strong"
             } disabled:opacity-50 disabled:cursor-not-allowed`}
           >
             {loading ? "Injecting…" : confirmed ? "Confirm — this is real" : "Inject shock"}
           </button>
           <button
             onClick={onClose}
-            className="px-3 py-1.5 rounded text-xs border border-slate-700 text-slate-400 hover:border-slate-500"
+            className="px-3 py-1.5 rounded text-xs border border-line text-muted hover:border-line-strong"
           >
             Close
           </button>
         </div>
 
-        {error && <p className="text-xs text-red-400 bg-red-950/30 rounded p-2">{error}</p>}
+        {error && <p className="text-xs text-down bg-down-soft rounded p-2">{error}</p>}
 
         {result && (
           <div className="space-y-1">
             <div
               className={`text-xs font-semibold ${
                 result.decision === "fired"
-                  ? "text-emerald-400"
+                  ? "text-up"
                   : result.decision === "gated"
-                    ? "text-orange-400"
-                    : "text-slate-400"
+                    ? "text-warn"
+                    : "text-muted"
               }`}
             >
               {result.decision.toUpperCase()}
             </div>
-            <ul className="text-[11px] text-slate-400 space-y-0.5">
+            <ul className="text-[11px] text-muted space-y-0.5">
               {result.reasons.map((r, i) => (
                 <li key={i}>{r}</li>
               ))}
@@ -710,34 +701,34 @@ export function Pipeline() {
     <div className="relative">
       {/* Header bar */}
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-sm font-semibold text-slate-100">Pipeline State</h1>
+        <h1 className="text-sm font-semibold text-ink">Pipeline State</h1>
         {data && (
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-muted2">
             Updated {new Date(data.generatedAt).toLocaleTimeString()} · refreshes every 5s
           </p>
         )}
       </div>
 
       {error && (
-        <div className="p-3 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm mb-4">
+        <div className="p-3 rounded bg-down-soft text-down-strong border border-down/30 text-sm mb-4">
           {error}
         </div>
       )}
 
       {!data ? (
-        <div className="text-sm text-slate-500">Loading…</div>
+        <div className="text-sm text-muted2">Loading…</div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full border-separate border-spacing-1.5" style={{ minWidth: 640 }}>
             <thead>
               <tr>
-                <th className="text-left text-[10px] uppercase tracking-widest text-slate-500 pb-1 w-24">
+                <th className="text-left text-[10px] uppercase tracking-widest text-muted2 pb-1 w-24">
                   Pair
                 </th>
                 {TIMEFRAMES.map((tf) => (
                   <th
                     key={tf}
-                    className="text-center text-[10px] uppercase tracking-widest text-slate-500 pb-1"
+                    className="text-center text-[10px] uppercase tracking-widest text-muted2 pb-1"
                   >
                     {tf}
                   </th>
@@ -747,11 +738,11 @@ export function Pipeline() {
             <tbody>
               {PAIRS.map((pair) => (
                 <tr key={pair}>
-                  <td className="text-xs font-mono text-slate-400 pr-2 align-top pt-1">
+                  <td className="text-xs font-mono text-muted pr-2 align-top pt-1">
                     <div>{pair}</div>
                     <button
                       onClick={() => setShockPair(pair)}
-                      className="mt-1 text-[9px] px-1.5 py-0.5 rounded border border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-300 transition-colors whitespace-nowrap"
+                      className="mt-1 text-[9px] px-1.5 py-0.5 rounded border border-line text-muted2 hover:border-line-strong hover:text-ink2 transition-colors whitespace-nowrap"
                       title="Inject synthetic sentiment shock for this pair"
                     >
                       inject shock
@@ -762,7 +753,7 @@ export function Pipeline() {
                     if (!cell) {
                       return (
                         <td key={tf} className="align-top">
-                          <div className="rounded-lg border border-slate-800 bg-slate-950 p-2 opacity-40 text-[11px] text-slate-600">
+                          <div className="rounded-lg border border-line bg-paper p-2 opacity-40 text-[11px] text-muted2">
                             —
                           </div>
                         </td>

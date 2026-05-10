@@ -38,14 +38,14 @@ export function Overview() {
 
   if (error)
     return (
-      <div className="p-4 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+      <div className="p-4 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
         {error}
       </div>
     );
-  if (!data) return <div className="text-sm text-slate-500">Loading…</div>;
+  if (!data) return <div className="text-sm text-muted2">Loading…</div>;
 
   const fg = data.fearGreed;
-  const fgColor = fg ? fgColorFor(fg.value) : "text-slate-500";
+  const fgColor = fg ? fgColorFor(fg.value) : "text-muted2";
   const totalRecords = data.tableCounts.reduce((s, t) => s + (t.count > 0 ? t.count : 0), 0);
   const totalSizeMB = (data.tableCounts.reduce((s, t) => s + t.size, 0) / 1024 / 1024).toFixed(1);
   const ecsHealthy = data.ecsStatus.running > 0;
@@ -65,7 +65,7 @@ export function Overview() {
           label="Ingestion"
           value={`${data.ecsStatus.running}/${data.ecsStatus.desired}`}
           sub={data.ecsStatus.status}
-          valueClass={ecsHealthy ? "text-emerald-400" : "text-red-400"}
+          valueClass={ecsHealthy ? "text-up" : "text-down"}
         />
       </div>
 
@@ -104,13 +104,13 @@ export function Overview() {
         </Card>
 
         <Card title="Recent Ingestion Logs">
-          <pre className="text-[11px] text-slate-400 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto">
+          <pre className="text-[11px] text-muted whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto">
             {data.recentLogs.join("\n")}
           </pre>
         </Card>
       </div>
 
-      <p className="text-xs text-slate-600">
+      <p className="text-xs text-muted2">
         Updated {new Date(data.timestamp).toLocaleTimeString()} · refreshes every 30s
       </p>
     </div>
@@ -118,11 +118,11 @@ export function Overview() {
 }
 
 function fgColorFor(v: number) {
-  if (v <= 25) return "text-red-400";
-  if (v <= 45) return "text-orange-400";
-  if (v <= 55) return "text-yellow-400";
-  if (v <= 75) return "text-lime-400";
-  return "text-emerald-400";
+  if (v <= 25) return "text-down";
+  if (v <= 45) return "text-warn";
+  if (v <= 55) return "text-warn";
+  if (v <= 75) return "text-up";
+  return "text-up";
 }
 
 function Hero({
@@ -137,18 +137,18 @@ function Hero({
   valueClass?: string;
 }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
-      <div className={`text-2xl font-semibold mt-1 ${valueClass ?? "text-slate-100"}`}>{value}</div>
-      {sub && <div className="text-xs text-slate-500 mt-1">{sub}</div>}
+    <div className="rounded-lg border border-line bg-surface p-4">
+      <div className="text-[10px] uppercase tracking-widest text-muted2">{label}</div>
+      <div className={`text-2xl font-semibold mt-1 ${valueClass ?? "text-ink"}`}>{value}</div>
+      {sub && <div className="text-xs text-muted2 mt-1">{sub}</div>}
     </div>
   );
 }
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <h2 className="text-xs uppercase tracking-widest text-slate-500 mb-3">{title}</h2>
+    <div className="rounded-lg border border-line bg-surface p-4">
+      <h2 className="text-xs uppercase tracking-widest text-muted2 mb-3">{title}</h2>
       {children}
     </div>
   );
@@ -158,7 +158,7 @@ function Table({ headers, rows }: { headers: string[]; rows: (string | number)[]
   return (
     <table className="w-full text-xs">
       <thead>
-        <tr className="text-slate-500">
+        <tr className="text-muted2">
           {headers.map((h) => (
             <th key={h} className="text-left font-medium pb-2">
               {h}
@@ -168,9 +168,9 @@ function Table({ headers, rows }: { headers: string[]; rows: (string | number)[]
       </thead>
       <tbody>
         {rows.map((r, i) => (
-          <tr key={i} className="border-t border-slate-800">
+          <tr key={i} className="border-t border-line">
             {r.map((v, j) => (
-              <td key={j} className="py-1.5 text-slate-300">
+              <td key={j} className="py-1.5 text-ink2">
                 {v}
               </td>
             ))}

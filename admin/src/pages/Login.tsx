@@ -276,9 +276,9 @@ export function Login() {
 
   return (
     <div className="min-h-full flex items-center justify-center px-4 py-12">
-      <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-xl p-6">
-        <h1 className="text-xl font-semibold text-slate-100 mb-1">Quantara Admin</h1>
-        <p className="text-sm text-slate-400 mb-6">
+      <div className="w-full max-w-sm bg-surface border border-line rounded-xl p-6">
+        <h1 className="text-xl font-semibold text-ink mb-1">Quantara Admin</h1>
+        <p className="text-sm text-muted mb-6">
           {step === "email" && "Sign in to your account"}
           {step === "password" && (isNewUser ? "Create your account" : "Welcome back")}
           {step === "mfa" && "Verify your identity"}
@@ -286,12 +286,12 @@ export function Login() {
         </p>
 
         {info && (
-          <div className="mb-3 p-2 text-xs rounded bg-emerald-950/40 text-emerald-300 border border-emerald-900">
+          <div className="mb-3 p-2 text-xs rounded bg-up-soft text-up-strong border border-up/30">
             {info}
           </div>
         )}
         {error && (
-          <div className="mb-3 p-2 text-xs rounded bg-red-950/40 text-red-300 border border-red-900">
+          <div className="mb-3 p-2 text-xs rounded bg-down-soft text-down-strong border border-down/30">
             {error}
           </div>
         )}
@@ -301,20 +301,20 @@ export function Login() {
             <div className="space-y-2 mb-4">
               <button
                 onClick={() => oauth("google")}
-                className="w-full rounded-md border border-slate-700 bg-white text-slate-900 px-3 py-2 text-sm font-medium hover:bg-slate-100 transition"
+                className="w-full rounded-md border border-line bg-white text-ink px-3 py-2 text-sm font-medium hover:bg-sunken transition"
               >
                 Continue with Google
               </button>
               <button
                 onClick={() => oauth("apple")}
-                className="w-full rounded-md border border-slate-700 bg-black text-white px-3 py-2 text-sm font-medium hover:bg-slate-900 transition"
+                className="w-full rounded-md border border-line bg-black text-white px-3 py-2 text-sm font-medium hover:bg-surface transition"
               >
                 Continue with Apple
               </button>
               <button
                 onClick={passkeyLogin}
                 disabled={busy}
-                className="w-full rounded-md border border-slate-700 bg-slate-800 text-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full rounded-md border border-line bg-sunken text-ink px-3 py-2 text-sm font-medium hover:bg-line transition disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 <svg
                   width="14"
@@ -336,23 +336,23 @@ export function Login() {
               </button>
             </div>
             <div className="flex items-center gap-3 my-4">
-              <div className="flex-1 h-px bg-slate-800" />
-              <span className="text-xs text-slate-500">or</span>
-              <div className="flex-1 h-px bg-slate-800" />
+              <div className="flex-1 h-px bg-sunken" />
+              <span className="text-xs text-muted2">or</span>
+              <div className="flex-1 h-px bg-sunken" />
             </div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Email</label>
+            <label className="block text-xs font-medium text-ink2 mb-1">Email</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && startSignIn()}
               placeholder="you@example.com"
-              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+              className="w-full rounded-md bg-paper border border-line px-3 py-2 text-sm text-ink focus:outline-none focus:border-brand"
             />
             <button
               onClick={startSignIn}
               disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+              className="mt-3 w-full rounded-md bg-brand-strong hover:bg-brand px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
             >
               Continue
             </button>
@@ -368,18 +368,18 @@ export function Login() {
                 setInfo("");
                 setForgot(false);
               }}
-              className="text-xs text-slate-500 hover:text-slate-300 mb-3"
+              className="text-xs text-muted2 hover:text-ink2 mb-3"
             >
               ← Back
             </button>
-            <p className="text-sm text-slate-300 mb-3">{email}</p>
+            <p className="text-sm text-ink2 mb-3">{email}</p>
             {isNewUser && (
               <input
                 type="text"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="Display name"
-                className="w-full mb-2 rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                className="w-full mb-2 rounded-md bg-paper border border-line px-3 py-2 text-sm text-ink focus:outline-none focus:border-brand"
               />
             )}
             <input
@@ -389,38 +389,38 @@ export function Login() {
               onKeyDown={(e) => e.key === "Enter" && submitAuth()}
               placeholder={isNewUser ? "Create a password (8+ chars)" : "Enter your password"}
               autoComplete={isNewUser ? "new-password" : "current-password"}
-              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+              className="w-full rounded-md bg-paper border border-line px-3 py-2 text-sm text-ink focus:outline-none focus:border-brand"
             />
             <button
               onClick={submitAuth}
               disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+              className="mt-3 w-full rounded-md bg-brand-strong hover:bg-brand px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
             >
               {isNewUser ? "Create account" : "Sign in"}
             </button>
-            <div className="mt-3 flex justify-between items-center text-xs text-slate-500">
+            <div className="mt-3 flex justify-between items-center text-xs text-muted2">
               {!isNewUser ? (
-                <button onClick={() => setIsNewUser(true)} className="hover:text-slate-300">
+                <button onClick={() => setIsNewUser(true)} className="hover:text-ink2">
                   Create account
                 </button>
               ) : (
-                <button onClick={() => setIsNewUser(false)} className="hover:text-slate-300">
+                <button onClick={() => setIsNewUser(false)} className="hover:text-ink2">
                   Already have an account?
                 </button>
               )}
               {!isNewUser && (
-                <button onClick={() => setForgot(!forgot)} className="hover:text-slate-300">
+                <button onClick={() => setForgot(!forgot)} className="hover:text-ink2">
                   Forgot password?
                 </button>
               )}
             </div>
             {forgot && !isNewUser && (
-              <div className="mt-3 pt-3 border-t border-slate-800">
-                <p className="text-xs text-slate-400 mb-2">Send a reset link to {email}</p>
+              <div className="mt-3 pt-3 border-t border-line">
+                <p className="text-xs text-muted mb-2">Send a reset link to {email}</p>
                 <button
                   onClick={sendReset}
                   disabled={busy}
-                  className="w-full rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs text-slate-100 disabled:opacity-50"
+                  className="w-full rounded-md bg-sunken hover:bg-line px-3 py-2 text-xs text-ink disabled:opacity-50"
                 >
                   Send reset link
                 </button>
@@ -433,16 +433,16 @@ export function Login() {
           <>
             <button
               onClick={() => setStep("password")}
-              className="text-xs text-slate-500 hover:text-slate-300 mb-3"
+              className="text-xs text-muted2 hover:text-ink2 mb-3"
             >
               ← Back
             </button>
             {availableMethods.length > 1 && (
-              <div className="flex border border-slate-700 rounded overflow-hidden mb-3">
+              <div className="flex border border-line rounded overflow-hidden mb-3">
                 {availableMethods.includes("totp") && (
                   <button
                     onClick={() => setMfaMethod("totp")}
-                    className={`flex-1 px-3 py-1.5 text-xs ${mfaMethod === "totp" ? "bg-indigo-600 text-white" : "text-slate-400"}`}
+                    className={`flex-1 px-3 py-1.5 text-xs ${mfaMethod === "totp" ? "bg-brand-strong text-white" : "text-muted"}`}
                   >
                     Authenticator
                   </button>
@@ -450,14 +450,14 @@ export function Login() {
                 {availableMethods.includes("email") && (
                   <button
                     onClick={() => setMfaMethod("email")}
-                    className={`flex-1 px-3 py-1.5 text-xs border-l border-slate-700 ${mfaMethod === "email" ? "bg-indigo-600 text-white" : "text-slate-400"}`}
+                    className={`flex-1 px-3 py-1.5 text-xs border-l border-line ${mfaMethod === "email" ? "bg-brand-strong text-white" : "text-muted"}`}
                   >
                     Email
                   </button>
                 )}
               </div>
             )}
-            <p className="text-xs text-slate-400 mb-2">
+            <p className="text-xs text-muted mb-2">
               {mfaMethod === "email"
                 ? "Enter the 6-digit code sent to your email"
                 : "Enter the 6-digit code from your authenticator app"}
@@ -466,7 +466,7 @@ export function Login() {
               <button
                 onClick={sendMfaEmail}
                 disabled={busy}
-                className="w-full mb-3 rounded-md bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs text-slate-100 disabled:opacity-50"
+                className="w-full mb-3 rounded-md bg-sunken hover:bg-line px-3 py-2 text-xs text-ink disabled:opacity-50"
               >
                 Send code
               </button>
@@ -479,12 +479,12 @@ export function Login() {
               onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ""))}
               onKeyDown={(e) => e.key === "Enter" && submitMfa()}
               placeholder="000000"
-              className="w-full text-center tracking-[0.5em] rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-lg text-slate-100 focus:outline-none focus:border-indigo-500"
+              className="w-full text-center tracking-[0.5em] rounded-md bg-paper border border-line px-3 py-2 text-lg text-ink focus:outline-none focus:border-brand"
             />
             <button
               onClick={submitMfa}
               disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+              className="mt-3 w-full rounded-md bg-brand-strong hover:bg-brand px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
             >
               Verify
             </button>
@@ -493,7 +493,7 @@ export function Login() {
                 setMfaMethod("recovery_code");
                 setMfaCode("");
               }}
-              className="mt-2 w-full text-xs text-slate-500 hover:text-slate-300"
+              className="mt-2 w-full text-xs text-muted2 hover:text-ink2"
             >
               Use recovery code
             </button>
@@ -508,12 +508,12 @@ export function Login() {
               onChange={(e) => setNewPassword(e.target.value)}
               placeholder="New password (8+ chars)"
               autoComplete="new-password"
-              className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+              className="w-full rounded-md bg-paper border border-line px-3 py-2 text-sm text-ink focus:outline-none focus:border-brand"
             />
             <button
               onClick={submitReset}
               disabled={busy}
-              className="mt-3 w-full rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
+              className="mt-3 w-full rounded-md bg-brand-strong hover:bg-brand px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-50"
             >
               Reset password
             </button>

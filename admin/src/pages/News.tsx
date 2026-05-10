@@ -128,65 +128,61 @@ function SentimentChip({ item }: { item: NewsItem }) {
 
   if (label === "positive") {
     return (
-      <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 text-[11px]">
+      <span className="px-1.5 py-0.5 rounded bg-up-soft text-up-strong text-[11px]">
         bullish{magStr}
       </span>
     );
   }
   if (label === "negative") {
     return (
-      <span className="px-1.5 py-0.5 rounded bg-red-950 text-red-300 text-[11px]">
+      <span className="px-1.5 py-0.5 rounded bg-down-soft text-down-strong text-[11px]">
         bearish{magStr}
       </span>
     );
   }
   return (
-    <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">
-      neutral{magStr}
-    </span>
+    <span className="px-1.5 py-0.5 rounded bg-sunken text-muted text-[11px]">neutral{magStr}</span>
   );
 }
 
 function UsageCard({ usage }: { usage: NewsUsage }) {
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-900 p-4 mb-2">
-      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
+    <div className="rounded-lg border border-line bg-surface p-4 mb-2">
+      <div className="text-xs font-semibold text-muted uppercase tracking-wide mb-3">
         LLM Usage{" "}
-        <span className="font-normal normal-case text-slate-500">
+        <span className="font-normal normal-case text-muted2">
           (today + last 24h, day-bucketed)
         </span>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div>
-          <div className="text-xl font-semibold text-slate-100">
+          <div className="text-xl font-semibold text-ink">
             {usage.articlesEnriched.toLocaleString()}
           </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Articles enriched</div>
+          <div className="text-[11px] text-muted2 mt-0.5">Articles enriched</div>
         </div>
         <div>
-          <div className="text-xl font-semibold text-slate-100">
+          <div className="text-xl font-semibold text-ink">
             {(usage.totalInputTokens / 1000).toFixed(1)}k
           </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Input tokens</div>
+          <div className="text-[11px] text-muted2 mt-0.5">Input tokens</div>
         </div>
         <div>
-          <div className="text-xl font-semibold text-slate-100">
+          <div className="text-xl font-semibold text-ink">
             {(usage.totalOutputTokens / 1000).toFixed(1)}k
           </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Output tokens</div>
+          <div className="text-[11px] text-muted2 mt-0.5">Output tokens</div>
         </div>
         <div>
-          <div className="text-xl font-semibold text-emerald-400">
-            ${usage.estimatedCostUsd.toFixed(4)}
-          </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Est. cost (USD)</div>
+          <div className="text-xl font-semibold text-up">${usage.estimatedCostUsd.toFixed(4)}</div>
+          <div className="text-[11px] text-muted2 mt-0.5">Est. cost (USD)</div>
         </div>
       </div>
       {Object.keys(usage.byModel).length > 0 && (
-        <div className="mt-3 pt-3 border-t border-slate-800 flex flex-wrap gap-3">
+        <div className="mt-3 pt-3 border-t border-line flex flex-wrap gap-3">
           {Object.entries(usage.byModel).map(([model, stats]) => (
-            <div key={model} className="text-[11px] text-slate-500">
-              <span className="text-slate-400">{model}</span>
+            <div key={model} className="text-[11px] text-muted2">
+              <span className="text-muted">{model}</span>
               {" — "}
               {stats.calls.toLocaleString()} calls, ${stats.costUsd.toFixed(4)}
             </div>
@@ -318,11 +314,11 @@ export function News() {
 
   if (error)
     return (
-      <div className="p-3 rounded bg-red-950/40 text-red-300 border border-red-900 text-sm">
+      <div className="p-3 rounded bg-down-soft text-down-strong border border-down/30 text-sm">
         {error}
       </div>
     );
-  if (!data) return <div className="text-sm text-slate-500">Loading...</div>;
+  if (!data) return <div className="text-sm text-muted2">Loading...</div>;
 
   const filtered = data.news.filter((n) => matchesFilter(n, filter));
   const pagesLoaded = pages.length;
@@ -347,14 +343,14 @@ export function News() {
             onClick={() => setFilter(key)}
             className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-colors ${
               filter === key
-                ? "bg-indigo-600 border-indigo-500 text-white"
-                : "bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500"
+                ? "bg-brand-strong border-brand text-white"
+                : "bg-surface border-line text-muted hover:border-line-strong"
             }`}
           >
             {label}
           </button>
         ))}
-        <span className="ml-auto text-[11px] text-slate-500">
+        <span className="ml-auto text-[11px] text-muted2">
           {filtered.length} of {data.news.length}
         </span>
       </div>
@@ -371,12 +367,12 @@ export function News() {
           const hasEnrichment = !!n.enrichment || !!n.sentiment;
 
           return (
-            <div key={id} className="rounded-lg border border-slate-800 bg-slate-900 p-3">
-              <div className="text-sm text-slate-100 mb-1">{n.title ?? "(no title)"}</div>
+            <div key={id} className="rounded-lg border border-line bg-surface p-3">
+              <div className="text-sm text-ink mb-1">{n.title ?? "(no title)"}</div>
               <div className="flex flex-wrap gap-2 text-[11px] items-center">
-                <span className="text-slate-500">{n.source ?? "unknown"}</span>
-                <span className="text-slate-600">·</span>
-                <span className="text-slate-500">
+                <span className="text-muted2">{n.source ?? "unknown"}</span>
+                <span className="text-muted2">·</span>
+                <span className="text-muted2">
                   {n.publishedAt ? new Date(n.publishedAt).toLocaleString() : ""}
                 </span>
 
@@ -396,10 +392,10 @@ export function News() {
                 <span
                   className={`px-1.5 py-0.5 rounded text-[11px] ${
                     n.status === "enriched"
-                      ? "bg-slate-800 text-slate-300"
+                      ? "bg-sunken text-ink2"
                       : n.status === "failed"
-                        ? "bg-red-950 text-red-400"
-                        : "bg-slate-800 text-slate-500"
+                        ? "bg-down-soft text-down"
+                        : "bg-sunken text-muted2"
                   }`}
                 >
                   {n.status ?? "raw"}
@@ -412,7 +408,7 @@ export function News() {
                 {pairs.length > 0 && (
                   <span className="inline-flex items-center gap-1">
                     {pairs.map((c) => (
-                      <span key={c} className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300">
+                      <span key={c} className="px-1.5 py-0.5 rounded bg-brand-soft text-brand">
                         {c}
                       </span>
                     ))}
@@ -425,7 +421,7 @@ export function News() {
                 <div className="ml-auto flex items-center gap-2">
                   {hasEnrichment && (
                     <button
-                      className="text-slate-500 hover:text-slate-300 underline underline-offset-2"
+                      className="text-muted2 hover:text-ink2 underline underline-offset-2"
                       onClick={() => {
                         setExpanded((prev) => {
                           const next = new Set(prev);
@@ -440,7 +436,7 @@ export function News() {
                   )}
                   {n.newsId && (
                     <button
-                      className="text-indigo-400 hover:text-indigo-200 underline underline-offset-2 disabled:opacity-50 disabled:no-underline"
+                      className="text-brand hover:text-brand underline underline-offset-2 disabled:opacity-50 disabled:no-underline"
                       disabled={replayLoading.has(id)}
                       onClick={() => handleReplayEnrichment(id)}
                       title="Re-run enrichment against current prompts (read-only — does not overwrite)"
@@ -452,7 +448,7 @@ export function News() {
               </div>
 
               {isExpanded && hasEnrichment && (
-                <pre className="mt-2 p-2 rounded bg-slate-950 text-[10px] text-slate-400 overflow-x-auto whitespace-pre-wrap break-words">
+                <pre className="mt-2 p-2 rounded bg-paper text-[10px] text-muted overflow-x-auto whitespace-pre-wrap break-words">
                   {JSON.stringify(
                     {
                       // Stringify a combined view so Phase 5a-only rows (which
@@ -473,15 +469,15 @@ export function News() {
 
               {/* Replay enrichment result */}
               {replayErrors[id] && (
-                <div className="mt-2 p-2 rounded bg-red-950/30 text-[11px] text-red-400">
+                <div className="mt-2 p-2 rounded bg-down-soft text-[11px] text-down">
                   {replayErrors[id]}
                 </div>
               )}
               {replayResults[id] && (
                 <div className="mt-2 space-y-1.5">
-                  <div className="text-[10px] text-slate-500 uppercase tracking-widest">
+                  <div className="text-[10px] text-muted2 uppercase tracking-widest">
                     Replay result{" "}
-                    <span className="normal-case font-normal text-slate-600">
+                    <span className="normal-case font-normal text-muted2">
                       (not saved · {replayResults[id].replayedEnrichment.latencyMs}ms · $
                       {replayResults[id].replayedEnrichment.costUsd.toFixed(5)})
                     </span>
@@ -490,7 +486,7 @@ export function News() {
                     {replayResults[id].replayedEnrichment.mentionedPairs.map((p) => (
                       <span
                         key={p}
-                        className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 text-[11px]"
+                        className="px-1.5 py-0.5 rounded bg-brand-soft text-brand text-[11px]"
                       >
                         {p}
                       </span>
@@ -498,10 +494,10 @@ export function News() {
                     <span
                       className={`px-1.5 py-0.5 rounded text-[11px] ${
                         replayResults[id].replayedEnrichment.sentiment.score > 0.1
-                          ? "bg-emerald-950 text-emerald-300"
+                          ? "bg-up-soft text-up-strong"
                           : replayResults[id].replayedEnrichment.sentiment.score < -0.1
-                            ? "bg-red-950 text-red-300"
-                            : "bg-slate-800 text-slate-400"
+                            ? "bg-down-soft text-down-strong"
+                            : "bg-sunken text-muted"
                       }`}
                     >
                       score {replayResults[id].replayedEnrichment.sentiment.score.toFixed(2)} · mag{" "}
@@ -521,18 +517,18 @@ export function News() {
           <button
             onClick={() => void loadMore()}
             disabled={loadingMore}
-            className="px-4 py-1.5 rounded border border-slate-700 text-sm text-slate-400 hover:border-slate-500 hover:text-slate-200 disabled:opacity-50 transition-colors"
+            className="px-4 py-1.5 rounded border border-line text-sm text-muted hover:border-line-strong hover:text-ink disabled:opacity-50 transition-colors"
           >
             {loadingMore ? "Loading..." : "Load more"}
           </button>
         )}
         {atPageLimit && (
-          <p className="text-[11px] text-slate-500">
+          <p className="text-[11px] text-muted2">
             {MAX_PAGES} pages loaded. Reload the page to start over.
           </p>
         )}
         {pagesLoaded > 1 && (
-          <p className="text-[11px] text-slate-600">
+          <p className="text-[11px] text-muted2">
             {pagesLoaded} pages loaded &middot; {allNews.length} articles
           </p>
         )}
