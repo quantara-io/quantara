@@ -730,15 +730,31 @@ export async function reenrichNews(input: ReenrichNewsInput): Promise<ReenrichNe
 
   // Reset status to "raw" so the enrichment Lambda's early-return guard
   // (`if (status === "enriched") continue;`) doesn't skip this article.
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: NEWS_TABLE,
-      Key: { newsId, publishedAt },
-      UpdateExpression: "SET #status = :raw",
-      ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: { ":raw": "raw" },
-    }),
-  );
+  // ConditionExpression: "attribute_exists(newsId)" prevents DDB's default
+  // "create if missing" behavior from writing a phantom row when the caller
+  // passes a typo'd newsId/publishedAt — the enrichment Lambda would then
+  // dequeue an incomplete row and fail on missing fields. Surface the bad
+  // input as a ConditionalCheckFailedException instead of corrupting state.
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: NEWS_TABLE,
+        Key: { newsId, publishedAt },
+        UpdateExpression: "SET #status = :raw",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":raw": "raw" },
+        ConditionExpression: "attribute_exists(newsId)",
+      }),
+    );
+  } catch (err) {
+    if ((err as { name?: string }).name === "ConditionalCheckFailedException") {
+      throw new Error(
+        `News article not found: newsId=${newsId} publishedAt=${publishedAt}. ` +
+          `Verify both fields match an existing row.`,
+      );
+    }
+    throw err;
+  }
 
   // Send the article to the enrichment SQS queue.
   const ENRICHMENT_QUEUE_URL =

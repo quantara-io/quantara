@@ -695,6 +695,23 @@ admin.post("/debug/reenrich-news", async (c) => {
       400,
     );
   }
+  // publishedAt is a DDB sort key. Reject anything that isn't a parseable
+  // date — without this, a typo (e.g. "yesterday") is forwarded to DDB and
+  // would create a phantom row via the default UpdateCommand-creates-if-
+  // missing behavior. The service-layer ConditionExpression catches it too,
+  // but failing fast at the route gives a cleaner 400 instead of a 500.
+  if (!Number.isFinite(Date.parse(body.publishedAt))) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: "publishedAt must be a valid ISO 8601 date string",
+        },
+      },
+      400,
+    );
+  }
 
   const result = await reenrichNews({
     newsId: body.newsId.trim(),
