@@ -56,7 +56,6 @@ export function Workstation() {
       if (cancelled) return;
       if (res.success && res.data) {
         setData(res.data);
-        setCandles(res.data.candles ?? []);
         setError("");
       } else {
         setError(res.error?.message ?? "Failed to load market data");
