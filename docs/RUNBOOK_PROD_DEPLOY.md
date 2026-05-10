@@ -44,16 +44,31 @@ In order:
 1. Checks out the specified SHA.
 2. Builds the backend and ingestion Lambda zips from source.
 3. Authenticates to the prod AWS account via OIDC (`GitHubDeployRoleProd`).
-4. Updates each Lambda function code:
-   - `quantara-prod-api`
-   - `quantara-prod-ingestion`
-   - `quantara-prod-backfill`
-   - `quantara-prod-news-backfill`
-   - `quantara-prod-enrichment`
-   - `quantara-prod-indicator-handler`
-   - `quantara-prod-outcome-handler`
-   - `quantara-prod-aggregator-handler`
-   - `quantara-prod-ratification-handler`
+4. Updates each Lambda function code. The canonical list is the `function_name` values declared in `backend/infra/modules/quantara-backend/*.tf` (15 Lambdas):
+
+   ```bash
+   # Canonical prod Lambda inventory — keep in sync with section 3 rollback loop.
+   LAMBDAS=(
+     quantara-prod-aggregator
+     quantara-prod-api
+     quantara-prod-backfill
+     quantara-prod-close-quorum-monitor
+     quantara-prod-enrichment
+     quantara-prod-events-fanout
+     quantara-prod-higher-tf-poller
+     quantara-prod-indicator-handler
+     quantara-prod-indicator-handler-shadow
+     quantara-prod-ingestion
+     quantara-prod-news-backfill
+     quantara-prod-outcome-handler
+     quantara-prod-signals-fanout
+     quantara-prod-ws-connect
+     quantara-prod-ws-disconnect
+   )
+   ```
+
+   Note: ratification logic runs inside the `quantara-prod-api` Lambda — there is no separate `ratification-handler` function. If the Phase C workflow (`#284`) adds or removes a Lambda, update both this list and the rollback loop in section 3 in the same PR.
+
 5. Builds and pushes the ingestion Docker image to the prod ECR (`quantara-prod-ingestion`), tagged `latest` and `<sha>`.
 6. Forces a new ECS deployment on the `quantara-prod-ingestion` cluster/service.
 7. On success: bumps the `N` counter in `VERSION`, appends the `[Unreleased]` block to `CHANGELOG.md` under the new version heading, commits both files to `main`, and pushes a tag `v<version>` at the deployed SHA.
@@ -145,11 +160,31 @@ Lambda rollback is a re-deploy of the previous version's zip. Every successful d
 
    gh run download "$RUN_ID" --name lambda-zips --dir /tmp/rollback-zips
 
-   # Push each Lambda
-   for FN in api ingestion backfill news-backfill enrichment; do
+   # Canonical prod Lambda inventory — must match the LAMBDAS array in section 1c.
+   # The artifact zip for each function is named after the suffix (e.g. quantara-prod-api → api.zip).
+   LAMBDAS=(
+     quantara-prod-aggregator
+     quantara-prod-api
+     quantara-prod-backfill
+     quantara-prod-close-quorum-monitor
+     quantara-prod-enrichment
+     quantara-prod-events-fanout
+     quantara-prod-higher-tf-poller
+     quantara-prod-indicator-handler
+     quantara-prod-indicator-handler-shadow
+     quantara-prod-ingestion
+     quantara-prod-news-backfill
+     quantara-prod-outcome-handler
+     quantara-prod-signals-fanout
+     quantara-prod-ws-connect
+     quantara-prod-ws-disconnect
+   )
+
+   for FN in "${LAMBDAS[@]}"; do
+     SUFFIX="${FN#quantara-prod-}"
      aws lambda update-function-code \
-       --function-name "quantara-prod-${FN}" \
-       --zip-file "fileb:///tmp/rollback-zips/${FN}.zip" \
+       --function-name "$FN" \
+       --zip-file "fileb:///tmp/rollback-zips/${SUFFIX}.zip" \
        --profile quantara-prod
    done
    ```
