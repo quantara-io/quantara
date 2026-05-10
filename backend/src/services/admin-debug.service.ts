@@ -81,11 +81,16 @@ const INGESTION_METADATA_TABLE =
 // Sonnet 4.6 input/output pricing as of 2026-Q1: $3 / $15 per 1M tokens.
 // ---------------------------------------------------------------------------
 
-const RATIFICATION_MODEL_ID = "claude-sonnet-4-6";
-// On Bedrock the Sonnet 4.6 inference profile id (cross-region) is the form
-// `us.anthropic.claude-sonnet-4-6-...` — the bundled agent uses the SDK's
-// model alias, which Bedrock resolves to the underlying inference profile.
-// Keep these aligned if Bedrock ever changes alias resolution.
+// Bedrock foundation-model id for Sonnet 4.6. The Bedrock SDK does NOT
+// accept the friendly alias `claude-sonnet-4-6` (that's the Anthropic SDK
+// convention used by `ingestion/src/llm/ratify.ts`, which goes through
+// api.anthropic.com). Full id is required because this service calls
+// `BedrockRuntimeClient.send(InvokeModelCommand)` directly. Verified via
+// `aws bedrock-runtime invoke-model --model-id anthropic.claude-sonnet-4-6`
+// (returns AccessDenied with resource arn …foundation-model/anthropic.claude-sonnet-4-6,
+// confirming the id resolves; the existing `lambda_bedrock` policy's
+// `foundation-model/anthropic.claude-sonnet-*` wildcard covers it).
+const RATIFICATION_MODEL_ID = "anthropic.claude-sonnet-4-6";
 const SONNET_INPUT_COST_PER_1K = 0.003;
 const SONNET_OUTPUT_COST_PER_1K = 0.015;
 
