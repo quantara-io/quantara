@@ -97,6 +97,16 @@ resource "aws_iam_role_policy" "indicator_handler_dynamodb" {
           aws_dynamodb_table.ingestion_metadata.arn,
         ]
       },
+      {
+        Sid    = "ReadSentimentAggregates"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.sentiment_aggregates.arn,
+        ]
+      },
     ]
   })
 }
@@ -115,14 +125,14 @@ resource "aws_lambda_function" "indicator_handler" {
 
   environment {
     variables = {
-      TABLE_PREFIX          = "${local.prefix}-"
-      TABLE_CANDLES         = aws_dynamodb_table.candles.name
-      TABLE_CLOSE_QUORUM    = aws_dynamodb_table.close_quorum.name
-      TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
-      TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
-      TABLE_METADATA        = aws_dynamodb_table.ingestion_metadata.name
+      TABLE_PREFIX            = "${local.prefix}-"
+      TABLE_CANDLES           = aws_dynamodb_table.candles.name
+      TABLE_CLOSE_QUORUM      = aws_dynamodb_table.close_quorum.name
+      TABLE_INDICATOR_STATE   = aws_dynamodb_table.indicator_state.name
+      TABLE_SIGNALS_V2        = aws_dynamodb_table.signals_v2.name
+      TABLE_METADATA          = aws_dynamodb_table.ingestion_metadata.name
       REQUIRED_EXCHANGE_COUNT = local.required_exchange_count
-      ENVIRONMENT           = var.environment
+      ENVIRONMENT             = var.environment
     }
   }
 
