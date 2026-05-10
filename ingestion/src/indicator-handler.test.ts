@@ -70,8 +70,10 @@ vi.mock("./lib/cooldown-store.js", () => ({
 }));
 
 const putIndicatorStateMock = vi.fn();
+const getLatestIndicatorStateMock = vi.fn();
 vi.mock("./lib/indicator-state-store.js", () => ({
   putIndicatorState: putIndicatorStateMock,
+  getLatestIndicatorState: getLatestIndicatorStateMock,
 }));
 
 const buildIndicatorStateMock = vi.fn();
@@ -256,6 +258,7 @@ beforeEach(() => {
   tickCooldownsMock.mockReset();
   recordRuleFiresMock.mockReset();
   putIndicatorStateMock.mockReset();
+  getLatestIndicatorStateMock.mockReset();
   buildIndicatorStateMock.mockReset();
   scoreTimeframeMock.mockReset();
   blendTimeframeVotesMock.mockReset();
@@ -306,6 +309,8 @@ beforeEach(() => {
   tickCooldownsMock.mockResolvedValue(undefined);
   recordRuleFiresMock.mockResolvedValue(undefined);
   putIndicatorStateMock.mockResolvedValue(undefined);
+  // By default no stored IndicatorState for non-emitting TFs (cold-start path).
+  getLatestIndicatorStateMock.mockResolvedValue(null);
   buildIndicatorStateMock.mockReturnValue(makeIndicatorState());
   scoreTimeframeMock.mockReturnValue(makeVote("hold"));
   blendTimeframeVotesMock.mockReturnValue(makeBlendedSignal());
@@ -873,5 +878,112 @@ describe("REQUIRED_EXCHANGE_COUNT env var", () => {
 
     // With REQUIRED_EXCHANGE_COUNT=1, a single-exchange quorum should proceed
     expect(getCandles).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression test — issue #278: perTimeframe snapshots must not mix
+// pre/post-calibration rule strengths across timeframes.
+//
+// Before the fix, a 15m emission would:
+//   - Freshly score the 15m vote with current RULES (post-calibration strengths)
+//   - Read the stored 1h TimeframeVote with pre-baked scores from OLD RULES
+//   - Write a BlendedSignal whose perTimeframe mixed old and new strengths
+//
+// After the fix, a 15m emission re-scores the 1h from the stored IndicatorState
+// using the same current RULES, so both perTimeframe.15m and perTimeframe.1h
+// reflect the latest calibration.
+// ---------------------------------------------------------------------------
+
+describe("perTimeframe consistency across timeframes (issue #278)", () => {
+  const FRESH_VOTE: TimeframeVote = {
+    type: "buy",
+    confidence: 0.72,
+    rulesFired: ["volume-spike-bull"],
+    bullishScore: 0.5, // post-calibration strength
+    bearishScore: 0,
+    volatilityFlag: false,
+    gateReason: null,
+    reasoning: "Post-calibration score",
+    tags: [],
+    asOf: TEST_CLOSE_TIME,
+  };
+
+  it("re-scores non-emitting TF from stored IndicatorState rather than persisted vote", async () => {
+    // Arrange: return the emitting-TF vote (15m) from scoreTimeframe on first call.
+    // On second call (for the re-scored 1h state), also return a vote so we can
+    // verify getLatestIndicatorState was called.
+    scoreTimeframeMock.mockReturnValue(FRESH_VOTE);
+
+    // Supply a stored 1h IndicatorState so the re-scoring path is exercised.
+    const stored1hState = makeIndicatorState();
+    getLatestIndicatorStateMock.mockImplementation(
+      (_pair: string, _exchange: string, tf: string) => {
+        if (tf === "1h") return Promise.resolve(stored1hState);
+        return Promise.resolve(null);
+      },
+    );
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // Assert: getLatestIndicatorState was called for the 1h timeframe.
+    const calls1h = (getLatestIndicatorStateMock as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => c[2] === "1h",
+    );
+    expect(calls1h.length).toBeGreaterThanOrEqual(1);
+
+    // Assert: scoreTimeframe was called more than once — once for the emitting
+    // TF (15m) and once for the re-scored 1h from stored IndicatorState.
+    expect(scoreTimeframeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to null for a TF with no stored IndicatorState (cold start)", async () => {
+    // getLatestIndicatorStateMock returns null by default (set in beforeEach).
+    // scoreTimeframe is only called once — for the emitting 15m TF.
+    scoreTimeframeMock.mockReturnValue(FRESH_VOTE);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // scoreTimeframe called exactly once (emitting TF only — no re-scoring for
+    // TFs whose stored state is null).
+    expect(scoreTimeframeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("perTimeframe in the written signal uses re-scored vote (not a stale stored vote)", async () => {
+    // Wire scoreTimeframe to return FRESH_VOTE on any call. Both the emitting
+    // 15m TF and the re-scored 1h TF will get FRESH_VOTE (same mock).
+    scoreTimeframeMock.mockReturnValue(FRESH_VOTE);
+
+    // Provide stored 1h IndicatorState so re-scoring runs.
+    const stored1hState = makeIndicatorState();
+    getLatestIndicatorStateMock.mockImplementation(
+      (_pair: string, _exchange: string, tf: string) => {
+        if (tf === "1h") return Promise.resolve(stored1hState);
+        return Promise.resolve(null);
+      },
+    );
+
+    // Capture what blendTimeframeVotes receives.
+    let capturedPerTimeframe: Record<string, unknown> | null = null;
+    blendTimeframeVotesMock.mockImplementation(
+      (_pair: string, perTimeframeVotes: Record<string, unknown>, _emitting: string) => {
+        capturedPerTimeframe = perTimeframeVotes;
+        return makeBlendedSignal();
+      },
+    );
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    expect(capturedPerTimeframe).not.toBeNull();
+
+    // Both 15m and 1h slots should be FRESH_VOTE (post-calibration scoreTimeframe output).
+    // Before the fix, perTimeframe.1h would be a stale TimeframeVote from the metadata store.
+    // Cast through unknown so TypeScript accepts narrowing from the not.toBeNull() guard above.
+    const perTf = capturedPerTimeframe as unknown as Record<string, typeof FRESH_VOTE | null>;
+    expect(perTf["15m"]).toEqual(FRESH_VOTE);
+    expect(perTf["1h"]).toEqual(FRESH_VOTE);
   });
 });
