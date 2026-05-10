@@ -82,11 +82,15 @@ const phase5aResult = {
   embeddingModel: "amazon.titan-embed-text-v1",
 };
 
-function makeSqsEvent(newsId = "news-001", publishedAt = "2024-01-01T00:00:00.000Z") {
+function makeSqsEvent(
+  newsId = "news-001",
+  publishedAt = "2024-01-01T00:00:00.000Z",
+  extra?: Record<string, unknown>,
+) {
   return {
     Records: [
       {
-        body: JSON.stringify({ data: { newsId, publishedAt } }),
+        body: JSON.stringify({ data: { newsId, publishedAt }, ...extra }),
       },
     ],
   };
@@ -193,5 +197,44 @@ describe("enrichment/handler — Gap 4: invalidation wiring", () => {
     // Should complete without error even when invalidation triggers
     await expect(handler(makeSqsEvent() as any, {} as any)).resolves.toBeUndefined();
     expect(processNewsEventForInvalidationMock).toHaveBeenCalledOnce();
+  });
+
+  it("re-enriches an already-enriched row when force=true is set in the SQS message", async () => {
+    // Simulate a record that is already enriched
+    sendMock.mockImplementation((cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") {
+        return Promise.resolve({ Item: { ...newsRecord, status: "enriched" } });
+      }
+      return Promise.resolve({});
+    });
+
+    const handler = await loadHandler();
+    await handler(
+      makeSqsEvent("news-001", "2024-01-01T00:00:00.000Z", { force: true }) as any,
+      {} as any,
+    );
+
+    // Both enrichment phases must have been called despite the pre-existing enriched status
+    expect(enrichNewsItemMock).toHaveBeenCalledOnce();
+    expect(enrichArticleMock).toHaveBeenCalledOnce();
+    expect(publishMock).toHaveBeenCalledOnce();
+  });
+
+  it("skips an already-enriched row when force is absent (at-least-once regression guard)", async () => {
+    // Simulate a record that is already enriched and no force field in message
+    sendMock.mockImplementation((cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Get") {
+        return Promise.resolve({ Item: { ...newsRecord, status: "enriched" } });
+      }
+      return Promise.resolve({});
+    });
+
+    const handler = await loadHandler();
+    await handler(makeSqsEvent() as any, {} as any);
+
+    // Default behavior: skip on enriched status
+    expect(enrichNewsItemMock).not.toHaveBeenCalled();
+    expect(enrichArticleMock).not.toHaveBeenCalled();
+    expect(publishMock).not.toHaveBeenCalled();
   });
 });
