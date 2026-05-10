@@ -529,6 +529,89 @@ describe("MarketStreamManager — Kraken zero-volume synthesis", () => {
     }
   });
 
+  it("bumps watchdog lastDataAt for the kraken stream when a synthesized candle is emitted", async () => {
+    // Regression guard for the watchdog freshness bump in updateKrakenSynthState's
+    // timer callback. Without the bump, a Kraken pair in a legitimate silent
+    // window keeps logging `[Watchdog] Stream kraken:... stale` and can be
+    // restarted by the watchdog despite synthesis working as designed (issue #224).
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      // Mirror the setup of the "synthesizes a zero-volume carry-forward" test:
+      // a 2-min-old closed bar so isClosed = true and updateKrakenSynthState arms
+      // a synthesis timer for the next (silent) window.
+      const openTime = now - 120_000;
+      const closedRow = [openTime, "0.5000", "0.5100", "0.4900", "0.5050", "200.0"];
+
+      watchOHLCVMock
+        .mockResolvedValueOnce([closedRow]) // pair 1 first call
+        .mockResolvedValueOnce([closedRow]) // pair 2 first call
+        .mockResolvedValueOnce([closedRow]) // pair 3 first call
+        .mockResolvedValueOnce([closedRow]) // pair 4 first call
+        .mockResolvedValueOnce([closedRow]) // pair 5 first call
+        .mockResolvedValueOnce([closedRow]) // pair 6 first call
+        .mockResolvedValueOnce([closedRow]) // pair 7 first call
+        .mockResolvedValueOnce([closedRow]) // pair 8 first call
+        .mockResolvedValueOnce([closedRow]) // pair 9 first call
+        .mockResolvedValueOnce([closedRow]) // pair 10 first call
+        .mockReturnValue(new Promise(() => {})); // all subsequent: block
+      watchTickerMock.mockReturnValue(new Promise(() => {}));
+      fetchOHLCVMock.mockReturnValue(new Promise(() => {}));
+
+      const { MarketStreamManager } = await import("./stream.js");
+      const manager = new MarketStreamManager();
+      await manager.start();
+
+      // Flush all first-batch OHLCV resolutions (each watchOHLCV iteration
+      // also bumps state.lastDataAt to Date.now() — that's why we re-zero
+      // below, AFTER the first batch is processed and BEFORE the timer fires).
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Force every kraken stream's lastDataAt back to 0 to simulate the
+      // freshness signal having gone stale right before synthesis fires.
+      // Capture the keys so we can assert on the same set after the timer.
+      const streams: Map<string, { lastDataAt: number }> = (manager as any).streams;
+      const krakenKeys = [...streams.keys()].filter((k) => k.startsWith("kraken:"));
+      expect(krakenKeys.length).toBe(PAIRS.length);
+      for (const key of krakenKeys) {
+        streams.get(key)!.lastDataAt = 0;
+      }
+
+      // Capture wall-clock floor BEFORE firing the synthesis timer. The bump
+      // uses real Date.now(), which advances even under fake timers — so the
+      // assertion is `bumped > floor` rather than against any fake-time value.
+      const floor = Date.now();
+
+      // Advance past the synthesis deadline (KRAKEN_SYNTHESIS_DELAY_MS = 2s).
+      // Every kraken pair's silent-window timer should fire and synthesize.
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await manager.stop();
+
+      // Sanity: the synthesis path actually ran for every kraken pair.
+      const allCandles: Candle[] = [];
+      for (const call of storeCandelsMock.mock.calls) {
+        allCandles.push(...(call[0] as Candle[]));
+      }
+      const krakenSynth = allCandles.filter(
+        (c) => c.exchange === "kraken" && c.source === "live-synthesized",
+      );
+      expect(krakenSynth.length).toBe(PAIRS.length);
+
+      // Core assertion: each kraken stream's lastDataAt was refreshed by the
+      // synthesis timer to a finite, recent (>= floor) timestamp — proving the
+      // watchdog freshness bump in updateKrakenSynthState's callback ran.
+      for (const key of krakenKeys) {
+        const ts = streams.get(key)!.lastDataAt;
+        expect(Number.isFinite(ts)).toBe(true);
+        expect(ts).toBeGreaterThanOrEqual(floor);
+        expect(ts).not.toBe(0);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does NOT synthesize when a subsequent real Kraken candle advances lastCloseTime before the timer fires", async () => {
     vi.useFakeTimers();
     try {
