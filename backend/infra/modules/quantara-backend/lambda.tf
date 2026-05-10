@@ -224,20 +224,31 @@ resource "aws_iam_role_policy" "lambda_admin_debug_writes" {
   name = "${local.prefix}-admin-debug-writes"
   role = aws_iam_role.lambda.id
 
+  # Two statements instead of one combined Action × Resource matrix — IAM
+  # treats a single statement's actions and resources as a cartesian product,
+  # which would over-grant (e.g. PutItem on news_events, UpdateItem on
+  # ratifications) even though the code never exercises those combinations.
+  # Splitting keeps each grant scoped to the action it actually needs.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
+        # Idempotency-cache PutItems (ingestion_metadata) + force-ratification
+        # / inject-shock PutItems on ratifications. Pre-existing.
         Effect = "Allow"
-        Action = [
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem", # /debug/reenrich-news resets status on news_events
-        ]
+        Action = ["dynamodb:PutItem"]
         Resource = [
           aws_dynamodb_table.ingestion_metadata.arn,
           aws_dynamodb_table.ratifications.arn,
-          aws_dynamodb_table.news_events.arn, # target of UpdateItem for reenrich-news
         ]
+      },
+      {
+        # /debug/reenrich-news resets a news_events row's status to "raw".
+        # No PutItem grant on this table — the route only updates an existing
+        # row's status field.
+        Effect   = "Allow"
+        Action   = ["dynamodb:UpdateItem"]
+        Resource = [aws_dynamodb_table.news_events.arn]
       },
     ]
   })
@@ -299,27 +310,27 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      AUTH_BASE_URL         = var.auth_base_url
-      APP_ID                = var.app_id
-      TABLE_PREFIX          = "${local.prefix}-"
-      TABLE_USERS           = aws_dynamodb_table.users.name
-      TABLE_SIGNALS         = aws_dynamodb_table.signals.name
-      TABLE_SIGNAL_HISTORY  = aws_dynamodb_table.signal_history.name
-      TABLE_COACH_SESSIONS  = aws_dynamodb_table.coach_sessions.name
-      TABLE_COACH_MESSAGES  = aws_dynamodb_table.coach_messages.name
-      TABLE_DEALS           = aws_dynamodb_table.deals.name
-      TABLE_DEAL_INTERESTS  = aws_dynamodb_table.deal_interests.name
-      TABLE_CAMPAIGNS       = aws_dynamodb_table.campaigns.name
-      TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
-      TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
+      AUTH_BASE_URL            = var.auth_base_url
+      APP_ID                   = var.app_id
+      TABLE_PREFIX             = "${local.prefix}-"
+      TABLE_USERS              = aws_dynamodb_table.users.name
+      TABLE_SIGNALS            = aws_dynamodb_table.signals.name
+      TABLE_SIGNAL_HISTORY     = aws_dynamodb_table.signal_history.name
+      TABLE_COACH_SESSIONS     = aws_dynamodb_table.coach_sessions.name
+      TABLE_COACH_MESSAGES     = aws_dynamodb_table.coach_messages.name
+      TABLE_DEALS              = aws_dynamodb_table.deals.name
+      TABLE_DEAL_INTERESTS     = aws_dynamodb_table.deal_interests.name
+      TABLE_CAMPAIGNS          = aws_dynamodb_table.campaigns.name
+      TABLE_INDICATOR_STATE    = aws_dynamodb_table.indicator_state.name
+      TABLE_SIGNALS_V2         = aws_dynamodb_table.signals_v2.name
       TABLE_RATIFICATIONS      = aws_dynamodb_table.ratifications.name
       TABLE_SIGNAL_OUTCOMES    = aws_dynamodb_table.signal_outcomes.name
       TABLE_SIGNALS_COLLECTION = aws_dynamodb_table.signals_collection.name
-      CORS_ORIGIN           = var.cors_origin
-      CLOUDFRONT_URL        = "https://${aws_cloudfront_distribution.api.domain_name}"
-      ENVIRONMENT           = var.environment
-      LOG_LEVEL             = var.log_level
-      AWS_ACCOUNT_ID        = data.aws_caller_identity.current.account_id
+      CORS_ORIGIN              = var.cors_origin
+      CLOUDFRONT_URL           = "https://${aws_cloudfront_distribution.api.domain_name}"
+      ENVIRONMENT              = var.environment
+      LOG_LEVEL                = var.log_level
+      AWS_ACCOUNT_ID           = data.aws_caller_identity.current.account_id
       # Override the ratification model in dev (Haiku 4.5 — ~12x cheaper)
       # so debug iteration doesn't burn the Sonnet budget. Prod gets the
       # default (Sonnet 4.6) which matches production ratification logic.
