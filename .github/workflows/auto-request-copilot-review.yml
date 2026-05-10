@@ -52,6 +52,12 @@ jobs:
           # `union: true` means "add the bot to the existing reviewer set"
           # rather than replacing it — so we don't accidentally evict
           # quantara-reviewer or human reviewers that are already requested.
+          # Page size 100 covers any realistic reviewer set — GitHub's hard
+          # cap is 15 pending reviewers per PR, so even 50 would be safe;
+          # 100 leaves headroom in case GitHub raises the cap. Without enough
+          # page size, Copilot could legitimately be requested but fall
+          # outside the response page, and the post-mutation check would
+          # incorrectly treat that as "not added".
           gh api graphql \
             -f query='
               mutation($pr:ID!, $bots:[ID!]) {
@@ -62,7 +68,7 @@ jobs:
                 }) {
                   pullRequest {
                     number
-                    reviewRequests(first:10) {
+                    reviewRequests(first:100) {
                       nodes {
                         requestedReviewer {
                           __typename
@@ -86,15 +92,21 @@ jobs:
           echo
           echo "::endgroup::"
 
-          # Sanity check: confirm Copilot is in the post-mutation reviewer set
-          # OR has already reviewed (in which case it's not in the requested
-          # list any more). gh exits non-zero on GraphQL errors so `set -e`
-          # would have aborted above, but token-scope problems can also
-          # manifest as a "successful" response that just doesn't contain the
-          # bot — fail loudly rather than report success in that case.
-          if grep -q "copilot-pull-request-reviewer" /tmp/result.json; then
-            echo "✅ Copilot is now in the requested-reviewers set"
-          elif jq -e '.data.requestReviews.pullRequest.reviewRequests.nodes | length == 0' /tmp/result.json > /dev/null 2>&1; then
+          # Parse the reviewer set with `jq` instead of `grep` so the check
+          # is structural (matches the GraphQL response shape) rather than
+          # textual (could false-positive on the name appearing in a comment
+          # or false-negative on whitespace/escaping changes). gh exits
+          # non-zero on GraphQL errors so `set -e` would have aborted
+          # earlier — what we're guarding against here is a "successful"
+          # response that doesn't actually contain the bot.
+          REVIEWER_LOGINS=$(jq -r \
+            '.data.requestReviews.pullRequest.reviewRequests.nodes[]?.requestedReviewer.login // empty' \
+            /tmp/result.json)
+          REVIEWER_COUNT=$(printf '%s\n' "$REVIEWER_LOGINS" | grep -c . || true)
+
+          if printf '%s\n' "$REVIEWER_LOGINS" | grep -Fxq "copilot-pull-request-reviewer"; then
+            echo "✅ Copilot is now in the requested-reviewers set ($REVIEWER_COUNT total)"
+          elif [ "$REVIEWER_COUNT" = "0" ]; then
             # Empty reviewer set + we union'd Copilot in → mutation didn't
             # actually add the bot. This usually means the workflow token
             # lacks permission to assign Copilot. Surface as a failure.
@@ -105,5 +117,5 @@ jobs:
           else
             # Other reviewers present but not Copilot → already reviewed,
             # GitHub removed Copilot from the requested list. Not an error.
-            echo "ℹ️ Copilot is not in the requested set but other reviewers are. Likely already reviewed; mutation succeeded."
+            echo "ℹ️ Copilot is not in the requested set but $REVIEWER_COUNT other reviewer(s) are. Likely already reviewed; mutation succeeded."
           fi
