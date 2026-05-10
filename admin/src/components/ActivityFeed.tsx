@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { PipelineEvent } from "@quantara/shared";
 import { getAccessToken } from "../lib/auth";
 import { apiFetch } from "../lib/api";
+import { eventKey, BoundedKeySet } from "./activityFeedDedupe";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -169,23 +170,22 @@ export function ActivityFeed() {
   // the WebSocket. The backfill resolves before `connect()` is called, so
   // allEntries is seeded with historical events and no race exists between
   // setAllEntries (backfill) and ws.onmessage (live). Duplicate events that
-  // arrive via the WS within the narrow fetch window are deduped by ts+pair
-  // identity in the onmessage handler below.
+  // arrive via the WS within the narrow fetch window are deduped by a stable
+  // per-event-type identity in the onmessage handler below.
   useEffect(() => {
     intentionalCloseRef.current = false;
 
-    // Track seen event ts+type+pair keys to dedupe WS events that overlap
-    // with the backfill window. Keyed on `${event.type}::${event.ts}` which
-    // is unique enough in practice (same event fired at the same millisecond
-    // for the same type is effectively the same event). The Set is populated
-    // during backfill and checked/cleared on first onopen.
-    const seenKeys = new Set<string>();
-
-    function eventKey(ev: PipelineEvent): string {
-      if ("pair" in ev) return `${ev.type}::${ev.ts}::${ev.pair}`;
-      if ("newsId" in ev) return `${ev.type}::${ev.ts}::${ev.newsId}`;
-      return `${ev.type}::${ev.ts}`;
-    }
+    // Track seen event identities to dedupe WS events that overlap with the
+    // backfill window AND repeat live events (defensive). The dedupe identity
+    // is a stable per-type key (see `activityFeedDedupe.ts`) — NOT `ts`,
+    // because the WS producer stamps `ts = new Date()` at fanout time while
+    // the backfill route reads `ts` from persisted fields, so the same logical
+    // event would otherwise collide on every dimension except `ts`.
+    //
+    // The set is bounded so memory stays flat on long-running sessions. It
+    // is intentionally NOT cleared on `ws.onopen`; clearing it there would
+    // re-open the dedupe window every reconnect and was the original bug.
+    const seenKeys = new BoundedKeySet(MAX_EVENTS);
 
     function connect() {
       const token = getAccessToken();
@@ -202,9 +202,6 @@ export function ActivityFeed() {
       ws.onopen = () => {
         reconnectAttemptRef.current = 0;
         setStatus("connected");
-        // Dedup window closed once WS is live — clear the seen-key set so
-        // memory doesn't grow unboundedly on long-running sessions.
-        seenKeys.clear();
       };
 
       ws.onmessage = (msg: MessageEvent<string>) => {
@@ -215,8 +212,10 @@ export function ActivityFeed() {
           return; // ignore malformed messages
         }
 
-        // Skip events already present in the backfill (dedup window).
-        if (seenKeys.has(eventKey(event))) return;
+        // Skip events already accepted (from backfill or an earlier WS msg).
+        const key = eventKey(event);
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
 
         const entry: FeedEntry = {
           id: nextId++,
@@ -258,15 +257,17 @@ export function ActivityFeed() {
     void (async () => {
       const res = await apiFetch<{ events: PipelineEvent[] }>("/api/admin/activity?limit=100");
       if (res.success && res.data) {
-        const backfillEntries = res.data.events.map((event) => {
+        const backfillEntries: FeedEntry[] = [];
+        for (const event of res.data.events) {
           const key = eventKey(event);
-          seenKeys.add(key);
-          return {
+          // Defensive dedupe within the backfill payload itself.
+          if (!seenKeys.add(key)) continue;
+          backfillEntries.push({
             id: nextId++,
             receivedAt: event.ts,
             event,
-          } satisfies FeedEntry;
-        });
+          });
+        }
         setAllEntries((prev) => {
           // If the component unmounted during the fetch, don't update state.
           if (intentionalCloseRef.current) return prev;

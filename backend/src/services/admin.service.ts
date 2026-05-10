@@ -1524,7 +1524,16 @@ export async function getActivity(limit: number): Promise<{ events: PipelineEven
 // Per-source fetch helpers
 // ---------------------------------------------------------------------------
 
-/** Fetch recent signal-emitted events from signals-v2. */
+/**
+ * Fetch recent signal-emitted events from signals-v2.
+ *
+ * `Limit: 1` per (pair × timeframe) is intentional: with 5 pairs × 4 timeframes
+ * = 20 cells, we get the 20 most recent signals across the matrix in one batch
+ * of 20 cheap point Queries (1 RCU each). The caller (`getActivity`) merges
+ * these alongside the other event sources, sorts by `ts` desc, and slices to
+ * the requested limit. The previous `Limit: limit` per cell did 20 × `limit`
+ * row reads to surface a feed that only ever shows ~5–20 signal events.
+ */
 async function fetchRecentSignalEvents(limit: number): Promise<PipelineEvent[]> {
   const blendTfs = ["15m", "1h", "4h", "1d"] as const;
   const events: PipelineEvent[] = [];
@@ -1540,7 +1549,9 @@ async function fetchRecentSignalEvents(limit: number): Promise<PipelineEvent[]> 
               ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
               ExpressionAttributeValues: { ":pair": pair, ":prefix": `${tf}#` },
               ScanIndexForward: false,
-              Limit: limit,
+              // Latest-per-cell only — cheap "newest signal across the matrix"
+              // pattern. Tuning this back to `limit` was an N+1 read amplifier.
+              Limit: 1,
             }),
           );
           return result.Items ?? [];
@@ -1551,8 +1562,7 @@ async function fetchRecentSignalEvents(limit: number): Promise<PipelineEvent[]> 
     for (const items of perTfItems) {
       for (const item of items) {
         const emittedAt =
-          (item.emittedAt as string | undefined) ??
-          new Date(Number(item.asOf ?? 0)).toISOString();
+          (item.emittedAt as string | undefined) ?? new Date(Number(item.asOf ?? 0)).toISOString();
         events.push({
           type: "signal-emitted",
           pair: item.pair as string,
@@ -1568,7 +1578,15 @@ async function fetchRecentSignalEvents(limit: number): Promise<PipelineEvent[]> 
     console.error("[admin.service] fetchRecentSignalEvents failed:", err);
   }
 
-  return events;
+  // Sort newest-first by closeTime so the caller's slice picks the most
+  // recent signals across the matrix when fewer than `limit` are kept.
+  events.sort((a, b) => {
+    const aClose = a.type === "signal-emitted" ? a.closeTime : "";
+    const bClose = b.type === "signal-emitted" ? b.closeTime : "";
+    return bClose.localeCompare(aClose);
+  });
+
+  return events.slice(0, limit);
 }
 
 /** Fetch recent ratification-fired events from the ratifications table. */

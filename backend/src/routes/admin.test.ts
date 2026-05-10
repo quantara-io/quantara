@@ -1453,7 +1453,7 @@ describe("GET /activity", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       success: boolean;
-      data: { events: typeof mockSignalEvent[] };
+      data: { events: (typeof mockSignalEvent)[] };
     };
     expect(body.data.events[0]).toEqual(mockSignalEvent);
   });
