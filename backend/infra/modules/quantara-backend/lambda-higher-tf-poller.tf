@@ -108,10 +108,23 @@ resource "aws_cloudwatch_event_target" "higher_tf_poller" {
 # the function's resource policy — this managed resource ensures Terraform
 # always re-creates the grant in the same apply. See issue #260 for the
 # incident that confirmed this pattern is load-bearing.
+#
+# depends_on = [aws_lambda_function.higher_tf_poller] guarantees Terraform
+# creates the permission only after the (potentially replaced) Lambda exists.
+# replace_triggered_by = [aws_lambda_function.higher_tf_poller] mirrors the
+# Lambda's own replace_triggered_by so both resources are destroyed + recreated
+# in a single apply — the Lambda cannot outlive its old resource policy. See
+# issues #260 and #289 for two P0 incidents caused by the missing dependency.
 resource "aws_lambda_permission" "allow_eventbridge_higher_tf_poller" {
   statement_id  = "AllowEventBridgeInvokeHigherTfPoller"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.higher_tf_poller.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.higher_tf_poller_schedule.arn
+
+  depends_on = [aws_lambda_function.higher_tf_poller]
+
+  lifecycle {
+    replace_triggered_by = [aws_lambda_function.higher_tf_poller]
+  }
 }
