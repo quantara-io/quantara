@@ -81,16 +81,21 @@ const INGESTION_METADATA_TABLE =
 // Sonnet 4.6 input/output pricing as of 2026-Q1: $3 / $15 per 1M tokens.
 // ---------------------------------------------------------------------------
 
-// Bedrock foundation-model id for Sonnet 4.6. The Bedrock SDK does NOT
-// accept the friendly alias `claude-sonnet-4-6` (that's the Anthropic SDK
-// convention used by `ingestion/src/llm/ratify.ts`, which goes through
-// api.anthropic.com). Full id is required because this service calls
-// `BedrockRuntimeClient.send(InvokeModelCommand)` directly. Verified via
-// `aws bedrock-runtime invoke-model --model-id anthropic.claude-sonnet-4-6`
-// (returns AccessDenied with resource arn …foundation-model/anthropic.claude-sonnet-4-6,
-// confirming the id resolves; the existing `lambda_bedrock` policy's
-// `foundation-model/anthropic.claude-sonnet-*` wildcard covers it).
-const RATIFICATION_MODEL_ID = "anthropic.claude-sonnet-4-6";
+// Bedrock cross-region inference profile id for Sonnet 4.6. The bare
+// foundation-model id `anthropic.claude-sonnet-4-6` resolves in the Bedrock
+// catalog but **cannot be invoked on-demand** — Bedrock returns:
+//
+//   ValidationException: Invocation of model ID anthropic.claude-sonnet-4-6
+//     with on-demand throughput isn't supported. Retry your request with
+//     the ID or ARN of an inference profile that contains this model.
+//
+// (Verified live in dev after PR #217 deployed.) Newer Anthropic models on
+// Bedrock are inference-profile-only — direct foundation-model invocation
+// is reserved for provisioned-throughput contracts.
+//
+// `us.anthropic.claude-sonnet-4-6` is the cross-region (US) inference
+// profile that wraps the same model, callable on-demand.
+const RATIFICATION_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
 const SONNET_INPUT_COST_PER_1K = 0.003;
 const SONNET_OUTPUT_COST_PER_1K = 0.015;
 

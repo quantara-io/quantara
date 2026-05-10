@@ -64,6 +64,16 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
       Resource = [
         "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-sonnet-*",
         "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-haiku-*",
+        # Cross-region inference profiles. Newer Anthropic models on Bedrock
+        # (e.g. Sonnet 4.6+) cannot be invoked via the bare foundation-model
+        # id — they return ValidationException demanding an inference profile
+        # id. The `us.anthropic.*` profile routes to underlying foundation
+        # models in adjacent regions, so we ALSO need foundation-model perms
+        # on the wildcard region (target regions vary per AWS routing).
+        "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.claude-sonnet-*",
+        "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.claude-haiku-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-*",
       ]
     }]
   })
