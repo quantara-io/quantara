@@ -271,9 +271,9 @@ describe("rsi-overbought", () => {
 describe("ema-stack-bull", () => {
   const rule = getRule("ema-stack-bull");
 
-  it("direction=bullish, strength=0.8", () => {
+  it("direction=bullish, strength=1.0", () => {
     expect(rule.direction).toBe("bullish");
-    expect(rule.strength).toBe(0.8);
+    expect(rule.strength).toBe(1.0);
   });
 
   it("appliesTo 4h, 1d only (not 15m or 1h)", () => {
@@ -309,9 +309,9 @@ describe("ema-stack-bull", () => {
 describe("ema-stack-bear", () => {
   const rule = getRule("ema-stack-bear");
 
-  it("direction=bearish, strength=0.8", () => {
+  it("direction=bearish, strength=1.0", () => {
     expect(rule.direction).toBe("bearish");
-    expect(rule.strength).toBe(0.8);
+    expect(rule.strength).toBe(1.0);
   });
 
   it("appliesTo 4h, 1d only (not 15m or 1h)", () => {
@@ -676,9 +676,9 @@ describe("bollinger-touch-upper", () => {
 describe("volume-spike-bull", () => {
   const rule = getRule("volume-spike-bull");
 
-  it("direction=bullish, strength=0.7", () => {
+  it("direction=bullish, strength=0.5", () => {
     expect(rule.direction).toBe("bullish");
-    expect(rule.strength).toBe(0.7);
+    expect(rule.strength).toBe(0.5);
   });
 
   it("appliesTo 15m, 1h, 4h, 1d", () => {
@@ -786,9 +786,9 @@ describe("volume-spike-bull", () => {
 describe("volume-spike-bear", () => {
   const rule = getRule("volume-spike-bear");
 
-  it("direction=bearish, strength=0.7", () => {
+  it("direction=bearish, strength=0.5", () => {
     expect(rule.direction).toBe("bearish");
-    expect(rule.strength).toBe(0.7);
+    expect(rule.strength).toBe(0.5);
   });
 
   it("fires when volZ > 2 AND close[0] < close[1] (bearish bar)", () => {

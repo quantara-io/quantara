@@ -18,6 +18,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { RULES } from "@quantara/shared";
 import type { Rule, TimeframeVote } from "@quantara/shared";
 import type { IndicatorState } from "@quantara/shared";
 
@@ -1298,5 +1299,227 @@ describe("asOf passthrough", () => {
     ];
     const vote = scoreTimeframe(state, rules, {}) as TimeframeVote;
     expect(vote.asOf).toBe(ts);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Calibration scenarios — Signals v2 Phase 1 (#252)
+//
+// Validates that the recalibrated rule strengths produce the expected signals:
+//   - volume-spike-bull / volume-spike-bear: 0.7 → 0.5
+//   - ema-stack-bull / ema-stack-bear:       0.8 → 1.0
+//
+// Uses RULES directly from @quantara/shared so any future constant change
+// in signals.ts is immediately reflected here.
+//
+// All 5 should-emit scenarios use the real RULES array filtered by rule name
+// to isolate the exact confluence being tested.
+// ---------------------------------------------------------------------------
+
+/** Minimal state for calibration scenarios.
+ *  Sets barsSinceStart=300 to satisfy all requiresPrior gates.
+ *  Defaults to "1h" timeframe; override for 4h-only rules.
+ */
+function makeCalibrationState(overrides: Partial<IndicatorState> = {}): IndicatorState {
+  return {
+    pair: "BTC/USDT",
+    exchange: "binanceus",
+    timeframe: "1h",
+    asOf: 1_700_000_000_000,
+    barsSinceStart: 300,
+    rsi14: 50,
+    ema20: 50000,
+    ema50: 50000,
+    ema200: 50000,
+    macdLine: 0,
+    macdSignal: 0,
+    macdHist: 0,
+    atr14: 500,
+    bbUpper: 51000,
+    bbMid: 50000,
+    bbLower: 49000,
+    bbWidth: 0.04,
+    obv: 1_000_000,
+    obvSlope: 0,
+    vwap: 50000,
+    volZ: 0,
+    realizedVolAnnualized: 0.5,
+    fearGreed: 50,
+    dispersion: 0.001,
+    history: {
+      rsi14: [50, 50, 50, 50, 50],
+      macdHist: [0, 0, 0, 0, 0],
+      ema20: [50000, 50000, 50000, 50000, 50000],
+      ema50: [50000, 50000, 50000, 50000, 50000],
+      close: [50000, 50000, 50000, 50000, 50000],
+      volume: [1000, 1000, 1000, 1000, 1000],
+    },
+    ...overrides,
+  };
+}
+
+/** Extract named rules from the live RULES array. */
+function pickRules(...names: string[]): Rule[] {
+  return names.map((n) => {
+    const r = RULES.find((x) => x.name === n);
+    if (!r) throw new Error(`Rule '${n}' not found in RULES`);
+    return r;
+  });
+}
+
+describe("Calibration scenarios — Phase 1 (#252): should emit buy/sell", () => {
+  it("Scenario 1: rsi-oversold (1.0) + volume-spike-bull (0.5) → bull=1.5 → buy", () => {
+    // volume-spike-bull requires volZ > 2 AND close[0] > close[1]
+    const state = makeCalibrationState({
+      rsi14: 25, // 20 <= rsi < 30 → rsi-oversold fires
+      volZ: 2.5,
+      history: {
+        rsi14: [25, 26, 27, 28, 29],
+        macdHist: [0, 0, 0, 0, 0],
+        ema20: [50000, 50000, 50000, 50000, 50000],
+        ema50: [50000, 50000, 50000, 50000, 50000],
+        close: [50200, 50000, 49900, 49800, 49700], // close[0] > close[1]: bullish bar
+        volume: [5000, 1000, 1000, 1000, 1000],
+      },
+    });
+    const rules = pickRules("rsi-oversold", "volume-spike-bull");
+    const vote = scoreTimeframe(state, rules, {}) as TimeframeVote;
+    expect(vote.type).toBe("buy");
+    expect(vote.bullishScore).toBeCloseTo(1.5, 10);
+    expect(vote.bearishScore).toBe(0);
+  });
+
+  it("Scenario 2: rsi-overbought (1.0) + volume-spike-bear (0.5) → bear=1.5 → sell", () => {
+    // volume-spike-bear requires volZ > 2 AND close[0] < close[1]
+    const state = makeCalibrationState({
+      rsi14: 75, // 70 < rsi <= 80 → rsi-overbought fires
+      volZ: 2.5,
+      history: {
+        rsi14: [75, 74, 73, 72, 71],
+        macdHist: [0, 0, 0, 0, 0],
+        ema20: [50000, 50000, 50000, 50000, 50000],
+        ema50: [50000, 50000, 50000, 50000, 50000],
+        close: [49800, 50000, 50100, 50200, 50300], // close[0] < close[1]: bearish bar
+        volume: [5000, 1000, 1000, 1000, 1000],
+      },
+    });
+    const rules = pickRules("rsi-overbought", "volume-spike-bear");
+    const vote = scoreTimeframe(state, rules, {}) as TimeframeVote;
+    expect(vote.type).toBe("sell");
+    expect(vote.bullishScore).toBe(0);
+    expect(vote.bearishScore).toBeCloseTo(1.5, 10);
+  });
+
+  it("Scenario 3: ema-stack-bull alone on 4h (1.0) → bull=1.0 → hold (below threshold)", () => {
+    // ema-stack-bull only applies to 4h, 1d
+    const state = makeCalibrationState({
+      timeframe: "4h",
+      ema20: 52000,
+      ema50: 51000,
+      ema200: 50000, // ema20 > ema50 > ema200 → fires
+      history: {
+        rsi14: [50, 50, 50, 50, 50],
+        macdHist: [0, 0, 0, 0, 0],
+        ema20: [52000, 52000, 52000, 52000, 52000],
+        ema50: [51000, 51000, 51000, 51000, 51000],
+        close: [52000, 51900, 51800, 51700, 51600],
+        volume: [1000, 1000, 1000, 1000, 1000],
+      },
+    });
+    const rules = pickRules("ema-stack-bull");
+    const vote = scoreTimeframe(state, rules, {}) as TimeframeVote;
+    // bull=1.0 < MIN_CONFLUENCE=1.5 → hold (intended: needs confirmation)
+    expect(vote.type).toBe("hold");
+    expect(vote.bullishScore).toBeCloseTo(1.0, 10);
+  });
+
+  it("Scenario 4: ema-stack-bull (1.0) + macd-cross-bull (1.0) on 4h → bull=2.0 → buy", () => {
+    // macd-cross-bull: cur > 0 AND prev <= 0 (applies to 1h, 4h, 1d)
+    // ema-stack-bull: applies to 4h, 1d
+    const state = makeCalibrationState({
+      timeframe: "4h",
+      ema20: 52000,
+      ema50: 51000,
+      ema200: 50000,
+      macdHist: 0.4, // current bar positive
+      history: {
+        rsi14: [50, 50, 50, 50, 50],
+        macdHist: [0.4, -0.1, -0.2, -0.3, -0.4], // [0]=cur=0.4, [1]=prev=-0.1 → cross!
+        ema20: [52000, 52000, 52000, 52000, 52000],
+        ema50: [51000, 51000, 51000, 51000, 51000],
+        close: [52000, 51900, 51800, 51700, 51600],
+        volume: [1000, 1000, 1000, 1000, 1000],
+      },
+    });
+    const rules = pickRules("ema-stack-bull", "macd-cross-bull");
+    const vote = scoreTimeframe(state, rules, {}) as TimeframeVote;
+    expect(vote.type).toBe("buy");
+    expect(vote.bullishScore).toBeCloseTo(2.0, 10);
+    expect(vote.bearishScore).toBe(0);
+  });
+
+  it("Scenario 5: ema-stack-bull (1.0) + volume-spike-bull (0.5) on 4h → bull=1.5 → buy (canonical)", () => {
+    // Both rules apply to 4h; this is the canonical confluence scenario
+    const state = makeCalibrationState({
+      timeframe: "4h",
+      ema20: 52000,
+      ema50: 51000,
+      ema200: 50000,
+      volZ: 2.5,
+      history: {
+        rsi14: [50, 50, 50, 50, 50],
+        macdHist: [0, 0, 0, 0, 0],
+        ema20: [52000, 52000, 52000, 52000, 52000],
+        ema50: [51000, 51000, 51000, 51000, 51000],
+        close: [52200, 52000, 51900, 51800, 51700], // close[0] > close[1]: bullish bar
+        volume: [5000, 1000, 1000, 1000, 1000],
+      },
+    });
+    const rules = pickRules("ema-stack-bull", "volume-spike-bull");
+    const vote = scoreTimeframe(state, rules, {}) as TimeframeVote;
+    expect(vote.type).toBe("buy");
+    expect(vote.bullishScore).toBeCloseTo(1.5, 10);
+    expect(vote.bearishScore).toBe(0);
+  });
+});
+
+describe("Calibration scenarios — Phase 1 (#252): should remain hold", () => {
+  it("should-hold: bullish=1.0 alone (single rule below threshold)", () => {
+    const state = makeCalibrationState({
+      rsi14: 25, // rsi-oversold fires → strength 1.0
+    });
+    const rules = pickRules("rsi-oversold");
+    const vote = scoreTimeframe(state, rules, {}) as TimeframeVote;
+    // bull=1.0 < MIN_CONFLUENCE=1.5 → hold
+    expect(vote.type).toBe("hold");
+    expect(vote.bullishScore).toBeCloseTo(1.0, 10);
+  });
+
+  it("should-hold: bullish=1.5 + bearish=1.5 (tied — classic chop)", () => {
+    // rsi-oversold (bull 1.0) + volume-spike-bull (bull 0.5) = bull 1.5
+    // rsi-overbought not applicable (can't have rsi oversold+overbought at once)
+    // Use two independent custom rules that apply to 1h for a clean tie scenario
+    const state = makeCalibrationState();
+    const bullRule: Rule = {
+      name: "tied-bull",
+      direction: "bullish",
+      strength: 1.5,
+      when: (_s) => true,
+      appliesTo: ["1h"],
+      requiresPrior: 0,
+    };
+    const bearRule: Rule = {
+      name: "tied-bear",
+      direction: "bearish",
+      strength: 1.5,
+      when: (_s) => true,
+      appliesTo: ["1h"],
+      requiresPrior: 0,
+    };
+    const vote = scoreTimeframe(state, [bullRule, bearRule], {}) as TimeframeVote;
+    // bull == bear → hold (tied, classic chop)
+    expect(vote.type).toBe("hold");
+    expect(vote.bullishScore).toBeCloseTo(1.5, 10);
+    expect(vote.bearishScore).toBeCloseTo(1.5, 10);
   });
 });

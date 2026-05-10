@@ -85,7 +85,7 @@ export const RULES: Rule[] = [
   {
     name: "ema-stack-bull",
     direction: "bullish",
-    strength: 0.8,
+    strength: 1.0,
     when: (s) =>
       s.ema20 !== null &&
       s.ema50 !== null &&
@@ -99,7 +99,7 @@ export const RULES: Rule[] = [
   {
     name: "ema-stack-bear",
     direction: "bearish",
-    strength: 0.8,
+    strength: 1.0,
     when: (s) =>
       s.ema20 !== null &&
       s.ema50 !== null &&
@@ -183,7 +183,7 @@ export const RULES: Rule[] = [
   {
     name: "volume-spike-bull",
     direction: "bullish",
-    strength: 0.7,
+    strength: 0.5,
     when: (s) => {
       const close = s.history.close[0];
       const prevClose = s.history.close[1] ?? null;
@@ -202,7 +202,7 @@ export const RULES: Rule[] = [
   {
     name: "volume-spike-bear",
     direction: "bearish",
-    strength: 0.7,
+    strength: 0.5,
     when: (s) => {
       const close = s.history.close[0];
       const prevClose = s.history.close[1] ?? null;
