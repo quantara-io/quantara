@@ -24,8 +24,30 @@ interface MarketData {
 const POLL_MS = 30_000;
 /** Initial candle load size. */
 const INITIAL_LIMIT = 500;
-/** Candles to fetch per backfill request. */
+/** Minimum candles to fetch per backfill request. */
 const BACKFILL_LIMIT = 200;
+/** Maximum candles per backfill batch — backend hard cap is 500. */
+const MAX_BATCH = 500;
+
+/**
+ * Per-timeframe total history cap. Once the loaded candle count reaches this
+ * threshold the chart stops backfilling — additional zoom-out won't trigger
+ * more requests, preventing unbounded history drain.
+ *
+ * Approximate coverage per cap:
+ *   15m →  1500 bars ≈ 15.6 days
+ *   1H  →  2000 bars ≈ 83 days
+ *   4H  →  2000 bars ≈ 333 days
+ *   1D  →  2000 bars ≈ 5.5 years
+ *   1W  →   500 bars ≈ 9.6 years
+ */
+const MAX_TOTAL_CANDLES: Record<Timeframe, number> = {
+  "15m": 1500,
+  "1H": 2000,
+  "4H": 2000,
+  "1D": 2000,
+  "1W": 500,
+};
 
 export function Workstation() {
   const [activePair, setActivePair] = useState<string>(DEFAULT_PAIR);
@@ -33,6 +55,8 @@ export function Workstation() {
   const [data, setData] = useState<MarketData | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [error, setError] = useState("");
+  /** Mirrors backfillExhaustedRef for rendering the footer label. */
+  const [backfillExhaustedDisplay, setBackfillExhaustedDisplay] = useState(false);
 
   // Backfill state — all refs so the subscriber closure always has current
   // values without causing extra re-renders.
@@ -45,6 +69,7 @@ export function Workstation() {
   useEffect(() => {
     backfillInFlightRef.current = false;
     backfillExhaustedRef.current = false;
+    setBackfillExhaustedDisplay(false);
     setCandles([]);
 
     let cancelled = false;
@@ -89,27 +114,36 @@ export function Workstation() {
   }, [data]);
 
   const handleBackfillNeeded = useCallback(
-    (oldestOpenTime: number) => {
+    (oldestOpenTime: number, requestedLimit: number = BACKFILL_LIMIT) => {
       if (backfillInFlightRef.current) return;
       if (backfillExhaustedRef.current) return;
 
       backfillInFlightRef.current = true;
       const apiTf = TIMEFRAME_TO_API[timeframe];
+      // Cap at backend max (500) regardless of what the chart requests.
+      const limit = Math.min(Math.max(requestedLimit, BACKFILL_LIMIT), MAX_BATCH);
 
       void apiFetch<MarketData>(
-        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=${BACKFILL_LIMIT}&before=${oldestOpenTime}`,
+        `/api/admin/market?pair=${encodeURIComponent(activePair)}&exchange=${DEFAULT_EXCHANGE}&timeframe=${apiTf}&limit=${limit}&before=${oldestOpenTime}`,
       ).then((res) => {
         backfillInFlightRef.current = false;
         if (!res.success || !res.data) return;
         const older = res.data.candles ?? [];
         if (older.length === 0) {
           backfillExhaustedRef.current = true;
+          setBackfillExhaustedDisplay(true);
           return;
         }
         setCandles((prev) => {
           const map = new Map<number, Candle>();
           for (const c of [...older, ...prev]) map.set(c.openTime, c);
-          return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+          const merged = Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+          // Enforce per-timeframe total history cap.
+          if (merged.length >= MAX_TOTAL_CANDLES[timeframe]) {
+            backfillExhaustedRef.current = true;
+            setBackfillExhaustedDisplay(true);
+          }
+          return merged;
         });
       });
     },
@@ -146,6 +180,7 @@ export function Workstation() {
               candles={candles}
               timeframe={TIMEFRAME_TO_API[timeframe]}
               onBackfillNeeded={handleBackfillNeeded}
+              backfillExhausted={backfillExhaustedDisplay}
             />
           )}
         </div>
