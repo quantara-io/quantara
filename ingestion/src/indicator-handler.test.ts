@@ -847,6 +847,46 @@ describe("Indicator computation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// force=true path — bypasses quorum and signals-v2 dedup
+// ---------------------------------------------------------------------------
+
+describe("force=true — admin debug bypass", () => {
+  it("calls putIndicatorState even when only 1 exchange is in the synthetic event", async () => {
+    // Simulate a single-exchange synthetic event with force=true.
+    // The quorum check would normally gate on exchangeCount < 2.
+    // With force=true, neither UpdateCommand (quorum ADD) nor the
+    // quorum GetCommand (Step 2) nor the signals-v2 GetCommand (Step 3)
+    // should be called — we go straight to computation (Step 4).
+    send.mockImplementation((cmd) => {
+      if (cmd.__cmd === "Put") return Promise.resolve({});
+      if (cmd.__cmd === "Query") return Promise.resolve({ Items: [] });
+      // No Get or Update commands expected from the quorum/dedup path.
+      // Return a safe default for metadata reads (dispersion, staleness, etc.)
+      if (cmd.__cmd === "Get") return Promise.resolve({ Item: undefined });
+      return Promise.resolve({});
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent({ force: true }), {} as any, () => {});
+
+    // putIndicatorState must have been called — Step 4 completed.
+    expect(putIndicatorStateMock).toHaveBeenCalled();
+
+    // No quorum UpdateCommand should have been issued.
+    const quorumUpdates = send.mock.calls.filter(
+      (c) => c[0]?.__cmd === "Update" && c[0].input?.TableName === "test-close-quorum",
+    );
+    expect(quorumUpdates).toHaveLength(0);
+
+    // No signals-v2 GetCommand should have been issued (dedup check skipped).
+    const signalsV2Gets = send.mock.calls.filter(
+      (c) => c[0]?.__cmd === "Get" && c[0].input?.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Gets).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // REQUIRED_EXCHANGE_COUNT configuration
 // ---------------------------------------------------------------------------
 

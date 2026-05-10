@@ -44,6 +44,16 @@ vi.mock("@aws-sdk/client-sqs", () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Mock Lambda
+// ---------------------------------------------------------------------------
+
+const lambdaSend = vi.fn();
+vi.mock("@aws-sdk/client-lambda", () => ({
+  LambdaClient: vi.fn().mockImplementation(() => ({ send: lambdaSend })),
+  InvokeCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: "Invoke" })),
+}));
+
+// ---------------------------------------------------------------------------
 // Mock Bedrock
 // ---------------------------------------------------------------------------
 
@@ -91,15 +101,18 @@ beforeEach(() => {
   dynamoSend.mockReset();
   bedrockSend.mockReset();
   sqsSend.mockReset();
+  lambdaSend.mockReset();
   delete process.env.TABLE_SIGNALS_V2;
   delete process.env.TABLE_RATIFICATIONS;
   delete process.env.TABLE_NEWS_EVENTS;
   delete process.env.TABLE_SENTIMENT_AGGREGATES;
   delete process.env.TABLE_INGESTION_METADATA;
+  delete process.env.TABLE_CANDLES;
   delete process.env.TABLE_PREFIX;
   delete process.env.ENRICHMENT_QUEUE_URL;
   delete process.env.AWS_ACCOUNT_ID;
   delete process.env.AWS_REGION;
+  delete process.env.INDICATOR_HANDLER_FUNCTION_NAME;
 });
 
 // ---------------------------------------------------------------------------
@@ -607,5 +620,119 @@ describe("injectSentimentShock", () => {
         userId: "user_admin",
       }),
     ).rejects.toThrow("deltaMagnitude must be");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// forceIndicators (service-level — payload shape regression tests)
+// ---------------------------------------------------------------------------
+
+describe("forceIndicators", () => {
+  const FAKE_CLOSE_TIME = 1715187600000;
+
+  it("includes force=true and the queried closeTime in the Lambda payload", async () => {
+    process.env.INDICATOR_HANDLER_FUNCTION_NAME = "quantara-dev-indicator-handler";
+
+    // DDB Query for latest candle returns one item with a real closeTime.
+    dynamoSend.mockResolvedValueOnce({
+      Items: [{ closeTime: FAKE_CLOSE_TIME, exchange: "binanceus" }],
+    });
+    // Lambda invoke succeeds.
+    lambdaSend.mockResolvedValueOnce({ FunctionError: undefined });
+
+    const { forceIndicators } = await import("./admin-debug.service.js");
+    const result = await forceIndicators({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      timeframe: "1h",
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]!.ok).toBe(true);
+
+    // Assert the Lambda was invoked exactly once.
+    expect(lambdaSend).toHaveBeenCalledTimes(1);
+
+    // Inspect the payload sent to the Lambda.
+    const invokeCall = lambdaSend.mock.calls[0][0] as {
+      Payload: Uint8Array;
+      FunctionName: string;
+      InvocationType: string;
+    };
+    expect(invokeCall.FunctionName).toBe("quantara-dev-indicator-handler");
+    expect(invokeCall.InvocationType).toBe("RequestResponse");
+
+    const payload = JSON.parse(new TextDecoder().decode(invokeCall.Payload)) as {
+      Records: Array<{ dynamodb: { NewImage: Record<string, unknown> } }>;
+    };
+    const newImage = payload.Records[0]!.dynamodb.NewImage;
+
+    // closeTime must match the real candle's closeTime, not Date.now().
+    expect(newImage["closeTime"]).toEqual({ N: String(FAKE_CLOSE_TIME) });
+    // force=true must be present so the handler bypasses quorum + dedup.
+    expect(newImage["force"]).toEqual({ BOOL: true });
+    // pair, exchange, timeframe must be set.
+    expect(newImage["pair"]).toEqual({ S: "BTC/USDT" });
+    expect(newImage["exchange"]).toEqual({ S: "binanceus" });
+    expect(newImage["timeframe"]).toEqual({ S: "1h" });
+  });
+
+  it("returns ok=false with error when no candles exist for the tuple", async () => {
+    process.env.INDICATOR_HANDLER_FUNCTION_NAME = "quantara-dev-indicator-handler";
+
+    // DDB Query returns empty Items (no candle stored yet).
+    dynamoSend.mockResolvedValueOnce({ Items: [] });
+
+    const { forceIndicators } = await import("./admin-debug.service.js");
+    const result = await forceIndicators({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      timeframe: "15m",
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]!.ok).toBe(false);
+    expect(result.results[0]!.error).toMatch(/no live candles found/);
+
+    // Lambda must NOT have been invoked — no point computing on empty candles.
+    expect(lambdaSend).not.toHaveBeenCalled();
+  });
+
+  it("returns ok=false when INDICATOR_HANDLER_FUNCTION_NAME env var is missing", async () => {
+    // env var not set (deleted in beforeEach).
+    // DDB query would not even be reached.
+
+    const { forceIndicators } = await import("./admin-debug.service.js");
+    const result = await forceIndicators({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      timeframe: "1h",
+    });
+
+    expect(result.results[0]!.ok).toBe(false);
+    expect(result.results[0]!.error).toMatch(/INDICATOR_HANDLER_FUNCTION_NAME/);
+    expect(lambdaSend).not.toHaveBeenCalled();
+  });
+
+  it("returns ok=false (with error) when Lambda returns FunctionError", async () => {
+    process.env.INDICATOR_HANDLER_FUNCTION_NAME = "quantara-dev-indicator-handler";
+
+    dynamoSend.mockResolvedValueOnce({
+      Items: [{ closeTime: FAKE_CLOSE_TIME }],
+    });
+    lambdaSend.mockResolvedValueOnce({
+      FunctionError: "Unhandled",
+      Payload: new TextEncoder().encode(JSON.stringify({ errorMessage: "handler exploded" })),
+    });
+
+    const { forceIndicators } = await import("./admin-debug.service.js");
+    const result = await forceIndicators({
+      pair: "BTC/USDT",
+      exchange: "binanceus",
+      timeframe: "4h",
+    });
+
+    expect(result.results[0]!.ok).toBe(false);
+    expect(result.results[0]!.error).toMatch(/Lambda error/);
   });
 });
