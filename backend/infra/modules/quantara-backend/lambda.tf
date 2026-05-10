@@ -229,13 +229,34 @@ resource "aws_iam_role_policy" "lambda_admin_debug_writes" {
     Statement = [
       {
         Effect = "Allow"
-        Action = ["dynamodb:PutItem"]
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem", # /debug/reenrich-news resets status on news_events
+        ]
         Resource = [
           aws_dynamodb_table.ingestion_metadata.arn,
           aws_dynamodb_table.ratifications.arn,
+          aws_dynamodb_table.news_events.arn, # target of UpdateItem for reenrich-news
         ]
       },
     ]
+  })
+}
+
+# SendMessage permission for /debug/reenrich-news, which re-queues news items
+# onto the enrichment queue after resetting their status to raw. Kept narrow:
+# SendMessage only, scoped to the single queue.
+resource "aws_iam_role_policy" "lambda_admin_debug_sqs" {
+  name = "${local.prefix}-admin-debug-sqs"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage"]
+      Resource = aws_sqs_queue.enrichment.arn
+    }]
   })
 }
 
@@ -303,6 +324,10 @@ resource "aws_lambda_function" "api" {
       # so debug iteration doesn't burn the Sonnet budget. Prod gets the
       # default (Sonnet 4.6) which matches production ratification logic.
       RATIFICATION_MODEL_ID = var.environment == "prod" ? "us.anthropic.claude-sonnet-4-6" : "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+      # Used by /debug/reenrich-news to re-queue items. Injected here so
+      # the service code never falls back to a string-built URL that is
+      # malformed when AWS_ACCOUNT_ID is unset (see PR #269 review thread).
+      ENRICHMENT_QUEUE_URL = aws_sqs_queue.enrichment.url
     }
   }
 
