@@ -17,6 +17,7 @@ const forceRatificationMock = vi.fn();
 const replayNewsEnrichmentMock = vi.fn();
 const injectSentimentShockMock = vi.fn();
 const getActivityMock = vi.fn();
+const getShadowSignalsMock = vi.fn();
 
 vi.mock("../services/admin.service.js", () => ({
   getStatus: getStatusMock,
@@ -30,6 +31,7 @@ vi.mock("../services/admin.service.js", () => ({
   getRatifications: getRatificationsMock,
   getPipelineHealth: getPipelineHealthMock,
   getActivity: getActivityMock,
+  getShadowSignals: getShadowSignalsMock,
 }));
 
 vi.mock("../services/pipeline-state.service.js", () => ({
@@ -85,6 +87,7 @@ beforeEach(() => {
   replayNewsEnrichmentMock.mockReset();
   injectSentimentShockMock.mockReset();
   getActivityMock.mockReset();
+  getShadowSignalsMock.mockReset();
   currentAuth = {
     userId: "user_admin",
     email: "admin@example.com",
@@ -1456,5 +1459,108 @@ describe("GET /activity", () => {
       data: { events: (typeof mockSignalEvent)[] };
     };
     expect(body.data.events[0]).toEqual(mockSignalEvent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /signals-shadow (Issue #133)
+// ---------------------------------------------------------------------------
+
+const mockShadowSignal = {
+  pair: "BTC/USDT",
+  sk: "1m#1715187600000",
+  signalId: "abc-123",
+  emittedAt: "2024-05-08T15:00:00.000Z",
+  closeTime: 1715187600000,
+  timeframe: "1m",
+  source: "shadow" as const,
+  type: "buy" as const,
+  confidence: 0.72,
+  volatilityFlag: false,
+  gateReason: null,
+  rulesFired: ["rsi-oversold-strong"],
+  bullishScore: 2,
+  bearishScore: 0,
+  asOf: 1715187600000,
+  shadow: true as const,
+};
+
+describe("GET /signals-shadow", () => {
+  it("returns 200 with signals array from getShadowSignals", async () => {
+    getShadowSignalsMock.mockResolvedValue([mockShadowSignal]);
+    const app = await loadApp();
+    const res = await app.request("/signals-shadow");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { signals: (typeof mockShadowSignal)[] };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.signals).toHaveLength(1);
+    expect(body.data.signals[0]?.shadow).toBe(true);
+    expect(body.data.signals[0]?.source).toBe("shadow");
+  });
+
+  it("passes pair, timeframe, since, and limit to getShadowSignals", async () => {
+    getShadowSignalsMock.mockResolvedValue([]);
+    const app = await loadApp();
+    const since = "2024-05-01T00:00:00.000Z";
+    const res = await app.request(
+      `/signals-shadow?pair=BTC/USDT&timeframe=1m&since=${since}&limit=50`,
+    );
+    expect(res.status).toBe(200);
+    expect(getShadowSignalsMock).toHaveBeenCalledWith({
+      pair: "BTC/USDT",
+      timeframe: "1m",
+      since: new Date(since).toISOString(),
+      limit: 50,
+    });
+  });
+
+  it("defaults limit to 100 when not specified", async () => {
+    getShadowSignalsMock.mockResolvedValue([]);
+    const app = await loadApp();
+    await app.request("/signals-shadow");
+    expect(getShadowSignalsMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
+  });
+
+  it("returns 400 when limit is out of range", async () => {
+    const app = await loadApp();
+    const res = await app.request("/signals-shadow?limit=1000");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 when pair is not in PAIRS", async () => {
+    const app = await loadApp();
+    const res = await app.request("/signals-shadow?pair=INVALID/USDT");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 when timeframe is not 1m or 5m", async () => {
+    const app = await loadApp();
+    const res = await app.request("/signals-shadow?timeframe=15m");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 when since is not a valid ISO 8601 date", async () => {
+    const app = await loadApp();
+    const res = await app.request("/signals-shadow?since=not-a-date");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 403 when caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/signals-shadow");
+    expect(res.status).toBe(403);
+    expect(getShadowSignalsMock).not.toHaveBeenCalled();
   });
 });

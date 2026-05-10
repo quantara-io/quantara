@@ -476,3 +476,40 @@ resource "aws_dynamodb_table" "signals_v2" {
 
   point_in_time_recovery { enabled = true }
 }
+
+# Issue #133: signals-collection — shadow data-collection table for 1m/5m signals.
+#
+# Schema mirrors signals-v2 (PK=pair, SK=tf#closeTime) to keep queries consistent.
+# An extra `source = "shadow"` field is written by indicator-handler-shadow so rows
+# can be distinguished from any future production rows at a glance.
+# TTL: 30 days — this is a data-collection horizon; no need to retain longer.
+# No GSI in v1: consumers read by (pair, tf) directly; offline analysis may Scan.
+# No DDB Streams: shadow signals are never fanned out to WebSocket clients.
+resource "aws_dynamodb_table" "signals_collection" {
+  name         = "${local.prefix}-signals-collection"
+  billing_mode = "PAY_PER_REQUEST"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  hash_key  = "pair"
+  range_key = "sk" # composite: "{tf}#{closeTime}"
+
+  attribute {
+    name = "pair"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery { enabled = true }
+}

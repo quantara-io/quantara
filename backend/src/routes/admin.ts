@@ -15,6 +15,7 @@ import {
   getRatifications,
   getPipelineHealth,
   getActivity,
+  getShadowSignals,
 } from "../services/admin.service.js";
 import { getPipelineState } from "../services/pipeline-state.service.js";
 import { getPnlSimulation } from "../services/pnl-simulation.service.js";
@@ -716,6 +717,96 @@ admin.get("/activity", async (c) => {
 
   const data = await getActivity(limit);
   return c.json({ success: true, data });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/signals-shadow
+// Issue #133: query shadow signals from signals-collection (1m/5m data collection)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/signals-shadow?pair=BTC/USDT&timeframe=1m&since=ISO&limit=100
+ *
+ * Returns shadow signals from the signals-collection table written by the
+ * indicator-handler-shadow Lambda. These are 1m/5m signals produced without
+ * LLM ratification and without WebSocket fanout — for data analysis only.
+ *
+ * Each row includes a `shadow: true` field so the UI can render a "shadow"
+ * badge to distinguish these from production signals.
+ *
+ * Params:
+ *   - pair       (optional) — one of the supported PAIRS; omit to query all pairs
+ *   - timeframe  (optional) — "1m" or "5m"; omit to query both
+ *   - since      (optional) — ISO 8601 date; defaults to last 24h
+ *   - limit      (optional) — 1–500; default 100
+ */
+const SHADOW_TIMEFRAMES_VALID = ["1m", "5m"] as const;
+
+admin.get("/signals-shadow", async (c) => {
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 100;
+  if (isNaN(limit) || limit < 1 || limit > 500) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "limit must be between 1 and 500" },
+      },
+      400,
+    );
+  }
+
+  const pairRaw = c.req.query("pair");
+  if (pairRaw !== undefined && !(PAIRS as readonly string[]).includes(pairRaw)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  const timeframeRaw = c.req.query("timeframe");
+  if (
+    timeframeRaw !== undefined &&
+    !(SHADOW_TIMEFRAMES_VALID as readonly string[]).includes(timeframeRaw)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${SHADOW_TIMEFRAMES_VALID.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  const sinceRaw = c.req.query("since");
+  let sinceCanon: string | undefined;
+  if (sinceRaw !== undefined) {
+    const parsed = new Date(sinceRaw);
+    if (isNaN(parsed.getTime())) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+        },
+        400,
+      );
+    }
+    sinceCanon = parsed.toISOString();
+  }
+
+  const signals = await getShadowSignals({
+    pair: pairRaw,
+    timeframe: timeframeRaw,
+    since: sinceCanon,
+    limit,
+  });
+
+  return c.json({ success: true, data: { signals } });
 });
 
 export { admin };

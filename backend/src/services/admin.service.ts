@@ -26,6 +26,10 @@ const ENVIRONMENT = process.env.ENVIRONMENT ?? "dev";
 
 const SIGNALS_V2_TABLE =
   process.env.TABLE_SIGNALS_V2 ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-v2`;
+
+const SIGNALS_COLLECTION_TABLE =
+  process.env.TABLE_SIGNALS_COLLECTION ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signals-collection`;
 const INDICATOR_STATE_TABLE =
   process.env.TABLE_INDICATOR_STATE ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}indicator-state`;
@@ -2169,4 +2173,135 @@ export async function getPipelineHealth(windowHours = 24): Promise<PipelineHealt
     lambdas,
     fargate,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Issue #133: shadow signals (1m/5m data-collection, no LLM, no fanout)
+// ---------------------------------------------------------------------------
+
+export interface ShadowSignalRow {
+  pair: string;
+  sk: string;
+  signalId: string;
+  emittedAt: string;
+  closeTime: number;
+  timeframe: string;
+  source: "shadow";
+  type: "buy" | "sell" | "hold";
+  confidence: number;
+  volatilityFlag: boolean;
+  gateReason: string | null;
+  rulesFired: string[];
+  bullishScore: number;
+  bearishScore: number;
+  asOf: number;
+  /** UI badge marker — always true for shadow rows. */
+  shadow: true;
+}
+
+/**
+ * Read the most recent shadow signals from signals-collection.
+ *
+ * Queries by pair. When no pair is specified, reads all PAIRS in parallel
+ * (each pair is a separate partition key). Results are merged and sorted
+ * by emittedAt descending, sliced to `limit`.
+ */
+export async function getShadowSignals(opts: {
+  pair?: string;
+  timeframe?: string;
+  since?: string;
+  limit: number;
+}): Promise<ShadowSignalRow[]> {
+  const { pair, timeframe, limit } = opts;
+  const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const sinceMs = new Date(since).getTime();
+
+  const pairs = pair ? [pair] : (SUPPORTED_PAIRS as readonly string[]).slice();
+  const shadowTfs = timeframe ? [timeframe] : ["1m", "5m"];
+
+  // Bound DDB fan-out. With all 5 pairs × 2 timeframes (= 10 queries) the
+  // unbounded Promise.all path was issuing every Query simultaneously, which
+  // can spike provisioned-throughput consumption and trigger throttling at
+  // higher pair counts. Cap at 4 concurrent queries — a manual semaphore
+  // keeps the dependency footprint clean (no p-limit).
+  const SHADOW_QUERY_CONCURRENCY = 4;
+  const tasks: Array<() => Promise<Record<string, unknown>[]>> = pairs.flatMap((p) =>
+    shadowTfs.map((tf) => async (): Promise<Record<string, unknown>[]> => {
+      const tfPrefix = `${tf}#`;
+      const result = await dynamo.send(
+        new QueryCommand({
+          TableName: SIGNALS_COLLECTION_TABLE,
+          KeyConditionExpression: "#pair = :pair AND #sk BETWEEN :lo AND :hi",
+          ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+          ExpressionAttributeValues: {
+            ":pair": p,
+            ":lo": `${tfPrefix}${sinceMs}`,
+            ":hi": `${tfPrefix}￿`,
+          },
+          ScanIndexForward: false,
+          Limit: limit,
+        }),
+      );
+      return (result.Items as Record<string, unknown>[] | undefined) ?? [];
+    }),
+  );
+
+  try {
+    const perPairTf: Record<string, unknown>[][] = new Array(tasks.length);
+    let nextIdx = 0;
+    async function worker(): Promise<void> {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= tasks.length) return;
+        perPairTf[i] = await tasks[i]!();
+      }
+    }
+    const workerCount = Math.min(SHADOW_QUERY_CONCURRENCY, tasks.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    const merged = perPairTf.flat();
+    merged.sort((a, b) => {
+      const aT = (a["emittedAt"] as string) ?? "";
+      const bT = (b["emittedAt"] as string) ?? "";
+      return bT.localeCompare(aT);
+    });
+
+    // Defensive: signals-collection should only ever contain source="shadow"
+    // rows (the shadow handler is the only writer), but if a non-shadow row
+    // somehow lands here, drop it rather than silently mislabeling it as
+    // shadow. Anything else indicates a bug we want to surface, not paper over.
+    const filtered = merged.filter((item) => item["source"] === "shadow");
+    if (filtered.length !== merged.length) {
+      console.warn(
+        `[admin.service] getShadowSignals dropped ${merged.length - filtered.length} non-shadow rows from signals-collection`,
+      );
+    }
+
+    return filtered.slice(0, limit).map(
+      (item): ShadowSignalRow => ({
+        pair: item["pair"] as string,
+        sk: item["sk"] as string,
+        signalId: item["signalId"] as string,
+        emittedAt: item["emittedAt"] as string,
+        closeTime: item["closeTime"] as number,
+        timeframe: item["timeframe"] as string,
+        // After the filter above, source is guaranteed "shadow". Read it
+        // from the item (with the literal cast) rather than hard-coding so
+        // any future drift surfaces in the filter, not silently here.
+        source: item["source"] as "shadow",
+        type: item["type"] as "buy" | "sell" | "hold",
+        confidence: item["confidence"] as number,
+        volatilityFlag: (item["volatilityFlag"] as boolean) ?? false,
+        gateReason: (item["gateReason"] as string | null) ?? null,
+        rulesFired: (item["rulesFired"] as string[]) ?? [],
+        bullishScore: (item["bullishScore"] as number) ?? 0,
+        bearishScore: (item["bearishScore"] as number) ?? 0,
+        asOf: item["asOf"] as number,
+        shadow: true,
+      }),
+    );
+  } catch (err) {
+    console.error("[admin.service] getShadowSignals failed:", err);
+    return [];
+  }
 }

@@ -32,6 +32,7 @@ output "table_names" {
     ratifications         = aws_dynamodb_table.ratifications.name
     ratification_cache    = aws_dynamodb_table.ratification_cache.name
     connection_registry   = aws_dynamodb_table.connection_registry.name
+    signals_collection    = aws_dynamodb_table.signals_collection.name
   }
 }
 
