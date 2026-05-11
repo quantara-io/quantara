@@ -19,6 +19,7 @@ import {
 } from "../components/workstation/SymbolHeader";
 import { WatchlistRail } from "../components/workstation/WatchlistRail";
 import { DEFAULT_EXCHANGE, DEFAULT_PAIR, metaForPair } from "../components/workstation/symbols";
+import type { OverlayState } from "../components/workstation/cmdk-commands";
 
 interface MarketData {
   prices: Array<{ pair: string; exchange: string; price: number; volume24h?: number }>;
@@ -66,6 +67,15 @@ export function Workstation() {
    * would race against that unmount and never reach the new mount.
    */
   const [pendingSeekMs, setPendingSeekMs] = useState<number | null>(null);
+
+  // ── Chart overlays (used by /toggle command) ─────────────────────────────
+  // Default all overlays on — matches the chart's pre-#316 behaviour where
+  // EMA20, EMA50, and volume always rendered. /toggle now flips these.
+  const [overlays, setOverlays] = useState<OverlayState>({
+    ema20: true,
+    ema50: true,
+    volume: true,
+  });
 
   // ── Command palette ──────────────────────────────────────────────────────
   const handleSelectSymbol = useCallback((symbol: string) => {
@@ -235,6 +245,7 @@ export function Workstation() {
                 backfillExhausted={backfillExhaustedDisplay}
                 pendingSeekMs={pendingSeekMs}
                 onSeekConsumed={handleSeekConsumed}
+                overlays={overlays}
               />
             )}
           </div>
@@ -256,6 +267,13 @@ export function Workstation() {
         onSelectSymbol={handleSelectSymbol}
         onSelectSignal={handleSelectSignal}
         markets={marketsMap}
+        ctx={{
+          activePair,
+          timeframe,
+          setTimeframe,
+          overlays,
+          setOverlays,
+        }}
       />
     </>
   );

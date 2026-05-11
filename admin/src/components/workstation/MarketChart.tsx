@@ -101,6 +101,22 @@ const MAX_BATCH = 500;
 /** Minimum bars to request in a single backfill batch. */
 const MIN_BATCH = 200;
 
+/**
+ * Per-overlay visibility. All default to visible so existing callers (and
+ * tests) that don't pass `overlays` see no behavior change.
+ */
+export interface ChartOverlays {
+  ema20?: boolean;
+  ema50?: boolean;
+  volume?: boolean;
+}
+
+const DEFAULT_OVERLAYS: Required<ChartOverlays> = {
+  ema20: true,
+  ema50: true,
+  volume: true,
+};
+
 interface MarketChartProps {
   candles: Candle[];
   timeframe?: string;
@@ -127,6 +143,12 @@ interface MarketChartProps {
    * (e.g. when a live-poll causes the candles array to mutate).
    */
   onSeekConsumed?: () => void;
+  /**
+   * Which chart overlays are visible. Undefined keys default to visible so
+   * existing callers retain today's behaviour. The /toggle command wires this
+   * through from Workstation state (issue #316).
+   */
+  overlays?: ChartOverlays;
 }
 
 function getCss(name: string): string {
@@ -165,7 +187,14 @@ export function MarketChart({
   backfillExhausted = false,
   pendingSeekMs = null,
   onSeekConsumed,
+  overlays,
 }: MarketChartProps) {
+  // Merge caller-provided overlays with defaults so undefined keys = visible.
+  const visibility: Required<ChartOverlays> = {
+    ema20: overlays?.ema20 ?? DEFAULT_OVERLAYS.ema20,
+    ema50: overlays?.ema50 ?? DEFAULT_OVERLAYS.ema50,
+    volume: overlays?.volume ?? DEFAULT_OVERLAYS.volume,
+  };
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -465,6 +494,15 @@ export function MarketChart({
       }
     }
   }, [candles, timeframe]);
+
+  // Apply per-overlay visibility separately from the data push so toggling an
+  // overlay is a cheap series option flip and doesn't rebuild EMA / volume
+  // arrays. Wired from Workstation state via /toggle (issue #316).
+  useEffect(() => {
+    ema20Ref.current?.applyOptions({ visible: visibility.ema20 });
+    ema50Ref.current?.applyOptions({ visible: visibility.ema50 });
+    volumeSeriesRef.current?.applyOptions({ visible: visibility.volume });
+  }, [visibility.ema20, visibility.ema50, visibility.volume]);
 
   return (
     <div className="relative">
