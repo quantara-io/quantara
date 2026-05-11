@@ -39,9 +39,15 @@ const GATE_PRIORITY: Record<"vol" | "dispersion" | "stale", number> = {
  * forward from the stored signal unchanged (not re-derived):
  *   - risk               (populated downstream by enrichWithRisk)
  *   - interpretation     (caller re-populates via buildInterpretation)
- *   - ratificationStatus / ratificationVerdict / algoVerdict
  *   - invalidatedAt / invalidationReason
  *   - asOf / emittingTimeframe / pair
+ *
+ * Ratification fields (ratificationStatus / ratificationVerdict / algoVerdict)
+ * are carried forward ONLY when the re-derived headline type matches the
+ * stored signal's type. When the type flips (e.g. strict "hold" → balanced
+ * "buy"), all three are cleared so buildInterpretation falls back to
+ * source="algo-only" with the re-blended rulesFired text — surfacing the
+ * strict-era LLM reasoning under a flipped headline is incorrect.
  *
  * Gates (vol/dispersion/stale) on any perTimeframe vote always force the
  * blended result to hold regardless of the chosen profile.
@@ -113,6 +119,14 @@ export function reblendWithProfile(
       }
     }
 
+    // Same type-flip ratification clearing as the non-gated branch below: if
+    // the stored signal had a directional ratified headline but profile-time
+    // gate evaluation forces hold, the ratification narrative is for the
+    // wrong headline and must be dropped. In practice the ingestion-time
+    // gate cascade should already have produced hold + null ratification on
+    // the stored row, but guard against drift.
+    const typeFlipped = signal.type !== "hold";
+
     return {
       ...signal,
       type: "hold",
@@ -122,6 +136,13 @@ export function reblendWithProfile(
       gateContext,
       rulesFired: Array.from(rulesFiredSet),
       weightsUsed,
+      ...(typeFlipped
+        ? {
+            ratificationStatus: null,
+            ratificationVerdict: null,
+            algoVerdict: null,
+          }
+        : {}),
     };
   }
 
@@ -179,16 +200,37 @@ export function reblendWithProfile(
     confidence = Math.min(1, 0.5 + 0.1 * Math.abs(blended));
   }
 
+  // When the re-derived headline type differs from the stored strict type, the
+  // LLM's strict-era ratification narrative is no longer valid for the flipped
+  // headline (e.g. strict "hold — Mixed TFs; safer to wait" → balanced "buy"
+  // must not surface the hold reasoning). Clear ratification fields so
+  // buildInterpretation falls back to source="algo-only" with the re-blended
+  // rulesFired summary. When the type is unchanged, ratification fields are
+  // preserved — only the headline conviction shifted, the narrative still
+  // applies.
+  const typeFlipped = type !== signal.type;
+
   return {
     ...signal,
     type,
     confidence,
     volatilityFlag: false,
     gateReason: null,
+    // gateContext is null here because the non-gated branch produced this
+    // return — without explicit clearing, the spread above would propagate the
+    // stored signal's gateContext alongside the now-null gateReason.
+    gateContext: null,
     rulesFired: Array.from(rulesFiredSet),
     weightsUsed: renormalized,
     // Clear risk — caller (enrichWithRisk) will re-populate for non-hold signals.
     risk: null,
+    ...(typeFlipped
+      ? {
+          ratificationStatus: null,
+          ratificationVerdict: null,
+          algoVerdict: null,
+        }
+      : {}),
   };
 }
 

@@ -115,3 +115,37 @@ export function getBlendProfile(
 ): BlendProfile {
   return blendProfiles?.[pair] ?? "strict";
 }
+
+/**
+ * Merge a tier-change update into an existing BlendProfileMap, preserving
+ * user overrides. Only pairs whose current profile matches the previous
+ * tier's default are updated to the new tier's default.
+ *
+ * Parallel to mergeTierRiskProfiles in users.ts. When current is undefined
+ * (pre-302 record), seeds the full defaults for the new tier so the field
+ * is always populated after tier change.
+ *
+ * @param current      The user's current blendProfiles map (or undefined).
+ * @param previousTier The tier the user is upgrading/downgrading from.
+ * @param newTier      The tier the user is moving to.
+ */
+export function mergeTierBlendProfiles(
+  current: BlendProfileMap | undefined,
+  previousTier: "free" | "paid",
+  newTier: "free" | "paid",
+): BlendProfileMap {
+  const defaults = defaultBlendProfiles(newTier);
+  if (!current) return defaults;
+  const previousDefault: BlendProfile = previousTier === "free" ? "strict" : "balanced";
+  const newDefault: BlendProfile = newTier === "free" ? "strict" : "balanced";
+  const result: BlendProfileMap = { ...current };
+  for (const pair of Object.keys(defaults) as (keyof BlendProfileMap)[]) {
+    if (result[pair] === previousDefault) {
+      result[pair] = newDefault;
+    } else if (result[pair] === undefined) {
+      // Pair missing from old map (pre-302 partial record) — seed new default.
+      result[pair] = newDefault;
+    }
+  }
+  return result;
+}

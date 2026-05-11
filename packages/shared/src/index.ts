@@ -1,5 +1,10 @@
 export type * from "./types/blend.js";
-export { BLEND_PROFILES, defaultBlendProfiles, getBlendProfile } from "./types/blend.js";
+export {
+  BLEND_PROFILES,
+  defaultBlendProfiles,
+  getBlendProfile,
+  mergeTierBlendProfiles,
+} from "./types/blend.js";
 export type * from "./types/tiers.js";
 export type * from "./types/signal-tags.js";
 export type * from "./types/signals.js";

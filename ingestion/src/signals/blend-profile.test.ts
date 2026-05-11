@@ -416,6 +416,106 @@ describe("reblendWithProfile — sell path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// reblendWithProfile — ratification narrative is invalidated on type flip
+// ---------------------------------------------------------------------------
+
+describe("reblendWithProfile — ratification fields on type-flip vs type-unchanged", () => {
+  it("type flips (hold → buy under balanced): clears ratificationStatus/Verdict/algoVerdict so buildInterpretation falls back to algo-only", () => {
+    // Strict signal stored as hold + LLM ratified with "Mixed TFs; safer to wait."
+    // Single 1h buy at 0.92 conf: balanced blended = 0.25 * 0.92 = 0.23 > T_balanced=0.22 → buy.
+    // Result: type flips hold→buy; strict-era ratification narrative is no
+    // longer valid for the new headline and must be cleared.
+    const storedHoldVerdict = {
+      type: "hold" as const,
+      confidence: 0.5,
+      reasoning: "Mixed TFs; safer to wait.",
+      source: "llm" as const,
+    };
+    const storedAlgoVerdict = {
+      type: "hold" as const,
+      confidence: 0.5,
+      reasoning: "All TFs hold under strict T=0.25.",
+    };
+    const signal = makeSignal(
+      {
+        "15m": makeVote({ type: "hold" }),
+        "1h": makeVote({ type: "buy", confidence: 0.92 }),
+        "4h": makeVote({ type: "hold" }),
+        "1d": makeVote({ type: "hold" }),
+      },
+      {
+        type: "hold",
+        confidence: 0.5,
+        ratificationStatus: "ratified",
+        ratificationVerdict: storedHoldVerdict,
+        algoVerdict: storedAlgoVerdict,
+      },
+    );
+
+    const result = reblendWithProfile(signal, "balanced");
+
+    expect(result.type).toBe("buy");
+    expect(result.ratificationStatus).toBeNull();
+    expect(result.ratificationVerdict).toBeNull();
+    expect(result.algoVerdict).toBeNull();
+  });
+
+  it("type unchanged (hold stays hold under balanced): preserves all ratification fields", () => {
+    // Same stored signal as above but with votes that keep blended below
+    // T_balanced=0.22 so type remains hold. Ratification fields must survive.
+    const storedHoldVerdict = {
+      type: "hold" as const,
+      confidence: 0.5,
+      reasoning: "Mixed TFs; safer to wait.",
+      source: "llm" as const,
+    };
+    const storedAlgoVerdict = {
+      type: "hold" as const,
+      confidence: 0.5,
+      reasoning: "All TFs hold under strict T=0.25.",
+    };
+    // 1h buy at 0.5 conf under balanced w[1h]=0.25 → blended=0.125 ≤ T=0.22 → hold.
+    const signal = makeSignal(
+      {
+        "15m": makeVote({ type: "hold" }),
+        "1h": makeVote({ type: "buy", confidence: 0.5 }),
+        "4h": makeVote({ type: "hold" }),
+        "1d": makeVote({ type: "hold" }),
+      },
+      {
+        type: "hold",
+        confidence: 0.5,
+        ratificationStatus: "ratified",
+        ratificationVerdict: storedHoldVerdict,
+        algoVerdict: storedAlgoVerdict,
+      },
+    );
+
+    const result = reblendWithProfile(signal, "balanced");
+
+    expect(result.type).toBe("hold");
+    expect(result.ratificationStatus).toBe("ratified");
+    expect(result.ratificationVerdict).toEqual(storedHoldVerdict);
+    expect(result.algoVerdict).toEqual(storedAlgoVerdict);
+  });
+
+  it("non-gated reblend nulls gateContext alongside gateReason (no stale gate context propagation)", () => {
+    // Stored signal has a stale gateContext from some prior pipeline path —
+    // confirm the non-gated reblend return explicitly nulls it instead of
+    // letting the spread propagate it under gateReason=null.
+    const signal = makeSignal(
+      { "1h": makeVote({ type: "buy", confidence: 0.92 }) },
+      {
+        gateContext: { gate: "vol", inputs: { atrPct: 0.99 } },
+      },
+    );
+    const result = reblendWithProfile(signal, "balanced");
+    expect(result.gateReason).toBeNull();
+    expect(result.gateContext).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // reblendWithProfile — non-blend fields pass through
 // ---------------------------------------------------------------------------
 
