@@ -3,6 +3,7 @@ import { Button } from "../ui/Button";
 import { ChangePct, MonoNum, formatPrice } from "../ui/MonoNum";
 import { SectionHeader } from "../ui/Section";
 
+import { MOCK_POSITION } from "./mock-data";
 import { metaForPair } from "./symbols";
 
 /**
@@ -10,16 +11,8 @@ import { metaForPair } from "./symbols";
  * data yet — this is a faithful render of the design with synthetic values
  * so the layout, alignments, and interactions are visible. When a real
  * `/api/admin/positions/:pair` endpoint lands this component swaps in the
- * fetch with no markup change.
+ * fetch with no markup change. Source of truth lives in `./mock-data.ts`.
  */
-const MOCK_POSITION = {
-  size: 8.42,
-  entry: 69_568,
-  mark: 71_092,
-  pnl: 1_858.74,
-  pnlPct: 2.61,
-  side: "long" as const,
-};
 
 export function PositionRail({ activePair }: { activePair: string }) {
   const meta = metaForPair(activePair);
