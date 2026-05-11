@@ -136,6 +136,22 @@ resource "aws_iam_role_policy" "indicator_handler_dynamodb" {
           aws_dynamodb_table.rule_status.arn,
         ]
       },
+      {
+        # Ratification path: buildSentimentBundle → recomputeSentimentAggregate
+        # queries news-events-by-pair (pair + window). Without this grant every
+        # emit hits AccessDenied and falls back to ratificationStatus=n/a,
+        # leaving quantara-{env}-signals empty. Read-only.
+        Sid    = "ReadNewsEventsByPair"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+        ]
+        Resource = [
+          aws_dynamodb_table.news_events_by_pair.arn,
+          "${aws_dynamodb_table.news_events_by_pair.arn}/index/*",
+        ]
+      },
     ]
   })
 }
@@ -165,9 +181,13 @@ resource "aws_lambda_function" "indicator_handler" {
       # rows on the emit path. Set explicitly so the calibration-store helper
       # in ingestion/src/calibration/calibration-store.ts doesn't fall back to
       # the TABLE_PREFIX-derived guess.
-      TABLE_CALIBRATION_PARAMS = aws_dynamodb_table.calibration_params.name
-      REQUIRED_EXCHANGE_COUNT  = local.required_exchange_count
-      ENVIRONMENT              = var.environment
+      TABLE_CALIBRATION_PARAMS  = aws_dynamodb_table.calibration_params.name
+      # Ratification path: set explicitly so news-by-pair-store.ts doesn't fall
+      # back to the TABLE_PREFIX-derived guess (mirrors #335 / TABLE_RULE_STATUS
+      # and #333 / TABLE_CALIBRATION_PARAMS patterns).
+      TABLE_NEWS_EVENTS_BY_PAIR = aws_dynamodb_table.news_events_by_pair.name
+      REQUIRED_EXCHANGE_COUNT   = local.required_exchange_count
+      ENVIRONMENT               = var.environment
     }
   }
 
