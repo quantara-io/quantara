@@ -67,6 +67,218 @@ function make4HourlyCandles(windowStart: number, overrides: Partial<Candle>[] = 
 }
 
 // ---------------------------------------------------------------------------
+// Tests for isCloseBoundary and isKrakenCloseBoundary (issue #342)
+// ---------------------------------------------------------------------------
+
+// A fixed 15m boundary for deterministic tests: 2026-01-01T00:15:00Z.
+const BOUNDARY_15M = Date.UTC(2026, 0, 1, 0, 15, 0); // 1735690500000
+
+describe("isCloseBoundary", () => {
+  it("returns true at T+0s (boundary exactly)", async () => {
+    const { isCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isCloseBoundary(BOUNDARY_15M, "15m")).toBe(true);
+  });
+
+  it("returns true at T+5s (typical Lambda start lag)", async () => {
+    const { isCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isCloseBoundary(BOUNDARY_15M + 5_000, "15m")).toBe(true);
+  });
+
+  it("returns true at T+59s (within the 60s window)", async () => {
+    const { isCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isCloseBoundary(BOUNDARY_15M + 59_000, "15m")).toBe(true);
+  });
+
+  it("returns false at T+60s (exactly at the window edge — strict < 60000)", async () => {
+    const { isCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isCloseBoundary(BOUNDARY_15M + 60_000, "15m")).toBe(false);
+  });
+
+  it("returns false at T+61s (second cron tick, >60s after boundary)", async () => {
+    const { isCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isCloseBoundary(BOUNDARY_15M + 61_000, "15m")).toBe(false);
+  });
+
+  it("returns false mid-period (7m after boundary)", async () => {
+    const { isCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isCloseBoundary(BOUNDARY_15M + 7 * 60_000, "15m")).toBe(false);
+  });
+});
+
+describe("isKrakenCloseBoundary (issue #342 — widened Kraken window)", () => {
+  it("returns true at T+0s (within standard window)", async () => {
+    const { isKrakenCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isKrakenCloseBoundary(BOUNDARY_15M, "15m")).toBe(true);
+  });
+
+  it("returns true at T+5s", async () => {
+    const { isKrakenCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isKrakenCloseBoundary(BOUNDARY_15M + 5_000, "15m")).toBe(true);
+  });
+
+  it("returns true at T+60s — the second cron tick that isCloseBoundary misses", async () => {
+    const { isKrakenCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    // isCloseBoundary(BOUNDARY_15M + 60_000, "15m") === false, but
+    // isKrakenCloseBoundary must return true so the T+60s invocation still
+    // fetches the Kraken bar that the first tick may have missed.
+    expect(isKrakenCloseBoundary(BOUNDARY_15M + 60_000, "15m")).toBe(true);
+  });
+
+  it("returns true at T+90s (within 120s default window)", async () => {
+    const { isKrakenCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isKrakenCloseBoundary(BOUNDARY_15M + 90_000, "15m")).toBe(true);
+  });
+
+  it("returns false at T+120s (at the default window edge — strict < 120000)", async () => {
+    const { isKrakenCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isKrakenCloseBoundary(BOUNDARY_15M + 120_000, "15m")).toBe(false);
+  });
+
+  it("returns false mid-period (7m after boundary — not a recent close)", async () => {
+    const { isKrakenCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    expect(isKrakenCloseBoundary(BOUNDARY_15M + 7 * 60_000, "15m")).toBe(false);
+  });
+
+  it("respects KRAKEN_BOUNDARY_WINDOW_MS env var", async () => {
+    vi.resetModules();
+    process.env.KRAKEN_BOUNDARY_WINDOW_MS = "90000";
+    const { isKrakenCloseBoundary } = await import("./higher-tf-poller-handler.js");
+    // At T+89s: within 90s → true
+    expect(isKrakenCloseBoundary(BOUNDARY_15M + 89_000, "15m")).toBe(true);
+    // At T+90s: exactly at edge → false (strict <)
+    expect(isKrakenCloseBoundary(BOUNDARY_15M + 90_000, "15m")).toBe(false);
+    delete process.env.KRAKEN_BOUNDARY_WINDOW_MS;
+  });
+});
+
+describe("handler — Kraken second-tick (issue #342)", () => {
+  // `now` is 65s after a 15m boundary: isCloseBoundary returns false (65s >= 60s),
+  // but isKrakenCloseBoundary returns true (65s < 120s default).
+  const boundaryMs = Date.UTC(2026, 0, 1, 0, 15, 0);
+  const nowSecondTick = boundaryMs + 65_000; // T+65s
+
+  it("calls Kraken fetchOHLCV at T+65s when standard window is closed", async () => {
+    const krakenFetchOHLCVMock = vi.fn().mockResolvedValue([]);
+    const binanceusFetchOHLCVMock = vi.fn().mockResolvedValue([]);
+
+    const { default: ccxt } = await import("ccxt");
+    (ccxt.kraken as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      fetchOHLCV: krakenFetchOHLCVMock,
+    }));
+    (ccxt.binanceus as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      fetchOHLCV: binanceusFetchOHLCVMock,
+    }));
+
+    // DDB check returns empty (no existing candle) — so fetchOHLCV should fire.
+    getCandlesMock.mockResolvedValue([]);
+
+    const { handler } = await import("./higher-tf-poller-handler.js");
+    await handler({ time: new Date(nowSecondTick).toISOString() });
+
+    // Kraken must have been called (Kraken window still open at T+65s).
+    expect(krakenFetchOHLCVMock).toHaveBeenCalled();
+    // binanceus must NOT have been called (standard window closed at T+65s).
+    expect(binanceusFetchOHLCVMock).not.toHaveBeenCalled();
+  });
+
+  it("does nothing at T+125s when both standard and Kraken windows are closed", async () => {
+    const krakenFetchOHLCVMock = vi.fn().mockResolvedValue([]);
+    const { default: ccxt } = await import("ccxt");
+    (ccxt.kraken as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      fetchOHLCV: krakenFetchOHLCVMock,
+    }));
+
+    const { handler } = await import("./higher-tf-poller-handler.js");
+    const nowOutsideWindow = boundaryMs + 125_000; // T+125s
+    await handler({ time: new Date(nowOutsideWindow).toISOString() });
+
+    // No exchange should have been called — both windows are closed.
+    expect(krakenFetchOHLCVMock).not.toHaveBeenCalled();
+  });
+
+  it("skips Kraken fetchOHLCV on second tick when candle already in DDB (idempotence)", async () => {
+    const krakenFetchOHLCVMock = vi.fn().mockResolvedValue([]);
+    const { default: ccxt } = await import("ccxt");
+    (ccxt.kraken as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      fetchOHLCV: krakenFetchOHLCVMock,
+    }));
+
+    // Compute the targetOpenTime for the 15m bar at boundaryMs:
+    // lastBoundary = boundaryMs (the boundary that just elapsed relative to nowSecondTick)
+    // targetOpenTime = boundaryMs - 900_000 (previous bar's open)
+    const targetOpenTime = boundaryMs - 900_000;
+
+    // DDB returns a candle with the matching openTime → second tick must skip.
+    getCandlesMock.mockResolvedValue([
+      {
+        exchange: "kraken",
+        pair: "BTC/USDT",
+        timeframe: "15m",
+        openTime: targetOpenTime,
+        closeTime: targetOpenTime + 900_000,
+        open: 80_000,
+        high: 81_000,
+        low: 79_000,
+        close: 80_500,
+        volume: 5,
+        isClosed: true,
+        source: "live",
+        symbol: "BTC/USDT",
+      },
+    ]);
+
+    const { handler } = await import("./higher-tf-poller-handler.js");
+    await handler({ time: new Date(nowSecondTick).toISOString() });
+
+    // Kraken fetchOHLCV must NOT have been called — candle already in DDB.
+    expect(krakenFetchOHLCVMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("handler — mixed-exchange window isolation (issue #342)", () => {
+  // At T+65s after the 15m boundary: isCloseBoundary=false, isKrakenCloseBoundary=true.
+  // binanceus and coinbase must NOT be triggered by the Kraken second-tick path.
+  const boundaryMs = Date.UTC(2026, 0, 1, 0, 15, 0);
+  const nowSecondTick = boundaryMs + 65_000;
+
+  it("coinbase fetchOHLCV is NOT called on the Kraken second tick", async () => {
+    const coinbaseFetchOHLCVMock = vi.fn().mockResolvedValue([]);
+    const { default: ccxt } = await import("ccxt");
+    (ccxt.coinbase as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      fetchOHLCV: coinbaseFetchOHLCVMock,
+    }));
+    getCandlesMock.mockResolvedValue([]);
+
+    const { handler } = await import("./higher-tf-poller-handler.js");
+    await handler({ time: new Date(nowSecondTick).toISOString() });
+
+    expect(coinbaseFetchOHLCVMock).not.toHaveBeenCalled();
+  });
+
+  it("all three exchanges ARE called on the first tick (standard window)", async () => {
+    // T+5s: first tick — all exchanges fire.
+    const nowFirstTick = boundaryMs + 5_000;
+    const krakenFetchOHLCVMock = vi.fn().mockResolvedValue([]);
+    const binanceusFetchOHLCVMock = vi.fn().mockResolvedValue([]);
+    const { default: ccxt } = await import("ccxt");
+    (ccxt.kraken as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      fetchOHLCV: krakenFetchOHLCVMock,
+    }));
+    (ccxt.binanceus as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      fetchOHLCV: binanceusFetchOHLCVMock,
+    }));
+    getCandlesMock.mockResolvedValue([]);
+
+    const { handler } = await import("./higher-tf-poller-handler.js");
+    await handler({ time: new Date(nowFirstTick).toISOString() });
+
+    // Both Kraken and binanceus must have been called on the first tick.
+    expect(krakenFetchOHLCVMock).toHaveBeenCalled();
+    expect(binanceusFetchOHLCVMock).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests for aggregateCoinbase4hFromHourly
 // ---------------------------------------------------------------------------
 
@@ -74,6 +286,7 @@ beforeEach(() => {
   vi.resetModules();
   storeCandlesMock.mockReset();
   getCandlesMock.mockReset();
+  delete process.env.KRAKEN_BOUNDARY_WINDOW_MS;
 });
 
 describe("aggregateCoinbase4hFromHourly", () => {

@@ -54,13 +54,76 @@ interface ScheduledEvent {
  * Cron fires at the top of each minute. The candle whose closeTime aligns with
  * the boundary just elapsed is fully closed and ready to fetch. Use a small
  * grace window (60s) to absorb cron jitter and exchange-side commit latency.
+ *
+ * Exported for unit testing.
  */
-function isCloseBoundary(now: number, tf: Timeframe): boolean {
+export function isCloseBoundary(now: number, tf: Timeframe): boolean {
   const tfMs = TF_MS[tf];
   // Most-recent boundary at or before `now`:
   const lastBoundary = Math.floor(now / tfMs) * tfMs;
   // We want this poller to fire shortly after the boundary, not before.
   return now - lastBoundary < 60_000;
+}
+
+/**
+ * Widened close-boundary window for Kraken REST OHLCV, in milliseconds.
+ *
+ * Evidence (curl trace, 2026-05-11):
+ *   XBTUSDT 22:00 boundary — bar present at T+0.3s (immediate commit).
+ *   XETHZUSD 21:45 boundary — bar present when sampled 764s after close.
+ *   XBTUSDT 21:45 boundary — bar present when sampled 765s after close.
+ *
+ * Kraken's REST API commits bars quickly (~0-1s after close). The root cause
+ * of "no candle found" is NOT API latency but a Lambda cold-start + race
+ * condition: the indicator-handler fires via DDB Streams (triggered by
+ * binanceus/coinbase writes) BEFORE the higher-tf-poller Lambda finishes
+ * writing Kraken's candle. If the poller Lambda cold-starts (5-30s),
+ * Kraken's write happens after the indicator already queried DDB.
+ *
+ * The fix: extend the poller window to 120s so a second EventBridge tick
+ * (T+60s) can still write the Kraken candle. Binanceus and coinbase remain
+ * on the tight 60s window — they write fast and cold-start is less likely
+ * to delay them past the indicator's query. The idempotence check ensures
+ * the second tick skips Kraken if the first tick already succeeded.
+ *
+ * Configurable via KRAKEN_BOUNDARY_WINDOW_MS env var for testing/tuning.
+ */
+const KRAKEN_BOUNDARY_WINDOW_MS = process.env.KRAKEN_BOUNDARY_WINDOW_MS
+  ? parseInt(process.env.KRAKEN_BOUNDARY_WINDOW_MS, 10)
+  : 120_000;
+
+/**
+ * Returns true when `now` is within the widened Kraken close-boundary window
+ * for the given timeframe.
+ *
+ * Unlike isCloseBoundary (60s), this uses KRAKEN_BOUNDARY_WINDOW_MS (default
+ * 120s) so the T+60s EventBridge tick can still catch Kraken bars that the
+ * first tick failed to write due to Lambda cold-start races.
+ *
+ * Exported for unit testing.
+ */
+export function isKrakenCloseBoundary(now: number, tf: Timeframe): boolean {
+  const tfMs = TF_MS[tf];
+  const lastBoundary = Math.floor(now / tfMs) * tfMs;
+  return now - lastBoundary < KRAKEN_BOUNDARY_WINDOW_MS;
+}
+
+/**
+ * Returns true if a Kraken candle for the given (pair, tf, targetOpenTime) is
+ * already present in DDB — used by the second-tick path to avoid a duplicate
+ * fetchOHLCV call when the first tick already succeeded.
+ *
+ * Checks the most-recent candle in DDB (limit=1). If its openTime matches the
+ * target, the write already happened and we can skip. This is a cheap single-
+ * item DDB Query (uses the begins_with SK prefix index).
+ */
+async function krakenCandleExistsInDdb(
+  pair: TradingPair,
+  tf: Timeframe,
+  targetOpenTime: number,
+): Promise<boolean> {
+  const candles = await getCandles(pair, "kraken", tf, 1);
+  return candles.length > 0 && candles[0]!.openTime === targetOpenTime;
 }
 
 // One ccxt client per (exchange, invocation). Sharing the instance across
@@ -232,14 +295,31 @@ export async function aggregateCoinbase4hFromHourly(
 export const handler = async (event: ScheduledEvent): Promise<void> => {
   const now = event.time ? Date.parse(event.time) : Date.now();
 
+  // Standard window (60s): all exchanges including Kraken on the first tick.
   const dueTfs = POLLED_TIMEFRAMES.filter((tf) => isCloseBoundary(now, tf));
-  if (dueTfs.length === 0) {
+  // Kraken-extended window (120s): catches Kraken-only on the second cron tick
+  // (T+60s) when the standard window is closed. binanceus/coinbase are excluded
+  // from this path — they remain on the tight 60s window.
+  const krakenDueTfs = POLLED_TIMEFRAMES.filter(
+    (tf) => !isCloseBoundary(now, tf) && isKrakenCloseBoundary(now, tf),
+  );
+
+  const isFirstTick = dueTfs.length > 0;
+  const isKrakenSecondTick = !isFirstTick && krakenDueTfs.length > 0;
+
+  if (!isFirstTick && !isKrakenSecondTick) {
     return;
   }
 
-  console.log(
-    `[higher-tf-poller] Tick at ${new Date(now).toISOString()} — TFs due: ${dueTfs.join(",")}`,
-  );
+  if (isFirstTick) {
+    console.log(
+      `[higher-tf-poller] Tick at ${new Date(now).toISOString()} — TFs due: ${dueTfs.join(",")}`,
+    );
+  } else {
+    console.log(
+      `[higher-tf-poller] Kraken second-tick at ${new Date(now).toISOString()} — TFs: ${krakenDueTfs.join(",")}`,
+    );
+  }
 
   // Build one ccxt client per exchange so enableRateLimit can coordinate
   // across (pair, tf) tasks. Otherwise each task spins up its own client
@@ -255,20 +335,47 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
   const fetchTasks: Promise<boolean>[] = [];
   const aggregateTfs: Array<{ tf: Timeframe; pairs: TradingPair[] }> = [];
 
-  for (const tf of dueTfs) {
-    for (const exchangeId of EXCHANGES) {
-      const aggregateFromTf = AGGREGATED_TIMEFRAMES[exchangeId]?.[tf];
-      if (aggregateFromTf !== undefined) {
-        // Collect aggregation work for Phase 2 — do not start yet.
-        if (exchangeId === "coinbase" && tf === "4h") {
-          aggregateTfs.push({ tf, pairs: [...PAIRS] });
+  if (isFirstTick) {
+    for (const tf of dueTfs) {
+      for (const exchangeId of EXCHANGES) {
+        const aggregateFromTf = AGGREGATED_TIMEFRAMES[exchangeId]?.[tf];
+        if (aggregateFromTf !== undefined) {
+          // Collect aggregation work for Phase 2 — do not start yet.
+          if (exchangeId === "coinbase" && tf === "4h") {
+            aggregateTfs.push({ tf, pairs: [...PAIRS] });
+          }
+          continue;
         }
-        continue;
+        const exchange = clients[exchangeId];
+        if (!exchange) continue; // exchange class missing — already logged
+        for (const pair of PAIRS) {
+          fetchTasks.push(fetchAndStoreLatestCandle(exchangeId, exchange, pair, tf, now));
+        }
       }
-      const exchange = clients[exchangeId];
-      if (!exchange) continue; // exchange class missing — already logged
-      for (const pair of PAIRS) {
-        fetchTasks.push(fetchAndStoreLatestCandle(exchangeId, exchange, pair, tf, now));
+    }
+  } else {
+    // Kraken-only second tick: re-try candles that may have been missed on the
+    // first tick due to Lambda cold-start races. Before calling fetchOHLCV,
+    // check DDB — if the candle is already there, skip to avoid 2× API load.
+    const krakenExchange = clients["kraken"];
+    if (krakenExchange) {
+      for (const tf of krakenDueTfs) {
+        const tfMs = TF_MS[tf];
+        const lastBoundary = Math.floor(now / tfMs) * tfMs;
+        const targetOpenTime = lastBoundary - tfMs;
+        for (const pair of PAIRS) {
+          fetchTasks.push(
+            krakenCandleExistsInDdb(pair, tf, targetOpenTime).then((exists) => {
+              if (exists) {
+                console.log(
+                  `[higher-tf-poller] Kraken second-tick skip (already in DDB): ${pair} ${tf} @ openTime=${targetOpenTime}`,
+                );
+                return false;
+              }
+              return fetchAndStoreLatestCandle("kraken", krakenExchange, pair, tf, now);
+            }),
+          );
+        }
       }
     }
   }
