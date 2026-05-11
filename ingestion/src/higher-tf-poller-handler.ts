@@ -15,6 +15,23 @@
  *
  * MarketStreamManager (CCXT Pro) only writes 1m candles. backfillCandles tags
  * its output as "backfill". This poller fills the gap.
+ *
+ * ## Kraken commit latency
+ *
+ * Kraken's REST OHLCV endpoint takes 60-120 seconds after a bar closes before
+ * the completed bar is visible in the API response. The default 60-second
+ * `isCloseBoundary` window (designed to match the 1-minute cron tick) is too
+ * narrow: the cron fires at T+0, Lambda initializes by T+2, and `fetchOHLCV`
+ * at T+5 finds the bar uncommitted. The next cron tick at T+60s sees
+ * `now - lastBoundary ≥ 60_000`, which fails the strict `< 60_000` guard, so
+ * Kraken's candle is never fetched for that boundary. The IndicatorHandler
+ * then sees Kraken's head candle as one full TF behind the current closeTime
+ * and logs "treating as stale" for every 15m/1h/4h close.
+ *
+ * Fix: widen the close-boundary detection window for Kraken to
+ * KRAKEN_BOUNDARY_WINDOW_MS (default 120s, env-configurable). This allows the
+ * Lambda invocation at T+60s to still fetch Kraken's just-committed bar, while
+ * binanceus/coinbase retain the tight 60s window to avoid spurious refetches.
  */
 import ccxt from "ccxt";
 import type { Candle, Timeframe } from "@quantara/shared";
@@ -49,18 +66,61 @@ interface ScheduledEvent {
 }
 
 /**
+ * Extended close-boundary detection window for Kraken (milliseconds).
+ *
+ * Kraken's REST OHLCV endpoint has 60-120 seconds of commit latency for the
+ * bar that just closed. The standard 60s window (one cron tick) is too narrow:
+ * the T+0 invocation finds the bar uncommitted, and the T+60s invocation misses
+ * the `< 60_000` guard entirely. By widening to 120s, the T+60s invocation
+ * (now = boundary + ~60s) still falls within the Kraken window and retrieves
+ * the now-committed bar.
+ *
+ * Default: 120_000 ms (2 minutes). Must be > 60_000 for the fix to take effect.
+ * Configurable via KRAKEN_BOUNDARY_WINDOW_MS env var for tuning without a
+ * code change (e.g. set to 90_000 if Kraken's latency improves).
+ */
+export const KRAKEN_BOUNDARY_WINDOW_MS = (() => {
+  const raw = process.env.KRAKEN_BOUNDARY_WINDOW_MS;
+  const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+})();
+
+/**
  * Returns true when `now` is within the first minute after a `tf` close boundary.
  *
  * Cron fires at the top of each minute. The candle whose closeTime aligns with
  * the boundary just elapsed is fully closed and ready to fetch. Use a small
  * grace window (60s) to absorb cron jitter and exchange-side commit latency.
+ *
+ * For Kraken, use isKrakenCloseBoundary instead — it applies a wider window
+ * to account for Kraken's longer bar-commit latency.
  */
-function isCloseBoundary(now: number, tf: Timeframe): boolean {
+export function isCloseBoundary(now: number, tf: Timeframe): boolean {
   const tfMs = TF_MS[tf];
   // Most-recent boundary at or before `now`:
   const lastBoundary = Math.floor(now / tfMs) * tfMs;
   // We want this poller to fire shortly after the boundary, not before.
   return now - lastBoundary < 60_000;
+}
+
+/**
+ * Returns true when `now` falls within KRAKEN_BOUNDARY_WINDOW_MS after the
+ * most recent `tf` close boundary.
+ *
+ * Unlike isCloseBoundary (which uses a strict 60s window matching one cron
+ * tick), this uses a wider window so that even the second cron tick after a
+ * boundary (T+60s) still triggers a Kraken fetch. The wider window allows the
+ * Lambda to retrieve Kraken bars that commit 60-120s after the close.
+ *
+ * To avoid writing a stale bar from a *previous* boundary on a non-boundary
+ * minute (when `now` is far from any boundary), the function only returns true
+ * when `now` is within `KRAKEN_BOUNDARY_WINDOW_MS` of the most-recent boundary.
+ * Idempotent writes (same primary key) make duplicate writes harmless.
+ */
+export function isKrakenCloseBoundary(now: number, tf: Timeframe): boolean {
+  const tfMs = TF_MS[tf];
+  const lastBoundary = Math.floor(now / tfMs) * tfMs;
+  return now - lastBoundary < KRAKEN_BOUNDARY_WINDOW_MS;
 }
 
 // One ccxt client per (exchange, invocation). Sharing the instance across
@@ -232,13 +292,20 @@ export async function aggregateCoinbase4hFromHourly(
 export const handler = async (event: ScheduledEvent): Promise<void> => {
   const now = event.time ? Date.parse(event.time) : Date.now();
 
+  // Standard close-boundary TFs (binanceus + coinbase, 60s window).
   const dueTfs = POLLED_TIMEFRAMES.filter((tf) => isCloseBoundary(now, tf));
-  if (dueTfs.length === 0) {
+  // Kraken-specific due TFs: wider window to tolerate Kraken's 60-120s bar
+  // commit latency. May include TFs that are no longer in dueTfs (i.e., we
+  // are in the second minute after a boundary where isCloseBoundary returned
+  // false but isKrakenCloseBoundary still returns true).
+  const krakenDueTfs = POLLED_TIMEFRAMES.filter((tf) => isKrakenCloseBoundary(now, tf));
+
+  if (dueTfs.length === 0 && krakenDueTfs.length === 0) {
     return;
   }
 
   console.log(
-    `[higher-tf-poller] Tick at ${new Date(now).toISOString()} — TFs due: ${dueTfs.join(",")}`,
+    `[higher-tf-poller] Tick at ${new Date(now).toISOString()} — TFs due (standard): ${dueTfs.join(",") || "none"} | Kraken TFs due: ${krakenDueTfs.join(",") || "none"}`,
   );
 
   // Build one ccxt client per exchange so enableRateLimit can coordinate
@@ -252,11 +319,22 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
   // Mixing both phases into a single Promise.allSettled would let the aggregator
   // read DDB before the 1h write settles, reproducing the "only N/4 hourly candles
   // available" skip that issue #321 describes.
+  //
+  // Kraken uses its own due-TF list (krakenDueTfs) so that second-minute ticks
+  // still fetch Kraken candles that were not yet committed at the first-minute tick.
   const fetchTasks: Promise<boolean>[] = [];
   const aggregateTfs: Array<{ tf: Timeframe; pairs: TradingPair[] }> = [];
 
-  for (const tf of dueTfs) {
+  // Union of all TFs that need any work so we iterate once.
+  const allDueTfs = [...new Set([...dueTfs, ...krakenDueTfs])];
+
+  for (const tf of allDueTfs) {
     for (const exchangeId of EXCHANGES) {
+      // Kraken uses its wider boundary window; other exchanges use the standard window.
+      const isExchangeDue =
+        exchangeId === "kraken" ? krakenDueTfs.includes(tf) : dueTfs.includes(tf);
+      if (!isExchangeDue) continue;
+
       const aggregateFromTf = AGGREGATED_TIMEFRAMES[exchangeId]?.[tf];
       if (aggregateFromTf !== undefined) {
         // Collect aggregation work for Phase 2 — do not start yet.

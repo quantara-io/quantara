@@ -1209,3 +1209,149 @@ describe("Phase 8 §10.10 — disabled rule wiring", () => {
     expect(options?.disabledRuleKeys?.size ?? -1).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Kraken T-1 candle fallback (issue #339)
+//
+// Kraken's REST OHLCV endpoint has 60-120s commit latency. The higher-tf-poller
+// writes Kraken's bar one invocation (~60s) after the close boundary, so when
+// the indicator-handler fires at T+5s, Kraken's current-period candle is absent
+// from DDB. The fallback accepts Kraken's T-1 (previous period) candle to keep
+// Kraken in the consensus rather than treating it as fully stale.
+// ---------------------------------------------------------------------------
+
+describe("Kraken T-1 candle fallback (issue #339 — EXCHANGES_WITH_COMMIT_LATENCY)", () => {
+  // Use a 15m close boundary. The "current" closeTime is TEST_CLOSE_TIME.
+  // Kraken's T-1 candle has closeTime = TEST_CLOSE_TIME - 900_000 (one 15m back).
+  const KRAKEN_T1_CLOSE = TEST_CLOSE_TIME - 900_000;
+
+  function makeCandleForExchange(exchange: string, closeTime = TEST_CLOSE_TIME, source = "live") {
+    return makeCandle({ exchange, closeTime, openTime: closeTime - 15 * 60 * 1000, source });
+  }
+
+  it("uses Kraken T-1 candle when exact-period candle is absent (no stale log emitted)", async () => {
+    // binanceus + coinbase have exact-period candles; kraken only has T-1.
+    const binanceCandle = makeCandleForExchange("binanceus");
+    const coinbaseCandle = makeCandleForExchange("coinbase");
+    const krakenT1Candle = makeCandleForExchange("kraken", KRAKEN_T1_CLOSE);
+
+    getCandles.mockImplementation(
+      async (_pair: string, exchange: string, _tf: string, _limit: number) => {
+        if (exchange === "kraken") return [krakenT1Candle]; // only T-1 available
+        if (exchange === "coinbase") return [coinbaseCandle];
+        return [binanceCandle]; // binanceus
+      },
+    );
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // The fallback log line should mention "T-1 fallback" (not "treating as stale").
+    const staleLogs = logSpy.mock.calls.filter((args) =>
+      String(args[0]).includes("treating as stale"),
+    );
+    const fallbackLogs = logSpy.mock.calls.filter((args) =>
+      String(args[0]).includes("T-1 fallback"),
+    );
+    expect(staleLogs).toHaveLength(0);
+    expect(fallbackLogs).toHaveLength(1);
+    expect(fallbackLogs[0]![0]).toMatch(/T-1 fallback/);
+    expect(fallbackLogs[0]![0]).toMatch(/kraken/);
+
+    logSpy.mockRestore();
+  });
+
+  it("passes Kraken T-1 candle to canonicalizeCandle as non-null (not stale)", async () => {
+    const binanceCandle = makeCandleForExchange("binanceus");
+    const coinbaseCandle = makeCandleForExchange("coinbase");
+    const krakenT1Candle = makeCandleForExchange("kraken", KRAKEN_T1_CLOSE);
+
+    getCandles.mockImplementation(async (_pair: string, exchange: string) => {
+      if (exchange === "kraken") return [krakenT1Candle];
+      if (exchange === "coinbase") return [coinbaseCandle];
+      return [binanceCandle];
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // canonicalizeCandle should have been called with Kraken mapped to the T-1
+    // candle (non-null), not null. The second argument (stalenessMap) should have
+    // kraken = false.
+    expect(canonicalizeCandleMock).toHaveBeenCalled();
+    const [latestMap, stalenessMap] = canonicalizeCandleMock.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, boolean>,
+    ];
+    // The latest candle for kraken must be the T-1 candle (non-null).
+    expect(latestMap["kraken"]).not.toBeNull();
+    expect(latestMap["kraken"]).toMatchObject({ closeTime: KRAKEN_T1_CLOSE, exchange: "kraken" });
+    // stalenessMap for kraken must be false (not stale — fallback candle found).
+    expect(stalenessMap["kraken"]).toBe(false);
+  });
+
+  it("still treats Kraken as stale when no candle is available within 1 period", async () => {
+    // Kraken's only available candle is 2 periods behind (T-2), which exceeds
+    // CANDLE_LATE_TOLERANCE_PERIODS = 1.
+    const binanceCandle = makeCandleForExchange("binanceus");
+    const coinbaseCandle = makeCandleForExchange("coinbase");
+    const krakenT2Candle = makeCandleForExchange("kraken", TEST_CLOSE_TIME - 2 * 900_000);
+
+    getCandles.mockImplementation(async (_pair: string, exchange: string) => {
+      if (exchange === "kraken") return [krakenT2Candle];
+      if (exchange === "coinbase") return [coinbaseCandle];
+      return [binanceCandle];
+    });
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // With T-2 candle only: must fall through to "treating as stale".
+    const staleLogs = logSpy.mock.calls.filter((args) =>
+      String(args[0]).includes("treating as stale"),
+    );
+    const fallbackLogs = logSpy.mock.calls.filter((args) =>
+      String(args[0]).includes("T-1 fallback"),
+    );
+    expect(staleLogs).toHaveLength(1);
+    expect(fallbackLogs).toHaveLength(0);
+
+    logSpy.mockRestore();
+  });
+
+  it("does NOT apply T-1 fallback to binanceus (not in EXCHANGES_WITH_COMMIT_LATENCY)", async () => {
+    // binanceus has only a T-1 candle (simulating an unlikely stale scenario).
+    // The fallback tolerance must NOT apply to binanceus — it should be stale.
+    const binanceT1Candle = makeCandleForExchange("binanceus", KRAKEN_T1_CLOSE);
+    const coinbaseCandle = makeCandleForExchange("coinbase");
+    const krakenCandle = makeCandleForExchange("kraken");
+
+    getCandles.mockImplementation(async (_pair: string, exchange: string) => {
+      if (exchange === "binanceus") return [binanceT1Candle]; // only T-1 for binanceus
+      if (exchange === "coinbase") return [coinbaseCandle];
+      return [krakenCandle];
+    });
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // binanceus T-1 must be treated as stale (no fallback).
+    const staleLogs = logSpy.mock.calls.filter(
+      (args) =>
+        String(args[0]).includes("treating as stale") && String(args[0]).includes("binanceus"),
+    );
+    const fallbackLogs = logSpy.mock.calls.filter(
+      (args) => String(args[0]).includes("T-1 fallback") && String(args[0]).includes("binanceus"),
+    );
+    expect(staleLogs).toHaveLength(1);
+    expect(fallbackLogs).toHaveLength(0);
+
+    logSpy.mockRestore();
+  });
+});

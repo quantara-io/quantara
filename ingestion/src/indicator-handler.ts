@@ -93,6 +93,38 @@ type SignalTimeframe = "15m" | "1h" | "4h" | "1d";
 
 const SIGNAL_TIMEFRAMES: SignalTimeframe[] = ["15m", "1h", "4h", "1d"];
 
+const TF_MS: Record<SignalTimeframe, number> = {
+  "15m": 900_000,
+  "1h": 3_600_000,
+  "4h": 14_400_000,
+  "1d": 86_400_000,
+};
+
+/**
+ * Exchanges that have a known REST OHLCV commit latency > 60 seconds after a
+ * bar closes. For these exchanges, the higher-tf-poller writes the just-closed
+ * bar ~60-120s after the close boundary — after the indicator-handler has
+ * already fired for that boundary.
+ *
+ * The indicator-handler uses `CANDLE_LATE_TOLERANCE_PERIODS` to widen the
+ * per-exchange candle lookup window: instead of requiring an exact closeTime
+ * match (±1ms), it accepts the most recent candle within
+ * CANDLE_LATE_TOLERANCE_PERIODS periods of the target. This avoids treating
+ * the exchange as fully stale when its data is only 1 bar delayed.
+ *
+ * Root-cause context (issue #339): Kraken's 60-120s commit latency means its
+ * bar for the T=12:30 close only appears in the higher-tf-poller's second
+ * Lambda invocation (T=12:31). The indicator-handler fires at T=12:30:05
+ * when binanceus/coinbase write their candles. A pure poller-side fix (wider
+ * Kraken boundary window) ensures the T-1 Kraken bar is always in DDB by the
+ * time the next indicator-handler fires — but Kraken's CURRENT bar is still
+ * absent at T+5s. Accepting the T-1 bar is therefore the minimal fix that
+ * keeps Kraken in consensus while the higher-tf-poller fix (KRAKEN_BOUNDARY_WINDOW_MS)
+ * ensures the lag is bounded to exactly 1 period rather than growing.
+ */
+const EXCHANGES_WITH_COMMIT_LATENCY = new Set<string>(["kraken"]);
+const CANDLE_LATE_TOLERANCE_PERIODS = 1;
+
 // ---------------------------------------------------------------------------
 // Candle shape from DDB stream record (after unmarshalling)
 // ---------------------------------------------------------------------------
@@ -646,12 +678,42 @@ async function computeBlendedSignal(
     EXCHANGES.map(async (ex) => {
       const candles = await getCandles(pair, ex, tf, CANDLE_LIMIT);
       perExchangeHistory[ex] = candles;
-      const latest = candles.find((c) => Math.abs(c.closeTime - closeTime) <= 1) ?? null;
-      if (!latest && candles.length > 0) {
+
+      // Primary: exact-match the candle whose closeTime equals the current
+      // close boundary (within 1ms to absorb floating-point rounding).
+      let latest = candles.find((c) => Math.abs(c.closeTime - closeTime) <= 1) ?? null;
+
+      // Fallback for exchanges with known REST OHLCV commit latency (currently
+      // Kraken only): accept the most-recent available candle if it is within
+      // CANDLE_LATE_TOLERANCE_PERIODS of the target closeTime. Kraken's REST
+      // endpoint takes 60-120s after a bar closes to commit the completed bar,
+      // so the higher-tf-poller writes Kraken's bar ~1 invocation (60s) after
+      // the close boundary — after the indicator-handler has already fired.
+      // Using the T-1 bar keeps Kraken in the consensus rather than excluding
+      // it entirely; the higher-tf-poller's wider Kraken window
+      // (KRAKEN_BOUNDARY_WINDOW_MS) ensures the T-1 lag is bounded to exactly
+      // 1 period and does not grow further. See issue #339.
+      if (latest === null && EXCHANGES_WITH_COMMIT_LATENCY.has(ex) && candles.length > 0) {
+        const toleranceMs = CANDLE_LATE_TOLERANCE_PERIODS * TF_MS[tf];
+        const fallback =
+          candles.find((c) => c.closeTime <= closeTime && closeTime - c.closeTime <= toleranceMs) ??
+          null;
+        if (fallback !== null) {
+          console.log(
+            `[IndicatorHandler] ${pair}/${tf}@${ex}: exact candle missing for closeTime=${closeTime} (head=${candles[0]?.closeTime}); using T-${CANDLE_LATE_TOLERANCE_PERIODS} fallback (lag=${closeTime - fallback.closeTime}ms) — Kraken REST commit latency.`,
+          );
+        } else {
+          console.log(
+            `[IndicatorHandler] ${pair}/${tf}@${ex}: no candle found for closeTime=${closeTime} (head=${candles[0]?.closeTime}) — treating as stale.`,
+          );
+        }
+        latest = fallback;
+      } else if (latest === null && candles.length > 0) {
         console.log(
           `[IndicatorHandler] ${pair}/${tf}@${ex}: no candle found for closeTime=${closeTime} (head=${candles[0]?.closeTime}) — treating as stale.`,
         );
       }
+
       perExchangeLatest[ex] = latest;
     }),
   );
