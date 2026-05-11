@@ -86,6 +86,13 @@ await build({
   outfile: "dist/calibration-job.js",
 });
 
+// Lambda: rule prune — Phase 8 §10.10 auto-disable / re-enable rules with sustained Brier > 0.30.
+await build({
+  ...shared,
+  entryPoints: ["src/rule-prune-handler.ts"],
+  outfile: "dist/rule-prune-handler.js",
+});
+
 // Lambda: close-quorum monitor — emits CloseMissed metric on TTL expiry (v6 P2 §11.5)
 await build({
   ...shared,
@@ -140,5 +147,5 @@ await build({
 });
 
 console.log(
-  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/indicator-handler-shadow.js, dist/aggregator-handler.js, dist/outcome-handler.js, dist/calibration-job.js, dist/close-quorum-monitor.js, dist/higher-tf-poller-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js, dist/events-fanout.js",
+  "Build complete: dist/index.js, dist/backfill-handler.js, dist/news-backfill-handler.js, dist/enrichment-handler.js, dist/indicator-handler.js, dist/indicator-handler-shadow.js, dist/aggregator-handler.js, dist/outcome-handler.js, dist/calibration-job.js, dist/close-quorum-monitor.js, dist/higher-tf-poller-handler.js, dist/service.js, dist/ws-connect-handler.js, dist/ws-disconnect-handler.js, dist/signals-fanout.js, dist/events-fanout.js, dist/rule-prune-handler.js",
 );

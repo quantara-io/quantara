@@ -185,6 +185,8 @@ resource "aws_iam_role_policy" "ingestion_ecs_dynamodb" {
         aws_dynamodb_table.ratifications.arn,
         "${aws_dynamodb_table.ratifications.arn}/index/*",
         aws_dynamodb_table.ratification_cache.arn,
+        # Phase 8 §10.10: score.ts reads rule_status to skip disabled rules.
+        aws_dynamodb_table.rule_status.arn,
       ]
     }]
   })
@@ -309,6 +311,7 @@ resource "aws_ecs_task_definition" "ingestion" {
       { name = "TABLE_SIGNALS_V2", value = aws_dynamodb_table.signals_v2.name },
       { name = "TABLE_RATIFICATIONS", value = aws_dynamodb_table.ratifications.name },
       { name = "TABLE_RATIFICATION_CACHE", value = aws_dynamodb_table.ratification_cache.name },
+      { name = "TABLE_RULE_STATUS", value = aws_dynamodb_table.rule_status.name },
     ]
 
     secrets = [

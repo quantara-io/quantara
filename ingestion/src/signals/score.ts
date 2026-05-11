@@ -172,6 +172,11 @@ export function scoreRules(
  *   `rulesFired = []` (the gate is caller-supplied, not rule-encoded). When
  *   null or omitted, no gate is applied. Gates are always explicit via this
  *   parameter — Rule.direction does not include "gate".
+ * @param options.disabledRuleKeys  - Set of "{rule}#{pair}#{TF}" keys for
+ *   rules that have been auto-disabled by the Phase 8 §10.10 prune job. Skipped
+ *   rules are appended to `rulesFired` as `"disabled:<ruleName>"` for the audit
+ *   trail (explainability). Load once per Lambda invocation and pass in; do not
+ *   call DynamoDB inside this function.
  */
 export function scoreTimeframe(
   state: IndicatorState,
@@ -182,12 +187,14 @@ export function scoreTimeframe(
     strongConfluence?: number;
     strongNetMargin?: number;
     gateResult?: GateResult | null;
+    disabledRuleKeys?: ReadonlySet<string>;
   },
 ): TimeframeVote | null {
   const minConfluence = options?.minConfluence ?? MIN_CONFLUENCE;
   const strongConfluence = options?.strongConfluence ?? STRONG_CONFLUENCE;
   const strongNetMargin = options?.strongNetMargin ?? STRONG_NET_MARGIN;
   const gateResult = options?.gateResult ?? null;
+  const disabledRuleKeys = options?.disabledRuleKeys;
 
   // Null guard: return null only when no rule is eligible to evaluate.
   // A rule is "eligible" if appliesTo matches AND barsSinceStart >= requiresPrior.
@@ -224,10 +231,40 @@ export function scoreTimeframe(
     };
   }
 
-  // 2. Compute fired rules (only reached when gate did not fire).
-  const fired = scoreRules(state, rules, lastFireBars);
+  // 2. Partition rules into active and auto-disabled (Phase 8 §10.10).
+  //    A rule is suppressed when its "{name}#{pair}#{TF}" key appears in
+  //    disabledRuleKeys. Suppressed rules that would otherwise pass all other
+  //    eligibility checks (timeframe, warm-up, cooldown, predicate) are
+  //    tracked for the audit trail but contribute no directional score.
+  //    We filter disabled rules out BEFORE calling scoreRules so that group-max
+  //    selection only considers active rules, matching the semantic that a
+  //    disabled rule is as if it doesn't exist for this invocation.
+  let activeRules = rules;
+  const disabledNames: string[] = [];
+  if (disabledRuleKeys !== undefined && disabledRuleKeys.size > 0) {
+    const active: Rule[] = [];
+    for (const r of rules) {
+      const key = `${r.name}#${state.pair}#${state.timeframe}`;
+      if (disabledRuleKeys.has(key)) {
+        // Only track if the rule would actually fire (eligible + predicate passes).
+        if (
+          r.appliesTo.includes(state.timeframe) &&
+          state.barsSinceStart >= r.requiresPrior &&
+          r.when(state)
+        ) {
+          disabledNames.push(r.name);
+        }
+      } else {
+        active.push(r);
+      }
+    }
+    activeRules = active;
+  }
 
-  // 3. Sum directional scores.
+  // 3. Compute fired rules (only reached when gate did not fire).
+  const fired = scoreRules(state, activeRules, lastFireBars);
+
+  // 4. Sum directional scores.
   let bullishScore = 0;
   let bearishScore = 0;
   for (const r of fired) {
@@ -235,9 +272,11 @@ export function scoreTimeframe(
     else if (r.direction === "bearish") bearishScore += r.strength;
   }
 
-  // 4. Determine direction — 5-tier ladder (v2 Phase 2 #253).
+  // 5. Determine direction — 5-tier ladder (v2 Phase 2 #253).
   const net = bullishScore - bearishScore;
-  const rulesFired = fired.map((r) => r.name);
+  // Append disabled-rule entries for explainability (Phase 8 §10.10).
+  // Format: "disabled:<ruleName>" — readers can split on ":" to identify suppressed rules.
+  const rulesFired = [...fired.map((r) => r.name), ...disabledNames.map((n) => `disabled:${n}`)];
   const tags = detectTags(state, fired);
 
   // Strong-buy: high bullish conviction with clear net margin.

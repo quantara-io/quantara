@@ -19,6 +19,7 @@ const LAMBDAS = [
   { entry: "aggregator-handler.js", zip: "aggregator-handler.zip" },
   { entry: "outcome-handler.js", zip: "outcome-handler.zip" },
   { entry: "calibration-job.js", zip: "calibration-job.zip" },
+  { entry: "rule-prune-handler.js", zip: "rule-prune.zip" }, // Phase 8 §10.10
   { entry: "close-quorum-monitor.js", zip: "close-quorum-monitor.zip" },
   { entry: "higher-tf-poller-handler.js", zip: "higher-tf-poller-handler.zip" },
   // WebSocket push channel (design v6, §16)
