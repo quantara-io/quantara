@@ -45,6 +45,8 @@ import { EXCHANGES } from "./exchanges/config.js";
 import { ratifySignal } from "./llm/ratify.js";
 import { buildSentimentBundle } from "./news/bundle.js";
 import { emitPipelineEventSafe } from "./lib/pipeline-events-store.js";
+import { getPlattRow } from "./calibration/calibration-store.js";
+import { applyPlattCalibration } from "./calibration/math.js";
 
 // ---------------------------------------------------------------------------
 // DDB client
@@ -240,6 +242,26 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
     return;
   }
 
+  // Phase 8 Platt calibration (§10.6): read coefficients for the emitting
+  // (pair, TF) slice and apply when present. The raw confidence is persisted
+  // alongside the calibrated value for transparency and diagnostics.
+  // Falls back silently to raw confidence when no coefficients exist yet.
+  const rawConfidence = blended.confidence;
+  let confidenceCalibrated: number | null = null;
+  try {
+    const plattRow = await getPlattRow(pair, blended.emittingTimeframe);
+    if (plattRow !== null) {
+      confidenceCalibrated = applyPlattCalibration(rawConfidence, plattRow);
+      console.log(
+        `[IndicatorHandler] ${pair}/${timeframe}: Platt calibration applied — raw=${rawConfidence.toFixed(3)} calibrated=${confidenceCalibrated.toFixed(3)}`,
+      );
+    }
+  } catch (plattErr) {
+    console.warn(
+      `[IndicatorHandler] ${pair}/${timeframe}: Platt lookup failed (non-fatal) — ${(plattErr as Error).message}`,
+    );
+  }
+
   // Phase B1 two-stage ratification:
   //   Stage 1 — run ratifySignal immediately to determine ratificationStatus.
   //             Returns synchronously with ratificationStatus = "pending" |
@@ -347,7 +369,12 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
           closeTime,
           timeframe,
           type: stage1Signal.type,
+          // Raw confidence from the scoring engine.
           confidence: stage1Signal.confidence,
+          // Phase 8 (§10.6): Platt-calibrated confidence (null when coefficients
+          // are absent for this slice — backward-compat with existing signals).
+          confidenceRaw: rawConfidence,
+          confidenceCalibrated,
           volatilityFlag: stage1Signal.volatilityFlag,
           gateReason: stage1Signal.gateReason,
           gateContext: stage1Signal.gateContext ?? null,

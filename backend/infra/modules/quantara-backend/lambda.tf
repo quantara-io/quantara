@@ -22,30 +22,48 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:Query",
-        "dynamodb:BatchWriteItem",
-        "dynamodb:BatchGetItem",
-      ]
-      Resource = [
-        aws_dynamodb_table.users.arn, "${aws_dynamodb_table.users.arn}/index/*",
-        aws_dynamodb_table.signals.arn, "${aws_dynamodb_table.signals.arn}/index/*",
-        aws_dynamodb_table.signal_history.arn, "${aws_dynamodb_table.signal_history.arn}/index/*",
-        aws_dynamodb_table.coach_sessions.arn, "${aws_dynamodb_table.coach_sessions.arn}/index/*",
-        aws_dynamodb_table.coach_messages.arn,
-        aws_dynamodb_table.deals.arn, "${aws_dynamodb_table.deals.arn}/index/*",
-        aws_dynamodb_table.deal_interests.arn,
-        aws_dynamodb_table.campaigns.arn,
-        aws_dynamodb_table.signals_v2.arn, "${aws_dynamodb_table.signals_v2.arn}/index/*",
-        aws_dynamodb_table.indicator_state.arn,
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:BatchGetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.users.arn, "${aws_dynamodb_table.users.arn}/index/*",
+          aws_dynamodb_table.signals.arn, "${aws_dynamodb_table.signals.arn}/index/*",
+          aws_dynamodb_table.signal_history.arn, "${aws_dynamodb_table.signal_history.arn}/index/*",
+          aws_dynamodb_table.coach_sessions.arn, "${aws_dynamodb_table.coach_sessions.arn}/index/*",
+          aws_dynamodb_table.coach_messages.arn,
+          aws_dynamodb_table.deals.arn, "${aws_dynamodb_table.deals.arn}/index/*",
+          aws_dynamodb_table.deal_interests.arn,
+          aws_dynamodb_table.campaigns.arn,
+          aws_dynamodb_table.signals_v2.arn, "${aws_dynamodb_table.signals_v2.arn}/index/*",
+          aws_dynamodb_table.indicator_state.arn,
+        ]
+      },
+      {
+        # Phase 7 Kelly unlock (§9.3.1): signal-service.enrichWithRisk reads
+        # `kelly#{pair}#{TF}#{direction}` from calibration-params per request
+        # to size aggressive-profile users via Kelly. Read-only — the
+        # calibration job (lambda-calibration-job.tf) is the sole writer.
+        # Kept separate from the over-broad statement above so the API
+        # role's write blast radius on this table stays at zero.
+        Sid    = "ReadCalibrationParams"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.calibration_params.arn,
+        ]
+      },
+    ]
   })
 }
 
@@ -400,6 +418,12 @@ resource "aws_lambda_function" "api" {
       TABLE_ACCURACY_AGGREGATES   = aws_dynamodb_table.accuracy_aggregates.name
       TABLE_RULE_ATTRIBUTION      = aws_dynamodb_table.rule_attribution.name
       TABLE_SIGNALS_COLLECTION    = aws_dynamodb_table.signals_collection.name
+      # Phase 7 Kelly unlock: signal-service.enrichWithRisk reads
+      # kelly#{pair}#{TF}#{direction} rows from calibration-params on every
+      # getSignalForUser. Injected explicitly so the helper in
+      # backend/src/lib/signal-service.ts doesn't fall back to the
+      # TABLE_PREFIX-derived guess.
+      TABLE_CALIBRATION_PARAMS    = aws_dynamodb_table.calibration_params.name
       CORS_ORIGIN              = var.cors_origin
       CLOUDFRONT_URL           = "https://${aws_cloudfront_distribution.api.domain_name}"
       ENVIRONMENT              = var.environment

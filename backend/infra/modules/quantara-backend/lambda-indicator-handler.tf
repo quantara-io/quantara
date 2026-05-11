@@ -107,6 +107,20 @@ resource "aws_iam_role_policy" "indicator_handler_dynamodb" {
           aws_dynamodb_table.sentiment_aggregates.arn,
         ]
       },
+      {
+        # Phase 8 Platt calibration (§10.6): indicator-handler reads
+        # `platt#{pair}#{TF}` from calibration-params on every emit to apply
+        # σ(a·raw + b) to the blended confidence. Read-only — the calibration
+        # job (lambda-calibration-job.tf) is the sole writer.
+        Sid    = "ReadCalibrationParams"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.calibration_params.arn,
+        ]
+      },
     ]
   })
 }
@@ -125,14 +139,19 @@ resource "aws_lambda_function" "indicator_handler" {
 
   environment {
     variables = {
-      TABLE_PREFIX            = "${local.prefix}-"
-      TABLE_CANDLES           = aws_dynamodb_table.candles.name
-      TABLE_CLOSE_QUORUM      = aws_dynamodb_table.close_quorum.name
-      TABLE_INDICATOR_STATE   = aws_dynamodb_table.indicator_state.name
-      TABLE_SIGNALS_V2        = aws_dynamodb_table.signals_v2.name
-      TABLE_METADATA          = aws_dynamodb_table.ingestion_metadata.name
-      REQUIRED_EXCHANGE_COUNT = local.required_exchange_count
-      ENVIRONMENT             = var.environment
+      TABLE_PREFIX          = "${local.prefix}-"
+      TABLE_CANDLES         = aws_dynamodb_table.candles.name
+      TABLE_CLOSE_QUORUM    = aws_dynamodb_table.close_quorum.name
+      TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
+      TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
+      TABLE_METADATA        = aws_dynamodb_table.ingestion_metadata.name
+      # Phase 8 Platt calibration: indicator-handler reads platt#{pair}#{TF}
+      # rows on the emit path. Set explicitly so the calibration-store helper
+      # in ingestion/src/calibration/calibration-store.ts doesn't fall back to
+      # the TABLE_PREFIX-derived guess.
+      TABLE_CALIBRATION_PARAMS = aws_dynamodb_table.calibration_params.name
+      REQUIRED_EXCHANGE_COUNT  = local.required_exchange_count
+      ENVIRONMENT              = var.environment
     }
   }
 
