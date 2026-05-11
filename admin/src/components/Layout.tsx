@@ -71,19 +71,20 @@ export function Layout({ children, bleed = false }: LayoutProps) {
             )}
           </div>
 
-          {/* ── Center: search placeholder ── */}
+          {/* ── Center: search placeholder — clicking opens ⌘K palette ── */}
           <div className="flex-1 flex justify-center">
-            <div
-              className="hidden sm:flex items-center gap-2 px-3 h-8 rounded-md border border-line bg-sunken/60 text-muted text-sm cursor-default select-none w-full max-w-xs"
-              role="search"
-              aria-label="Search markets, signals (coming soon)"
+            <button
+              type="button"
+              className="hidden sm:flex items-center gap-2 px-3 h-8 rounded-md border border-line bg-sunken/60 text-muted text-sm cursor-pointer select-none w-full max-w-xs hover:border-line-strong hover:bg-sunken transition-colors focus-ring"
+              aria-label="Open command palette (⌘K)"
+              onClick={() => window.dispatchEvent(new CustomEvent("quantara:open-palette"))}
             >
               <SearchIcon />
-              <span className="flex-1 text-muted2">Search markets, signals…</span>
+              <span className="flex-1 text-left text-muted2">Search markets, signals…</span>
               <kbd className="text-2xs text-muted2 font-mono bg-paper border border-line rounded px-1">
                 ⌘K
               </kbd>
-            </div>
+            </button>
           </div>
 
           {/* ── Right cluster ── */}

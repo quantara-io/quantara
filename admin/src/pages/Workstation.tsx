@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../lib/api";
 import { AlertsRail } from "../components/workstation/AlertsRail";
+import { CommandPalette, useCommandPalette } from "../components/workstation/CommandPalette";
 import { type Candle, MarketChart } from "../components/workstation/MarketChart";
 import { PositionRail } from "../components/workstation/PositionRail";
 import { SignalsRail } from "../components/workstation/SignalsRail";
@@ -52,6 +53,14 @@ const MAX_TOTAL_CANDLES: Record<Timeframe, number> = {
 export function Workstation() {
   const [activePair, setActivePair] = useState<string>(DEFAULT_PAIR);
   const [timeframe, setTimeframe] = useState<Timeframe>("1H");
+
+  // ── Command palette ──────────────────────────────────────────────────────
+  const handleSelectSymbol = useCallback((symbol: string) => {
+    // Map symbol code → pair (e.g. "BTC" → "BTC/USDT")
+    const pair = `${symbol}/USDT`;
+    setActivePair(pair);
+  }, []);
+  const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette(handleSelectSymbol);
   const [data, setData] = useState<MarketData | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [error, setError] = useState("");
@@ -154,46 +163,54 @@ export function Workstation() {
   const stats = useMemo(() => deriveStats(data, candles, activePair), [data, candles, activePair]);
 
   return (
-    <div className="grid grid-cols-[260px_minmax(0,1fr)_320px] min-h-[calc(100vh-5rem)]">
-      <aside className="border-r border-line bg-surface/50 flex flex-col">
-        <WatchlistRail activePair={activePair} onSelect={setActivePair} />
-        <div className="hairline" />
-        <AlertsRail />
-      </aside>
+    <>
+      <div className="grid grid-cols-[260px_minmax(0,1fr)_320px] min-h-[calc(100vh-5rem)]">
+        <aside className="border-r border-line bg-surface/50 flex flex-col">
+          <WatchlistRail activePair={activePair} onSelect={setActivePair} />
+          <div className="hairline" />
+          <AlertsRail />
+        </aside>
 
-      <section className="bg-paper flex flex-col min-w-0">
-        <SymbolHeader
-          meta={meta}
-          stats={stats}
-          timeframe={timeframe}
-          onTimeframeChange={setTimeframe}
-        />
-        <div className="flex-1 px-4 py-3 min-w-0">
-          {error ? (
-            <div className="rounded border border-down/30 bg-down-soft text-down-strong text-sm p-3">
-              {error}
-            </div>
-          ) : candles.length === 0 ? (
-            <div className="text-sm text-muted2 py-6">Loading market…</div>
-          ) : (
-            <MarketChart
-              candles={candles}
-              timeframe={TIMEFRAME_TO_API[timeframe]}
-              onBackfillNeeded={handleBackfillNeeded}
-              backfillExhausted={backfillExhaustedDisplay}
-            />
-          )}
-        </div>
-      </section>
+        <section className="bg-paper flex flex-col min-w-0">
+          <SymbolHeader
+            meta={meta}
+            stats={stats}
+            timeframe={timeframe}
+            onTimeframeChange={setTimeframe}
+          />
+          <div className="flex-1 px-4 py-3 min-w-0">
+            {error ? (
+              <div className="rounded border border-down/30 bg-down-soft text-down-strong text-sm p-3">
+                {error}
+              </div>
+            ) : candles.length === 0 ? (
+              <div className="text-sm text-muted2 py-6">Loading market…</div>
+            ) : (
+              <MarketChart
+                candles={candles}
+                timeframe={TIMEFRAME_TO_API[timeframe]}
+                onBackfillNeeded={handleBackfillNeeded}
+                backfillExhausted={backfillExhaustedDisplay}
+              />
+            )}
+          </div>
+        </section>
 
-      <aside className="border-l border-line bg-surface/50 flex flex-col">
-        <div className="flex-1 min-h-0 flex flex-col">
-          <SignalsRail activePair={activePair} />
-        </div>
-        <div className="hairline" />
-        <PositionRail activePair={activePair} />
-      </aside>
-    </div>
+        <aside className="border-l border-line bg-surface/50 flex flex-col">
+          <div className="flex-1 min-h-0 flex flex-col">
+            <SignalsRail activePair={activePair} />
+          </div>
+          <div className="hairline" />
+          <PositionRail activePair={activePair} />
+        </aside>
+      </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onSelectSymbol={handleSelectSymbol}
+      />
+    </>
   );
 }
 
