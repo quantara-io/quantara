@@ -834,8 +834,10 @@ export function CommandPalette({
                 )}
 
                 {/* Markets — fuzzy-ranked symbols with live price + 24h delta.
-                    Hidden in `#` mode so the palette stays focused on signals. */}
-                {!hashMode && rankedMarkets.length > 0 && (
+                    Hidden in `#` mode so the palette stays focused on signals.
+                    Hidden when query is empty (design spec: empty-state = no for Markets).
+                    See CMDK_PALETTE_DESIGN.md section table and issue #329. */}
+                {!hashMode && query !== "" && rankedMarkets.length > 0 && (
                   <Command.Group
                     heading="Markets"
                     className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
