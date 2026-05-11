@@ -1065,9 +1065,11 @@ admin.patch("/rule-status/:key", async (c) => {
   }
   const pk = decodeURIComponent(key);
 
-  // Validate pk structure: must be "{rule}#{pair}#{TF}" (two "#" separators).
+  // Validate pk structure: must be "{rule}#{pair}#{TF}" — exactly two "#" separators.
+  // Reject both too-few parts (<3, e.g. missing TF) and too-many parts (>3, e.g. a
+  // stray "#" smuggled into the rule or pair) to keep downstream consumers honest.
   const parts = pk.split("#");
-  if (parts.length < 3) {
+  if (parts.length !== 3) {
     return c.json(
       {
         success: false,
@@ -1080,7 +1082,21 @@ admin.patch("/rule-status/:key", async (c) => {
     );
   }
 
-  const body = await c.req.json<Record<string, unknown>>();
+  // Guard JSON parsing: a malformed body should produce a 400, not a 500 from
+  // Hono's default error path. Hono's c.req.json() throws SyntaxError on bad
+  // input, which would otherwise surface as a generic server error.
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "request body must be valid JSON" },
+      },
+      400,
+    );
+  }
   const auth = c.get("auth");
 
   const { status, reason, manualOverrideUntil } = body;

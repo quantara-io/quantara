@@ -103,6 +103,20 @@ resource "aws_iam_role_policy" "indicator_handler_shadow_dynamodb" {
           aws_dynamodb_table.ingestion_metadata.arn,
         ]
       },
+      {
+        # Phase 8 §10.10: shadow scoring uses the same rule_status skip-list as
+        # production so 1m/5m doesn't fire rules flagged Brier-bad on the
+        # production buckets. Read-only.
+        Sid    = "ReadRuleStatus"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Scan",
+          "dynamodb:GetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.rule_status.arn,
+        ]
+      },
     ]
   })
 }
@@ -133,6 +147,7 @@ resource "aws_lambda_function" "indicator_handler_shadow" {
       TABLE_INDICATOR_STATE    = aws_dynamodb_table.indicator_state.name
       TABLE_SIGNALS_COLLECTION = aws_dynamodb_table.signals_collection.name
       TABLE_METADATA           = aws_dynamodb_table.ingestion_metadata.name
+      TABLE_RULE_STATUS        = aws_dynamodb_table.rule_status.name
       REQUIRED_EXCHANGE_COUNT  = local.required_exchange_count
       ENVIRONMENT              = var.environment
     }

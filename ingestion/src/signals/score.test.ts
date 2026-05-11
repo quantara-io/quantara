@@ -1788,12 +1788,12 @@ describe("scoreTimeframe — disabledRuleKeys (Phase 8 §10.10)", () => {
     ) as TimeframeVote;
     // Only fireingBullRule (strength 2.0) should contribute.
     expect(vote.bullishScore).toBeCloseTo(2.0);
-    // prune-test-bull-2 should appear as disabled in rulesFired.
+    // prune-test-bull-2 should appear as disabled-eligible in rulesFired.
     expect(vote.rulesFired).toContain("prune-test-bull");
-    expect(vote.rulesFired).toContain("disabled:prune-test-bull-2");
+    expect(vote.rulesFired).toContain("disabled-eligible:prune-test-bull-2");
   });
 
-  it("disabled rule that would fire appears in rulesFired as disabled:<name>", () => {
+  it("disabled rule that would fire appears in rulesFired as disabled-eligible:<name>", () => {
     const state = makeState({ rsi14: 20, pair: "ETH/USDT", timeframe: "1h" });
     const disabledRuleKeys = new Set(["prune-test-bull#ETH/USDT#1h"]);
     const vote = scoreTimeframe(
@@ -1802,7 +1802,7 @@ describe("scoreTimeframe — disabledRuleKeys (Phase 8 §10.10)", () => {
       {},
       { disabledRuleKeys },
     ) as TimeframeVote;
-    expect(vote.rulesFired).toContain("disabled:prune-test-bull");
+    expect(vote.rulesFired).toContain("disabled-eligible:prune-test-bull");
     // The rule contributed nothing to the score.
     expect(vote.bullishScore).toBe(0);
   });
@@ -1812,9 +1812,9 @@ describe("scoreTimeframe — disabledRuleKeys (Phase 8 §10.10)", () => {
     const state = makeState({ rsi14: 50, pair: "BTC/USDT", timeframe: "1h" });
     const disabledRuleKeys = new Set(["prune-test-bull#BTC/USDT#1h"]);
     const vote = scoreTimeframe(state, [fireingBullRule], {}, { disabledRuleKeys });
-    // Rule would not fire anyway → should NOT appear as disabled:<name>.
+    // Rule would not fire anyway → should NOT appear as disabled-eligible:<name>.
     if (vote !== null) {
-      expect(vote.rulesFired).not.toContain("disabled:prune-test-bull");
+      expect(vote.rulesFired).not.toContain("disabled-eligible:prune-test-bull");
     }
   });
 
@@ -1844,6 +1844,6 @@ describe("scoreTimeframe — disabledRuleKeys (Phase 8 §10.10)", () => {
       { disabledRuleKeys },
     ) as TimeframeVote;
     expect(vote.rulesFired).toContain("prune-test-bull");
-    expect(vote.rulesFired).not.toContain("disabled:prune-test-bull");
+    expect(vote.rulesFired).not.toContain("disabled-eligible:prune-test-bull");
   });
 });

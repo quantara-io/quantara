@@ -121,6 +121,21 @@ resource "aws_iam_role_policy" "indicator_handler_dynamodb" {
           aws_dynamodb_table.calibration_params.arn,
         ]
       },
+      {
+        # Phase 8 §10.10: score.ts reads rule_status to skip auto-disabled rules.
+        # listDisabledRuleKeys does a per-invocation Scan with a small projection;
+        # the table has ≤280 rows so this is cheap. Read-only — only the rule-prune
+        # Lambda writes to this table.
+        Sid    = "ReadRuleStatus"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Scan",
+          "dynamodb:GetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.rule_status.arn,
+        ]
+      },
     ]
   })
 }
@@ -145,6 +160,7 @@ resource "aws_lambda_function" "indicator_handler" {
       TABLE_INDICATOR_STATE = aws_dynamodb_table.indicator_state.name
       TABLE_SIGNALS_V2      = aws_dynamodb_table.signals_v2.name
       TABLE_METADATA        = aws_dynamodb_table.ingestion_metadata.name
+      TABLE_RULE_STATUS     = aws_dynamodb_table.rule_status.name
       # Phase 8 Platt calibration: indicator-handler reads platt#{pair}#{TF}
       # rows on the emit path. Set explicitly so the calibration-store helper
       # in ingestion/src/calibration/calibration-store.ts doesn't fall back to

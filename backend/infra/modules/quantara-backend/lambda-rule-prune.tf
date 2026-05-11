@@ -60,11 +60,13 @@ resource "aws_iam_role_policy" "rule_prune_dynamodb" {
       },
       {
         # Read + write rule_status (lifecycle decisions).
+        # The handler only PutItems whole records (overwrite-on-write); it never
+        # issues UpdateItem. Keep the action list minimal — adding back is cheap
+        # if a future patch starts using UpdateExpressions.
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
           "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
           "dynamodb:Scan",
         ]
         Resource = [

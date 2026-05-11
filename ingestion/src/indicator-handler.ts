@@ -36,6 +36,7 @@ import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
 import { putIndicatorState, getLatestIndicatorState } from "./lib/indicator-state-store.js";
+import { listDisabledRuleKeys } from "./lib/rule-status-store.js";
 import { makeSignalId, updateSignalRatification } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
@@ -125,8 +126,10 @@ interface StreamCandle {
 export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent) => {
   // Reset per-invocation caches before processing the batch. Lambda warm-pool
   // reuse keeps module-scope state alive across invocations; reset to ensure
-  // the first record in each batch refreshes daily-cadence values like Fear/Greed.
+  // the first record in each batch refreshes daily-cadence values like Fear/Greed
+  // and the rule_status set (the rule-prune Lambda updates it daily).
   resetFearGreedCache();
+  resetDisabledRuleKeysCache();
 
   for (const record of event.Records) {
     if (record.eventName !== "INSERT" && record.eventName !== "MODIFY") continue;
@@ -580,6 +583,42 @@ async function getFearGreedCached(): Promise<number | null> {
 }
 
 /**
+ * Per-invocation cache of auto-disabled rule keys (Phase 8 §10.10).
+ *
+ * Same rationale as fearGreedCache: a DDB Streams batch can contain up to 10
+ * candles, all of which need the same Set of "{rule}#{pair}#{TF}" keys for
+ * scoreTimeframe. The rule_status table is bounded (≤280 rows) and the rule-
+ * prune Lambda only updates it once per day, so a single Scan per invocation
+ * is cheap enough.
+ *
+ * The cache is reset at the top of each Lambda invocation so warm-pool reuse
+ * doesn't carry a stale Set across invocations.
+ */
+let disabledRuleKeysCache: { value: ReadonlySet<string> } | null = null;
+function resetDisabledRuleKeysCache(): void {
+  disabledRuleKeysCache = null;
+}
+async function getDisabledRuleKeysCached(): Promise<ReadonlySet<string>> {
+  if (disabledRuleKeysCache !== null) return disabledRuleKeysCache.value;
+  try {
+    const value = await listDisabledRuleKeys();
+    disabledRuleKeysCache = { value };
+    return value;
+  } catch (err) {
+    // Fail-open: if the Scan throws (e.g. table missing in a not-yet-migrated env,
+    // IAM hiccup), score with no rules disabled rather than crashing the entire
+    // stream batch. The audit-trail "disabled-eligible:" token simply won't appear
+    // for this invocation. The next invocation retries.
+    console.warn(
+      `[IndicatorHandler] Failed to load disabled rule keys; proceeding with empty set: ${(err as Error).message}`,
+    );
+    const empty = new Set<string>() as ReadonlySet<string>;
+    disabledRuleKeysCache = { value: empty };
+    return empty;
+  }
+}
+
+/**
  * Full indicator computation for a single (pair, timeframe, closeTime) tuple.
  * Pulls 250 bars per exchange, canonicalizes, builds IndicatorState, scores,
  * persists vote, then blends all 4 TF votes for the pair.
@@ -673,7 +712,12 @@ async function computeBlendedSignal(
 
   const narrowedPair = narrowPair(pair);
   const gateResult = evaluateGates(state, narrowedPair, dispersionHistory, stalenessMap);
-  const vote = scoreTimeframe(state, RULES, lastFireBars, { gateResult });
+  // Phase 8 §10.10: load auto-disabled rule keys once per invocation (cached
+  // by getDisabledRuleKeysCached). scoreTimeframe filters disabled rules out
+  // of directional scoring and surfaces them as "disabled-eligible:<rule>" in
+  // rulesFired for the audit trail.
+  const disabledRuleKeys = await getDisabledRuleKeysCached();
+  const vote = scoreTimeframe(state, RULES, lastFireBars, { gateResult, disabledRuleKeys });
 
   await persistVote(pair, tf, vote);
 
@@ -710,10 +754,15 @@ async function computeBlendedSignal(
 
       // Non-emitting TF: re-score from stored IndicatorState so scores always
       // reflect current RULES regardless of when that TF's bar last closed.
+      // Pass the same disabledRuleKeys set so a rule auto-disabled at the (pair,
+      // non-emitting-TF) bucket is also skipped here — otherwise blend.ts would
+      // see a stale "enabled" perTimeframe vote on the non-emitting TFs.
       const storedState = await getLatestIndicatorState(pair, "consensus", t);
       if (storedState !== null) {
         const tfLastFireBars = await getLastFireBars(pair, t);
-        const recomputedVote = scoreTimeframe(storedState, RULES, tfLastFireBars);
+        const recomputedVote = scoreTimeframe(storedState, RULES, tfLastFireBars, {
+          disabledRuleKeys,
+        });
         return [t, recomputedVote] as const;
       }
 

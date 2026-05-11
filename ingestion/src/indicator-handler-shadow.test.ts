@@ -103,6 +103,11 @@ vi.mock("./news/bundle.js", () => ({
   buildSentimentBundle: buildSentimentBundleMock,
 }));
 
+const listDisabledRuleKeysMock = vi.fn();
+vi.mock("./lib/rule-status-store.js", () => ({
+  listDisabledRuleKeys: listDisabledRuleKeysMock,
+}));
+
 // ---------------------------------------------------------------------------
 // Test data helpers
 // ---------------------------------------------------------------------------
@@ -237,6 +242,8 @@ beforeEach(() => {
   narrowPairMock.mockReset();
   ratifySignalMock.mockReset();
   buildSentimentBundleMock.mockReset();
+  listDisabledRuleKeysMock.mockReset();
+  listDisabledRuleKeysMock.mockResolvedValue(new Set<string>());
 
   process.env.TABLE_CLOSE_QUORUM = "test-close-quorum";
   process.env.TABLE_SIGNALS_COLLECTION = "test-signals-collection";

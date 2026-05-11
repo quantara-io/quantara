@@ -41,6 +41,7 @@ import { getCandles } from "./lib/candle-store.js";
 import { canonicalizeCandle } from "./lib/canonicalize.js";
 import { getLastFireBars, tickCooldowns, recordRuleFires } from "./lib/cooldown-store.js";
 import { putIndicatorState } from "./lib/indicator-state-store.js";
+import { listDisabledRuleKeys } from "./lib/rule-status-store.js";
 import { makeSignalId } from "./lib/signal-store.js";
 import { buildIndicatorState } from "./indicators/index.js";
 import { scoreTimeframe } from "./signals/score.js";
@@ -113,7 +114,41 @@ interface StreamCandle {
 // Handler
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-invocation cache of auto-disabled rule keys (Phase 8 §10.10).
+ *
+ * Same rationale as in indicator-handler.ts: the rule_status table is bounded
+ * (≤280 rows) and only changes once per day (rule-prune cron), so amortizing
+ * one Scan across the records in a DDB Streams batch is the right cost shape.
+ * Reset at the top of each invocation so Lambda warm-pool reuse doesn't keep
+ * a stale Set alive across invocations.
+ */
+let disabledRuleKeysCache: { value: ReadonlySet<string> } | null = null;
+function resetDisabledRuleKeysCache(): void {
+  disabledRuleKeysCache = null;
+}
+async function getDisabledRuleKeysCached(): Promise<ReadonlySet<string>> {
+  if (disabledRuleKeysCache !== null) return disabledRuleKeysCache.value;
+  try {
+    const value = await listDisabledRuleKeys();
+    disabledRuleKeysCache = { value };
+    return value;
+  } catch (err) {
+    console.warn(
+      `[ShadowHandler] Failed to load disabled rule keys; proceeding with empty set: ${(err as Error).message}`,
+    );
+    const empty = new Set<string>() as ReadonlySet<string>;
+    disabledRuleKeysCache = { value: empty };
+    return empty;
+  }
+}
+
 export const handler: DynamoDBStreamHandler = async (event: DynamoDBStreamEvent) => {
+  // Phase 8 §10.10: refresh the per-invocation disabled-rule cache. The Scan is
+  // amortized across all records in a single Streams batch. Reset before the
+  // first record so the daily rule-prune verdict isn't masked by warm-pool reuse.
+  resetDisabledRuleKeysCache();
+
   for (const record of event.Records) {
     if (record.eventName !== "INSERT" && record.eventName !== "MODIFY") continue;
     if (!record.dynamodb?.NewImage) continue;
@@ -405,7 +440,13 @@ async function computeSingleTimeframeScore(
 
   const narrowedPair = narrowPair(pair);
   const gateResult = evaluateGates(state, narrowedPair, dispersionHistory, stalenessMap);
-  const vote = scoreTimeframe(state, RULES, lastFireBars, { gateResult });
+  // Phase 8 §10.10: pass the auto-disabled set so shadow scoring on 1m/5m
+  // doesn't fire rules that the prune job has marked Brier-bad at the same
+  // (rule, pair, TF) bucket. (Currently rule_status pks are written for the
+  // production TFs, but passing the set is harmless and future-proofs the
+  // shadow path if/when we start pruning 1m/5m buckets too.)
+  const disabledRuleKeys = await getDisabledRuleKeysCached();
+  const vote = scoreTimeframe(state, RULES, lastFireBars, { gateResult, disabledRuleKeys });
 
   if (vote && vote.rulesFired.length > 0) {
     await recordRuleFires(pair, tf, vote.rulesFired);

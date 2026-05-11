@@ -83,6 +83,56 @@ export async function getRuleStatusByPk(pk: string): Promise<RuleStatusRecord | 
 }
 
 /**
+ * List the composite PKs of all rules that are currently effectively disabled
+ * for runtime scoring purposes.
+ *
+ * A bucket is considered "effectively disabled" when:
+ *   - status === "disabled", AND
+ *   - manualOverrideUntil is either absent or already in the past
+ *     (a live manual-override window suppresses the auto-disable for scoring;
+ *     the admin escape-hatch should win against the prune job's verdict).
+ *
+ * Rows with status === "manual-override" are NEVER returned: that status means
+ * "do not auto-disable this bucket", not "suppress at runtime".
+ *
+ * Designed to be called once per indicator-handler invocation. The rule_status
+ * table is bounded (≤280 buckets); the Scan cost is small and Lambda is short-
+ * lived so a per-invocation cache is unnecessary on top of this.
+ *
+ * Returns a Set of "{rule}#{pair}#{TF}" keys for O(1) lookup in scoreTimeframe.
+ */
+export async function listDisabledRuleKeys(now: Date = new Date()): Promise<Set<string>> {
+  const disabled = new Set<string>();
+  const nowMs = now.getTime();
+  let lastKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: RULE_STATUS_TABLE,
+        // Project only the fields we need to keep the response small.
+        ProjectionExpression: "pk, #s, manualOverrideUntil",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    for (const item of result.Items ?? []) {
+      const row = item as Pick<RuleStatusRecord, "pk" | "status" | "manualOverrideUntil">;
+      if (row.status !== "disabled") continue;
+      if (row.manualOverrideUntil !== undefined) {
+        const overrideMs = Date.parse(row.manualOverrideUntil);
+        // Override is live → treat as enabled regardless of the persisted "disabled" verdict.
+        if (Number.isFinite(overrideMs) && overrideMs > nowMs) continue;
+      }
+      disabled.add(row.pk);
+    }
+    lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (lastKey !== undefined);
+
+  return disabled;
+}
+
+/**
  * Scan all rule status records.
  * The table has ≤280 buckets (14 rules × 5 pairs × 4 TFs) — a full Scan is acceptable.
  */

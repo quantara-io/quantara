@@ -201,6 +201,14 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
       reenabled++;
     } else if (brier <= BRIER_DISABLE_THRESHOLD) {
       // Brier is good (between threshold and re-enable) — reset consecutive counter.
+      // Note: this branch also runs when status === "disabled" and brier sits in
+      // the (BRIER_REENABLE_THRESHOLD, BRIER_DISABLE_THRESHOLD] band (neither bad
+      // enough to keep disabled nor good enough to re-enable). Resetting the
+      // counter here is intentional and benign: the counter only governs the
+      // enabled→disabled transition (Step 6's first branch gates on
+      // `currentStatus !== "disabled"`), and the persisted disabledAt/reason are
+      // not rewritten by this branch, so the "re-enable when brier < 0.25"
+      // verdict is unaffected.
       newHighBrierWindows = 0;
     }
 

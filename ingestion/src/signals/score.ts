@@ -174,9 +174,13 @@ export function scoreRules(
  *   parameter — Rule.direction does not include "gate".
  * @param options.disabledRuleKeys  - Set of "{rule}#{pair}#{TF}" keys for
  *   rules that have been auto-disabled by the Phase 8 §10.10 prune job. Skipped
- *   rules are appended to `rulesFired` as `"disabled:<ruleName>"` for the audit
- *   trail (explainability). Load once per Lambda invocation and pass in; do not
- *   call DynamoDB inside this function.
+ *   rules are appended to `rulesFired` as `"disabled-eligible:<ruleName>"` for
+ *   the audit trail (explainability). The token is "eligible-but-disabled"
+ *   semantically: the rule satisfied timeframe + warm-up + predicate so it
+ *   was a candidate to fire, but the disabled path intentionally skips the
+ *   cooldown check (since the rule contributes nothing to the score, suppressing
+ *   it on cooldown grounds would be misleading in the audit log). Load once per
+ *   Lambda invocation and pass in; do not call DynamoDB inside this function.
  */
 export function scoreTimeframe(
   state: IndicatorState,
@@ -237,8 +241,13 @@ export function scoreTimeframe(
   //    eligibility checks (timeframe, warm-up, cooldown, predicate) are
   //    tracked for the audit trail but contribute no directional score.
   //    We filter disabled rules out BEFORE calling scoreRules so that group-max
-  //    selection only considers active rules, matching the semantic that a
-  //    disabled rule is as if it doesn't exist for this invocation.
+  //    selection only considers active rules — this matches the "rule is as-if
+  //    absent" semantic. Important consequence: when the strongest member of a
+  //    mutually-exclusive group is disabled, the group can now elect a weaker
+  //    surviving member instead of producing nothing. This is intentional —
+  //    keeping the disabled rule in the group-max pool would silently null the
+  //    group whenever the top rule's Brier flunked, defeating the point of
+  //    auto-disable.
   let activeRules = rules;
   const disabledNames: string[] = [];
   if (disabledRuleKeys !== undefined && disabledRuleKeys.size > 0) {
@@ -275,8 +284,16 @@ export function scoreTimeframe(
   // 5. Determine direction — 5-tier ladder (v2 Phase 2 #253).
   const net = bullishScore - bearishScore;
   // Append disabled-rule entries for explainability (Phase 8 §10.10).
-  // Format: "disabled:<ruleName>" — readers can split on ":" to identify suppressed rules.
-  const rulesFired = [...fired.map((r) => r.name), ...disabledNames.map((n) => `disabled:${n}`)];
+  // Format: "disabled-eligible:<ruleName>" — the rule was eligible to fire
+  // (predicate + warm-up + timeframe matched) but was suppressed by the
+  // auto-disable verdict. The label is deliberately "eligible" rather than
+  // "fired" because the disabled-rule path does not consult cooldown, so a
+  // rule on cooldown might still appear here as "eligible-but-disabled".
+  // Readers can split on the first ":" to identify suppressed rules.
+  const rulesFired = [
+    ...fired.map((r) => r.name),
+    ...disabledNames.map((n) => `disabled-eligible:${n}`),
+  ];
   const tags = detectTags(state, fired);
 
   // Strong-buy: high bullish conviction with clear net margin.
