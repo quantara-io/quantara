@@ -175,9 +175,11 @@ export async function aggregateCoinbase4hFromHourly(
   const windowEnd = Math.floor(now / tfMs4h) * tfMs4h;
   const windowStart = windowEnd - tfMs4h;
 
-  // Fetch the 4 most recent 1h candles for this pair from coinbase in DDB.
-  // getCandles returns descending order (newest first), so we need to reverse.
-  const hourlyCandles = await getCandles(pair, "coinbase", "1h", 4);
+  // Fetch the 8 most recent 1h candles for this pair from coinbase in DDB.
+  // We request 8 (2× the required 4) so that if a slightly stale or extra row
+  // is present before the window, the window filter below still surfaces the
+  // correct 4. getCandles returns descending order (newest first).
+  const hourlyCandles = await getCandles(pair, "coinbase", "1h", 8);
   // Reverse to ascending (oldest first) for correct open/close assignment.
   const ascending = [...hourlyCandles].reverse();
 
@@ -244,33 +246,47 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
   // and the rate limiter only governs that single in-flight request.
   const clients = buildExchangeClients();
 
-  // For each TF that just closed, fetch one candle per (exchange, pair).
-  // Tasks share the per-exchange client (rate-limited) — ccxt serializes
-  // requests within a client when enableRateLimit is on.
-  // Exchanges that cannot serve a given TF natively (e.g. coinbase has no 4h)
-  // are routed to the DDB-aggregation path instead of fetchOHLCV.
-  const tasks: Promise<boolean>[] = [];
+  // Phase 1: fetch + store all native-exchange candles (including coinbase 1h).
+  // These writes must complete before Phase 2 reads from DDB, because the
+  // coinbase 4h aggregator reads the 1h rows that Phase 1 just wrote.
+  // Mixing both phases into a single Promise.allSettled would let the aggregator
+  // read DDB before the 1h write settles, reproducing the "only N/4 hourly candles
+  // available" skip that issue #321 describes.
+  const fetchTasks: Promise<boolean>[] = [];
+  const aggregateTfs: Array<{ tf: Timeframe; pairs: TradingPair[] }> = [];
+
   for (const tf of dueTfs) {
     for (const exchangeId of EXCHANGES) {
       const aggregateFromTf = AGGREGATED_TIMEFRAMES[exchangeId]?.[tf];
       if (aggregateFromTf !== undefined) {
-        // This exchange + TF combination must be synthesised from stored finer candles.
+        // Collect aggregation work for Phase 2 — do not start yet.
         if (exchangeId === "coinbase" && tf === "4h") {
-          for (const pair of PAIRS) {
-            tasks.push(aggregateCoinbase4hFromHourly(pair, now));
-          }
+          aggregateTfs.push({ tf, pairs: [...PAIRS] });
         }
         continue;
       }
       const exchange = clients[exchangeId];
       if (!exchange) continue; // exchange class missing — already logged
       for (const pair of PAIRS) {
-        tasks.push(fetchAndStoreLatestCandle(exchangeId, exchange, pair, tf, now));
+        fetchTasks.push(fetchAndStoreLatestCandle(exchangeId, exchange, pair, tf, now));
       }
     }
   }
 
-  const results = await Promise.allSettled(tasks);
-  const ok = results.filter((r) => r.status === "fulfilled" && r.value).length;
-  console.log(`[higher-tf-poller] Wrote ${ok}/${tasks.length} candles`);
+  // Await all Phase 1 writes before starting aggregation reads.
+  const fetchResults = await Promise.allSettled(fetchTasks);
+
+  // Phase 2: DDB-aggregation tasks that depend on Phase 1 writes being visible.
+  const aggregateTasks: Promise<boolean>[] = [];
+  for (const { pairs } of aggregateTfs) {
+    for (const pair of pairs) {
+      aggregateTasks.push(aggregateCoinbase4hFromHourly(pair, now));
+    }
+  }
+  const aggregateResults = await Promise.allSettled(aggregateTasks);
+
+  const allResults = [...fetchResults, ...aggregateResults];
+  const ok = allResults.filter((r) => r.status === "fulfilled" && r.value).length;
+  const total = fetchTasks.length + aggregateTasks.length;
+  console.log(`[higher-tf-poller] Wrote ${ok}/${total} candles`);
 };

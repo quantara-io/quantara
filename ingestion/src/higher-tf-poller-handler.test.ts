@@ -206,14 +206,26 @@ describe("aggregateCoinbase4hFromHourly", () => {
     warnSpy.mockRestore();
   });
 
-  it("queries DDB with the correct pair, exchange, and timeframe", async () => {
+  it("queries DDB with the correct pair, exchange, timeframe, and a limit >= 4", async () => {
     getCandlesMock.mockResolvedValue([]);
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const { aggregateCoinbase4hFromHourly } = await import("./higher-tf-poller-handler.js");
     await aggregateCoinbase4hFromHourly("ETH/USDT", now);
 
-    expect(getCandlesMock).toHaveBeenCalledWith("ETH/USDT", "coinbase", "1h", 4);
+    expect(getCandlesMock).toHaveBeenCalledOnce();
+    const [callPair, callExchange, callTf, callLimit] = getCandlesMock.mock.calls[0] as [
+      string,
+      string,
+      string,
+      number,
+    ];
+    expect(callPair).toBe("ETH/USDT");
+    expect(callExchange).toBe("coinbase");
+    expect(callTf).toBe("1h");
+    // Limit must be at least 4 (the number of candles needed for the window).
+    // It is intentionally wider (currently 8) to survive extra rows near the boundary.
+    expect(callLimit).toBeGreaterThanOrEqual(4);
   });
 });
 
@@ -265,5 +277,98 @@ describe("handler — coinbase 4h routing", () => {
       (args: unknown[]) => args[1] === "4h",
     );
     expect(fetchCalls4h).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Handler ordering test: 1h write must complete before the 4h aggregation read
+// ---------------------------------------------------------------------------
+
+describe("handler — phase ordering (1h write before 4h read)", () => {
+  // Use a `now` that is on BOTH a 1h and 4h close boundary so the handler
+  // enqueues a coinbase 1h fetch (Phase 1) AND a coinbase 4h aggregation (Phase 2).
+  // 2026-01-01T04:00:00Z is a 4h boundary (4×3600000 ms from midnight) and also
+  // a 1h boundary (trivially, since 4h is a multiple of 1h).
+  const boundaryMs = Date.UTC(2026, 0, 1, 4, 0, 0);
+  const nowOnBoundary = boundaryMs + 5_000; // 5s after both closes
+
+  it("getCandles (4h aggregation read) is called only after storeCandles (1h write) resolves", async () => {
+    const windowStart = boundaryMs - 14_400_000; // 4h before boundary
+
+    // We need Phase 1 (fetchAndStoreLatestCandle) to actually call storeCandles.
+    // fetchAndStoreLatestCandle calls storeCandles only when fetchOHLCV returns a
+    // row whose openTime matches `targetOpenTime`. For the 1h window just closed,
+    // targetOpenTime = lastBoundary - tfMs1h = boundaryMs - 3_600_000.
+    const target1hOpenTime = boundaryMs - 3_600_000;
+
+    // Build a synthetic OHLCV row that matches the target open time so that
+    // at least one exchange's fetchOHLCV triggers a storeCandles call in Phase 1.
+    const ohlcvRow = [target1hOpenTime, 50_000, 51_000, 49_000, 50_500, 10];
+
+    // Wire the ccxt mock for all exchanges to return the matching row for 1h.
+    const { default: ccxt } = await import("ccxt");
+    for (const ExchangeClass of [ccxt.binanceus, ccxt.coinbase, ccxt.kraken] as ReturnType<
+      typeof vi.fn
+    >[]) {
+      ExchangeClass.mockImplementation(() => ({
+        fetchOHLCV: vi
+          .fn()
+          .mockImplementation(async (_sym: string, tf: string, since: number) =>
+            tf === "1h" && since === target1hOpenTime ? [ohlcvRow] : [],
+          ),
+      }));
+    }
+
+    // Timeline tracking — monotonic counter bumped on every observed event.
+    let clock = 0;
+    // Track when the first getCandles call is made (start of Phase 2).
+    // Any storeCandles call that arrives AFTER this timestamp came too late to
+    // matter for the ordering proof; we only care about the Phase 1 writes.
+    let firstGetCandlesT = -1;
+    // Track when the last Phase-1 storeCandles call resolves.
+    // A "Phase 1" store is one where the candle has no aggregatedFrom field —
+    // i.e. it came from fetchAndStoreLatestCandle, not the aggregator.
+    // We approximate this: any storeCandles call that fires BEFORE the first
+    // getCandles call is a Phase 1 write (the aggregator always reads before
+    // it writes its output).
+    const phase1StoreTs: number[] = [];
+
+    // storeCandles: resolve asynchronously to simulate I/O latency so a racing
+    // getCandles would slip in before the store if phases were merged.
+    storeCandlesMock.mockImplementation(async () => {
+      await Promise.resolve();
+      const t = clock++;
+      // Only count this as a Phase 1 write if getCandles hasn't fired yet.
+      if (firstGetCandlesT === -1) {
+        phase1StoreTs.push(t);
+      }
+    });
+
+    // getCandles (aggregation read): record when Phase 2 starts, then return
+    // the valid 4 in-window candles needed for the aggregation to succeed.
+    getCandlesMock.mockImplementation(async () => {
+      await Promise.resolve();
+      const t = clock++;
+      if (firstGetCandlesT === -1) firstGetCandlesT = t;
+      return make4HourlyCandles(windowStart);
+    });
+
+    const { handler } = await import("./higher-tf-poller-handler.js");
+    await handler({ time: new Date(nowOnBoundary).toISOString() });
+
+    // Phase 1 must have triggered at least one storeCandles call (from the 1h
+    // write for binanceus / coinbase / kraken), and Phase 2 must have triggered
+    // at least one getCandles call (coinbase 4h aggregation read).
+    expect(phase1StoreTs.length).toBeGreaterThanOrEqual(1);
+    expect(firstGetCandlesT).toBeGreaterThan(-1);
+
+    // The first getCandles (Phase 2 read start) must have a clock value strictly
+    // greater than every Phase 1 storeCandles write. If the handler merged both
+    // phases into one Promise.allSettled, getCandles would fire concurrently
+    // with storeCandles and firstGetCandlesT could be lower than some
+    // phase1StoreTs values. The two-phase handler guarantees all Phase 1
+    // writes complete before any Phase 2 read begins.
+    const maxPhase1StoreT = Math.max(...phase1StoreTs);
+    expect(firstGetCandlesT).toBeGreaterThan(maxPhase1StoreT);
   });
 });
