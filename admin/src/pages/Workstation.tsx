@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../lib/api";
+import { symbolToPositionId } from "../components/workstation/cmdk-commands";
 import { AlertsRail } from "../components/workstation/AlertsRail";
 import {
   CommandPalette,
@@ -77,6 +78,23 @@ export function Workstation() {
     volume: true,
   });
 
+  // ── Position close (used by /close command + PositionRail) ───────────────
+  // Tracks whether the position for the active pair has been closed this
+  // session. Resets when activePair changes (new pair → fresh position state).
+  const [positionClosed, setPositionClosed] = useState(false);
+  /**
+   * Error surface for position-close failures (network, 4xx, 5xx). Rendered
+   * as an inline banner above the chart. Separate from `error` (market-data
+   * fetch failure) so neither stomps the other.
+   */
+  const [closeError, setCloseError] = useState<string | null>(null);
+
+  // Reset position-closed state when the active pair changes.
+  useEffect(() => {
+    setPositionClosed(false);
+    setCloseError(null);
+  }, [activePair]);
+
   // ── Command palette ──────────────────────────────────────────────────────
   const handleSelectSymbol = useCallback((symbol: string) => {
     // Map symbol code → pair (e.g. "BTC" → "BTC/USDT")
@@ -97,6 +115,72 @@ export function Workstation() {
 
   const handleSeekConsumed = useCallback(() => {
     setPendingSeekMs(null);
+  }, []);
+
+  /**
+   * Track the pair the close was issued against without re-creating
+   * `closePosition` on every pair change (which would invalidate the
+   * memoized `ctx` passed to CommandPalette). The ref is updated by the
+   * activePair-change effect above.
+   */
+  const activePairRef = useRef(activePair);
+  useEffect(() => {
+    activePairRef.current = activePair;
+  }, [activePair]);
+
+  /**
+   * Close the position for `symbol` (e.g. "BTC").
+   *
+   * Flow:
+   *   1. Show a `window.confirm` gate (issue #331 spec: confirmation step).
+   *      User declines → no-op.
+   *   2. Capture the pair the close was issued against (`issuedForPair`).
+   *      If the user switches pairs mid-flight, we DO NOT mark the new
+   *      pair's position as closed — we just bail out silently. This is
+   *      the race fix: without the guard, an /close BTC issued just before
+   *      a pair switch to ETH would render ETH's rail as "Position closed".
+   *   3. POST /api/admin/positions/:id/close. On success, mark closed; on
+   *      failure, surface the backend message via `setCloseError`.
+   */
+  const closePosition = useCallback(async (symbol: string) => {
+    // 1. Confirmation gate — spec calls for an explicit user confirm before
+    // the API call. window.confirm is the simplest acceptable surface; admin
+    // has no toast/dialog system yet so we don't invent one.
+    if (typeof window !== "undefined" && typeof window.confirm === "function") {
+      const ok = window.confirm(`Close ${symbol.toUpperCase()}/USDT position?`);
+      if (!ok) return;
+    }
+
+    // 2. Capture the pair at fetch start so we can detect a pair-change race.
+    const issuedForPair = activePairRef.current;
+    setCloseError(null);
+
+    const positionId = symbolToPositionId(symbol);
+    let res: Awaited<ReturnType<typeof apiFetch<{ closed: boolean; positionId: string }>>>;
+    try {
+      res = await apiFetch<{ closed: boolean; positionId: string }>(
+        `/api/admin/positions/${positionId}/close`,
+        { method: "POST" },
+      );
+    } catch (err) {
+      // apiFetch already wraps fetch errors into an envelope, but guard
+      // against any other unexpected throw — never silently swallow.
+      if (activePairRef.current === issuedForPair) {
+        setCloseError((err as Error)?.message ?? "Failed to close position");
+      }
+      return;
+    }
+
+    // 3. If the user switched pairs while the request was in flight, drop
+    // the outcome on the floor — applying it to a different pair would
+    // mis-render the rail (and a stale error toast would confuse the user).
+    if (activePairRef.current !== issuedForPair) return;
+
+    if (res.success) {
+      setPositionClosed(true);
+    } else {
+      setCloseError(res.error?.message ?? "Failed to close position");
+    }
   }, []);
 
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette(handleSelectSymbol);
@@ -231,6 +315,22 @@ export function Workstation() {
             onTimeframeChange={setTimeframe}
           />
           <div className="flex-1 px-4 py-3 min-w-0">
+            {closeError ? (
+              <div
+                role="alert"
+                className="mb-3 rounded border border-down/30 bg-down-soft text-down-strong text-sm p-3 flex items-start justify-between gap-3"
+              >
+                <span>Failed to close position: {closeError}</span>
+                <button
+                  type="button"
+                  onClick={() => setCloseError(null)}
+                  className="text-down-strong/70 hover:text-down-strong shrink-0"
+                  aria-label="Dismiss error"
+                >
+                  ×
+                </button>
+              </div>
+            ) : null}
             {error ? (
               <div className="rounded border border-down/30 bg-down-soft text-down-strong text-sm p-3">
                 {error}
@@ -256,7 +356,14 @@ export function Workstation() {
             <SignalsRail activePair={activePair} />
           </div>
           <div className="hairline" />
-          <PositionRail activePair={activePair} />
+          <PositionRail
+            activePair={activePair}
+            closed={positionClosed}
+            onClose={async () => {
+              const symbol = activePair.split("/")[0] ?? activePair;
+              await closePosition(symbol);
+            }}
+          />
         </aside>
       </div>
 
@@ -273,6 +380,7 @@ export function Workstation() {
           setTimeframe,
           overlays,
           setOverlays,
+          closePosition,
         }}
       />
     </>
