@@ -19,7 +19,7 @@
 import ccxt from "ccxt";
 import type { Candle, Timeframe } from "@quantara/shared";
 
-import { storeCandles } from "./lib/candle-store.js";
+import { storeCandles, getCandles } from "./lib/candle-store.js";
 import {
   EXCHANGES,
   PAIRS,
@@ -82,9 +82,78 @@ function buildExchangeClients(): Partial<Record<ExchangeId, CcxtExchange>> {
 }
 
 /**
+ * Aggregate a coinbase 4h candle from the 4 most-recent closed 1h candles
+ * stored in DynamoDB. Coinbase does not expose a native 4h OHLCV endpoint via
+ * CCXT, so we synthesize the 4h candle by combining the four hourly bars whose
+ * openTimes fall within [targetOpenTime, targetOpenTime + 4h).
+ *
+ * Returns the aggregated Candle on success, or null when fewer than 4 source
+ * candles are available (indicating the hourly bars haven't all arrived yet —
+ * better to be honestly stale than emit a partial aggregate).
+ */
+export async function aggregateCoinbase4hFromHourly(
+  pair: TradingPair,
+  targetOpenTime: number,
+): Promise<Candle | null> {
+  const oneHourMs = TF_MS["1h"];
+  const fourHourMs = TF_MS["4h"];
+
+  // Expected openTimes of the 4 hourly candles that make up this 4h bar.
+  // E.g. if 4h openTime = T, we need 1h candles at T, T+1h, T+2h, T+3h.
+  const expectedOpenTimes = [
+    targetOpenTime,
+    targetOpenTime + oneHourMs,
+    targetOpenTime + 2 * oneHourMs,
+    targetOpenTime + 3 * oneHourMs,
+  ];
+
+  // Fetch the most recent 1h candles. We request 6 to give a buffer against
+  // re-delivered or slightly out-of-order rows from the 1h poller, then
+  // filter to exactly the 4 we need.
+  const rows = await getCandles(pair, "coinbase", "1h", 6);
+
+  const matched = expectedOpenTimes.map((t) => rows.find((r) => r.openTime === t));
+  const missing = matched.filter((r) => r === undefined).length;
+
+  if (missing > 0) {
+    const found = 4 - missing;
+    console.warn(
+      `[higher-tf-poller] coinbase 4h aggregation skipped — only ${found}/4 hourly candles available for ${pair} @ openTime=${targetOpenTime}`,
+    );
+    return null;
+  }
+
+  // All 4 source candles are present.
+  const sources = matched as Candle[];
+  const symbol = getSymbol("coinbase", pair);
+
+  const aggregated: Candle = {
+    exchange: "coinbase",
+    symbol,
+    pair,
+    timeframe: "4h",
+    openTime: sources[0].openTime,
+    closeTime: sources[0].openTime + fourHourMs,
+    open: sources[0].open,
+    close: sources[sources.length - 1].close,
+    high: Math.max(...sources.map((s) => s.high)),
+    low: Math.min(...sources.map((s) => s.low)),
+    volume: sources.reduce((sum, s) => sum + s.volume, 0),
+    isClosed: true,
+    source: "live",
+  };
+
+  return aggregated;
+}
+
+/**
  * Fetch the most recent fully-closed candle for (exchange, pair, tf) and
  * write it as live. Idempotent: writing the same (exchange, pair, tf, openTime)
  * candle twice is a harmless overwrite (storeCandles uses a deterministic key).
+ *
+ * For coinbase + 4h: Coinbase does not natively support a 4h timeframe via
+ * CCXT. Instead we aggregate from the 4 closed 1h candles already stored in
+ * DynamoDB. All other (exchange, tf) combinations continue to use fetchOHLCV.
  *
  * Takes the shared ccxt client for the exchange so rate-limit coordination works.
  */
@@ -99,6 +168,22 @@ async function fetchAndStoreLatestCandle(
   const tfMs = TF_MS[tf];
   const lastBoundary = Math.floor(now / tfMs) * tfMs;
   const targetOpenTime = lastBoundary - tfMs;
+
+  // Coinbase does not expose a native 4h granularity via CCXT. Aggregate from
+  // the 4 already-stored 1h candles instead of calling fetchOHLCV.
+  if (exchangeId === "coinbase" && tf === "4h") {
+    try {
+      const candle = await aggregateCoinbase4hFromHourly(pair, targetOpenTime);
+      if (!candle) return false; // skip logged inside aggregateCoinbase4hFromHourly
+      await storeCandles([candle]);
+      return true;
+    } catch (err) {
+      console.error(
+        `[higher-tf-poller] Failed coinbase ${pair} 4h aggregation: ${(err as Error).message}`,
+      );
+      return false;
+    }
+  }
 
   const symbol = getSymbol(exchangeId, pair);
 
