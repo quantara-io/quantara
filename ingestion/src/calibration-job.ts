@@ -63,8 +63,12 @@ export async function handler(_event: ScheduledEvent): Promise<void> {
             `[CalibrationJob] Platt fitted for ${pair}/${tf}: a=${plattCoeffs.a.toFixed(4)} b=${plattCoeffs.b.toFixed(4)} n=${plattCoeffs.n} ECE ${plattCoeffs.eceBefore.toFixed(4)} → ${plattCoeffs.eceAfter.toFixed(4)}`,
           );
         } else {
+          // fitPlattCoeffs returns null for two reasons:
+          //   1. fewer than CALIBRATION_MIN_SAMPLES directional outcomes, or
+          //   2. Newton-Raphson produced non-finite (a, b) on degenerate data.
+          // In either case we skip persistence — never write NaN/Infinity rows.
           console.log(
-            `[CalibrationJob] Platt skipped for ${pair}/${tf} — insufficient directional samples`,
+            `[CalibrationJob] Platt skipped for ${pair}/${tf} — insufficient samples or non-finite fit`,
           );
         }
 

@@ -146,6 +146,17 @@ export function fitPlattCoeffs(outcomes: OutcomeRecord[]): PlattCoeffs | null {
     if (Math.sqrt(ga * ga + gb * gb) < GRAD_TOL) break;
   }
 
+  // Guard against degenerate Newton-Raphson outcomes: NaN/Infinity can leak out
+  // when the Hessian determinant is near-singular but above the `1e-12` early-out
+  // threshold, or when an early Newton step overshoots on pathological data
+  // (e.g. all-correct / all-incorrect slices, or constant raw confidence). If we
+  // persisted a non-finite (a, b) pair, `applyPlattCalibration` would stamp
+  // `confidenceCalibrated: NaN` onto every emitted signal at runtime — silent
+  // poisoning. Return null so the caller skips persistence for this slice.
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    return null;
+  }
+
   // ECE after calibration.
   const calibratedConfs = xs.map((x) => sigmoid(a * x + b));
   const eceAfter = computeECE(calibratedConfs, ys);
