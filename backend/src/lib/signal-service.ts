@@ -22,8 +22,8 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { BlendedSignal, IndicatorState, Timeframe } from "@quantara/shared";
+import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import type { BlendedSignal, IndicatorState, Timeframe, KellyStats } from "@quantara/shared";
 import {
   PAIRS,
   type TradingPair,
@@ -53,6 +53,10 @@ const INDICATOR_STATE_TABLE =
 const SIGNAL_OUTCOMES_TABLE =
   process.env.TABLE_SIGNAL_OUTCOMES ??
   `${process.env.TABLE_PREFIX ?? "quantara-dev-"}signal-outcomes`;
+
+const CALIBRATION_TABLE =
+  process.env.TABLE_CALIBRATION_PARAMS ??
+  `${process.env.TABLE_PREFIX ?? "quantara-dev-"}calibration-params`;
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -143,10 +147,47 @@ async function getLatestIndicatorStateForSignal(
 }
 
 /**
+ * Retrieve Kelly stats for a (pair, timeframe, direction) slice from the
+ * calibration-params table written by the calibration-job Lambda (Phase 7/8).
+ *
+ * Returns null silently when no row exists — the risk path falls back to
+ * vol-targeted sizing (pre-Kelly-unlock behavior).
+ */
+async function getKellyStatsFromCalibration(
+  pair: string,
+  timeframe: Timeframe,
+  direction: "buy" | "sell",
+): Promise<KellyStats | null> {
+  const pk = `kelly#${pair}#${timeframe}#${direction}`;
+  try {
+    const result = await client.send(
+      new GetCommand({
+        TableName: CALIBRATION_TABLE,
+        Key: { pk },
+      }),
+    );
+    if (!result.Item) return null;
+    const item = result.Item;
+    return {
+      pair,
+      timeframe,
+      direction,
+      resolved: item["resolved"] as number,
+      p: item["p"] as number,
+      b: item["b"] as number,
+    };
+  } catch {
+    // Non-fatal: calibration table may not exist yet or be empty in early deployment.
+    return null;
+  }
+}
+
+/**
  * Enrich a BlendedSignal with the user's risk recommendation.
  * Fetches the IndicatorState for the signal's pair/timeframe, then calls
- * attachRiskRecommendation. Silently falls back to the original signal if
- * the IndicatorState is unavailable (warm-up period).
+ * attachRiskRecommendation. Also fetches Kelly stats from the calibration-params
+ * table (Phase 7/8) so aggressive-profile users get Kelly sizing when unlocked.
+ * Silently falls back to the original signal if the IndicatorState is unavailable.
  *
  * @param signal        The BlendedSignal (already re-blended with user's profile).
  * @param riskProfiles  User's per-pair risk profile map.
@@ -171,7 +212,22 @@ async function enrichWithRisk(
     return signal;
   }
 
-  return attachRiskRecommendation(signal, state, riskProfiles);
+  // Phase 7 Kelly unlock (§9.3.1): fetch per-(pair, TF, direction) Kelly stats
+  // from the calibration-params table. Returns null when absent — falls back to
+  // vol-targeted sizing (current behavior preserved for all non-aggressive profiles).
+  const direction = signal.type as "buy" | "sell";
+  const kellyStats = await getKellyStatsFromCalibration(
+    signal.pair,
+    signal.emittingTimeframe,
+    direction,
+  );
+
+  // attachRiskRecommendation expects kellyByPair keyed by pair.
+  const kellyByPair: Record<string, KellyStats | undefined> = kellyStats
+    ? { [signal.pair]: kellyStats }
+    : {};
+
+  return attachRiskRecommendation(signal, state, riskProfiles, kellyByPair);
 }
 
 /**

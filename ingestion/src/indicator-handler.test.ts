@@ -110,6 +110,16 @@ vi.mock("./news/bundle.js", () => ({
   buildSentimentBundle: buildSentimentBundleMock,
 }));
 
+const getPlattRowMock = vi.fn();
+vi.mock("./calibration/calibration-store.js", () => ({
+  getPlattRow: getPlattRowMock,
+}));
+
+const applyPlattCalibrationMock = vi.fn();
+vi.mock("./calibration/math.js", () => ({
+  applyPlattCalibration: applyPlattCalibrationMock,
+}));
+
 // ---------------------------------------------------------------------------
 // Test data helpers
 // ---------------------------------------------------------------------------
@@ -267,6 +277,11 @@ beforeEach(() => {
   narrowPairMock.mockReset();
   ratifySignalMock.mockReset();
   buildSentimentBundleMock.mockReset();
+  getPlattRowMock.mockReset();
+  applyPlattCalibrationMock.mockReset();
+
+  // Default: no Platt coefficients available (backward-compat path).
+  getPlattRowMock.mockResolvedValue(null);
 
   process.env.TABLE_CLOSE_QUORUM = "test-close-quorum";
   process.env.TABLE_SIGNALS_V2 = "test-signals-v2";
@@ -1025,5 +1040,83 @@ describe("perTimeframe consistency across timeframes (issue #278)", () => {
     const perTf = capturedPerTimeframe as unknown as Record<string, typeof FRESH_VOTE | null>;
     expect(perTf["15m"]).toEqual(FRESH_VOTE);
     expect(perTf["1h"]).toEqual(FRESH_VOTE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8 (§10.6): Platt calibration emit-path
+// ---------------------------------------------------------------------------
+
+describe("Platt calibration — emit path", () => {
+  it("falls back to raw confidence when no Platt row exists (backward compat)", async () => {
+    // Default: getPlattRowMock returns null (set in beforeEach)
+    const signal = { ...makeBlendedSignal(), confidence: 0.75 };
+    blendTimeframeVotesMock.mockReturnValue(signal);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // applyPlattCalibration should NOT have been called (no Platt row)
+    expect(applyPlattCalibrationMock).not.toHaveBeenCalled();
+
+    // The PutCommand item should have confidenceCalibrated = null
+    const puts = send.mock.calls.filter((c) => c[0]?.__cmd === "Put");
+    const signalPut = puts.find((c) => c[0]?.input?.TableName === "test-signals-v2");
+    expect(signalPut).toBeDefined();
+    expect(signalPut![0].input.Item.confidenceCalibrated).toBeNull();
+    expect(signalPut![0].input.Item.confidenceRaw).toBe(0.75);
+  });
+
+  it("applies Platt calibration when a row exists and persists both raw and calibrated", async () => {
+    const rawConf = 0.8;
+    const calibratedConf = 0.65; // the mock will return this
+    const plattRow = {
+      pk: "platt#BTC/USDT#15m",
+      a: 0.7,
+      b: -0.1,
+      n: 60,
+      eceBefore: 0.2,
+      eceAfter: 0.05,
+    };
+
+    getPlattRowMock.mockResolvedValue(plattRow);
+    applyPlattCalibrationMock.mockReturnValue(calibratedConf);
+
+    const signal = {
+      ...makeBlendedSignal(),
+      confidence: rawConf,
+      emittingTimeframe: TEST_TF as "15m",
+    };
+    blendTimeframeVotesMock.mockReturnValue(signal);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // applyPlattCalibration should have been called with the raw confidence and the row
+    expect(applyPlattCalibrationMock).toHaveBeenCalledWith(rawConf, plattRow);
+
+    // The PutCommand item should have both raw and calibrated
+    const puts = send.mock.calls.filter((c) => c[0]?.__cmd === "Put");
+    const signalPut = puts.find((c) => c[0]?.input?.TableName === "test-signals-v2");
+    expect(signalPut).toBeDefined();
+    expect(signalPut![0].input.Item.confidenceRaw).toBe(rawConf);
+    expect(signalPut![0].input.Item.confidenceCalibrated).toBe(calibratedConf);
+  });
+
+  it("continues without calibration when getPlattRow throws (non-fatal)", async () => {
+    getPlattRowMock.mockRejectedValue(new Error("DDB throttle"));
+
+    const signal = { ...makeBlendedSignal(), confidence: 0.7 };
+    blendTimeframeVotesMock.mockReturnValue(signal);
+
+    const { handler } = await import("./indicator-handler.js");
+    // Should not throw
+    await expect(handler(makeStreamEvent(), {} as any, () => {})).resolves.not.toThrow();
+
+    // PutCommand still fires with confidenceCalibrated = null (fallback)
+    const puts = send.mock.calls.filter((c) => c[0]?.__cmd === "Put");
+    const signalPut = puts.find((c) => c[0]?.input?.TableName === "test-signals-v2");
+    expect(signalPut).toBeDefined();
+    expect(signalPut![0].input.Item.confidenceCalibrated).toBeNull();
   });
 });

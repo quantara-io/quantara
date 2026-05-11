@@ -464,3 +464,106 @@ describe("getSignalHistoryForUser", () => {
     ).resolves.not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 7 Kelly risk path — calibration-params integration
+// ---------------------------------------------------------------------------
+
+describe("enrichWithRisk — Kelly stats from calibration-params", () => {
+  /** Helper: configure sendMock to return fixtureItem for TF queries, indicatorStateItem for
+   *  indicator-state queries, and an optional Kelly row for calibration-params queries. */
+  function setupSendWithKelly(kellyItem?: Record<string, unknown>) {
+    sendMock.mockImplementation(
+      (cmd: {
+        _type?: string;
+        ExpressionAttributeValues?: Record<string, unknown>;
+        Key?: Record<string, unknown>;
+      }) => {
+        // Per-TF signal query (QueryCommand with :tfPrefix)
+        const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"];
+        if (tfPrefix === "15m#") return Promise.resolve({ Items: [fixtureItem] });
+        if (tfPrefix !== undefined) return Promise.resolve({ Items: [] });
+
+        // GetCommand: distinguish by key shape
+        const key = cmd.Key;
+        if (key && "pk" in key) {
+          // calibration-params GetCommand (pk = "kelly#...")
+          return Promise.resolve({ Item: kellyItem ?? undefined });
+        }
+
+        // Default: indicator-state QueryCommand or anything else
+        return Promise.resolve({ Items: [indicatorStateItem] });
+      },
+    );
+  }
+
+  it("passes Kelly stats to attachRiskRecommendation when calibration row exists", async () => {
+    const kellyRow = {
+      pk: "kelly#BTC/USDT#1h#buy",
+      p: 0.58,
+      b: 1.8,
+      resolved: 75,
+    };
+    setupSendWithKelly(kellyRow);
+
+    const enrichedSignal = {
+      ...fixtureItem,
+      risk: { pair: "BTC/USDT", positionSizeModel: "kelly" },
+    };
+    attachRiskRecommendationMock.mockReturnValueOnce(enrichedSignal);
+
+    const { getSignalForUser } = await loadService();
+    await getSignalForUser("user_1", "BTC/USDT");
+
+    expect(attachRiskRecommendationMock).toHaveBeenCalledOnce();
+    // The 4th argument should contain Kelly stats keyed by "BTC/USDT"
+    const callArgs = attachRiskRecommendationMock.mock.calls[0];
+    const kellyByPair = callArgs?.[3] as Record<string, unknown> | undefined;
+    expect(kellyByPair).toBeDefined();
+    expect(kellyByPair!["BTC/USDT"]).toMatchObject({
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      direction: "buy",
+      p: kellyRow.p,
+      b: kellyRow.b,
+      resolved: kellyRow.resolved,
+    });
+  });
+
+  it("passes empty kellyByPair when calibration row is absent (backward compat)", async () => {
+    // No Kelly row — calibration lookup returns undefined
+    setupSendWithKelly(undefined);
+
+    const { getSignalForUser } = await loadService();
+    await getSignalForUser("user_1", "BTC/USDT");
+
+    expect(attachRiskRecommendationMock).toHaveBeenCalledOnce();
+    const callArgs = attachRiskRecommendationMock.mock.calls[0];
+    const kellyByPair = callArgs?.[3] as Record<string, unknown>;
+    // kellyByPair should be an empty object when no Kelly row exists
+    expect(kellyByPair).toEqual({});
+  });
+
+  it("falls back gracefully when calibration DDB call throws", async () => {
+    // Calibration GetCommand throws (e.g. table not yet provisioned)
+    sendMock.mockImplementation(
+      (cmd: {
+        ExpressionAttributeValues?: Record<string, unknown>;
+        Key?: Record<string, unknown>;
+      }) => {
+        const tfPrefix = cmd.ExpressionAttributeValues?.[":tfPrefix"];
+        if (tfPrefix === "15m#") return Promise.resolve({ Items: [fixtureItem] });
+        if (tfPrefix !== undefined) return Promise.resolve({ Items: [] });
+        const key = cmd.Key;
+        if (key && "pk" in key) return Promise.reject(new Error("ResourceNotFoundException"));
+        return Promise.resolve({ Items: [indicatorStateItem] });
+      },
+    );
+
+    const { getSignalForUser } = await loadService();
+    // Should not throw — error is swallowed by the try/catch in getKellyStatsFromCalibration
+    await expect(getSignalForUser("user_1", "BTC/USDT")).resolves.not.toThrow();
+    // attachRiskRecommendation still called (with empty kellyByPair)
+    expect(attachRiskRecommendationMock).toHaveBeenCalledOnce();
+  });
+});
