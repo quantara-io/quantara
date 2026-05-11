@@ -113,6 +113,20 @@ interface MarketChartProps {
   onBackfillNeeded?: (oldestOpenTime: number, requestedLimit: number) => void;
   /** When true, shows a muted footer label indicating the history cap was reached. */
   backfillExhausted?: boolean;
+  /**
+   * Unix-ms timestamp the chart viewport should anchor to once candles for the
+   * current pair are loaded. Set by Workstation when the user picks a signal in
+   * the command palette. Anchoring is gated on `candles.length > 0` so that
+   * cross-pair selections (which clear candles + unmount the chart) still seek
+   * correctly once the new pair's candles arrive — see `onSeekConsumed` below.
+   */
+  pendingSeekMs?: number | null;
+  /**
+   * Called once the chart has anchored to `pendingSeekMs`. Parent should clear
+   * its pending state so the same seek doesn't fire again on the next render
+   * (e.g. when a live-poll causes the candles array to mutate).
+   */
+  onSeekConsumed?: () => void;
 }
 
 function getCss(name: string): string {
@@ -149,6 +163,8 @@ export function MarketChart({
   height = 380,
   onBackfillNeeded,
   backfillExhausted = false,
+  pendingSeekMs = null,
+  onSeekConsumed,
 }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -269,35 +285,34 @@ export function MarketChart({
     };
   }, []);
 
-  // Subscribe to the quantara:chart-seek custom event dispatched by Workstation
-  // when the user selects a signal from the command palette. Scrolls the time
-  // axis so the signal's asOf timestamp is centered in the viewport.
+  // Anchor the viewport to `pendingSeekMs` once candles for the active pair
+  // have loaded. We can't rely on a synchronously-dispatched event because the
+  // parent's `setActivePair` clears `candles` first, which unmounts this
+  // component (the parent renders a "Loading market…" placeholder while the
+  // candles array is empty). By the time the chart re-mounts with the new
+  // pair's data, any event already fired against the old MarketChart's
+  // listener — so we keep the seek as a state slot on the parent and consume
+  // it here when both the chart is built AND candles are present.
   useEffect(() => {
-    function onChartSeek(e: Event) {
-      const { asOfMs } = (e as CustomEvent<{ asOfMs: number }>).detail;
-      const chart = chartRef.current;
-      if (!chart) return;
-      // lightweight-charts time scale operates in UTC seconds.
-      const targetSec = Math.floor(asOfMs / 1000) as import("lightweight-charts").UTCTimestamp;
+    if (pendingSeekMs == null) return;
+    const chart = chartRef.current;
+    if (!chart) return;
+    if (!candles || candles.length === 0) return;
+    // lightweight-charts time scale operates in UTC seconds.
+    const targetSec = Math.floor(pendingSeekMs / 1000) as UTCTimestamp;
+    const WINDOW_SEC = 12 * 3600;
+    try {
+      chart.timeScale().setVisibleRange({
+        from: (targetSec - WINDOW_SEC) as UTCTimestamp,
+        to: (targetSec + WINDOW_SEC) as UTCTimestamp,
+      });
+    } catch {
+      // setVisibleRange throws if the target is outside the loaded data range.
+      // Fall back to scrolling to realtime — the user can pan to the signal.
       chart.timeScale().scrollToRealTime();
-      // setVisibleRange centers on the target with a ±12h window so the user
-      // can immediately see the signal candle plus surrounding context.
-      const WINDOW_SEC = 12 * 3600;
-      try {
-        chart.timeScale().setVisibleRange({
-          from: (targetSec - WINDOW_SEC) as import("lightweight-charts").UTCTimestamp,
-          to: (targetSec + WINDOW_SEC) as import("lightweight-charts").UTCTimestamp,
-        });
-      } catch {
-        // setVisibleRange throws if the target is out of the loaded data range.
-        // In that case just scroll to realtime — the user can pan to the signal.
-        chart.timeScale().scrollToRealTime();
-      }
     }
-
-    window.addEventListener("quantara:chart-seek", onChartSeek);
-    return () => window.removeEventListener("quantara:chart-seek", onChartSeek);
-  }, []);
+    onSeekConsumed?.();
+  }, [pendingSeekMs, candles, onSeekConsumed]);
 
   // React to theme toggling via a MutationObserver on <html class="dark">.
   useEffect(() => {

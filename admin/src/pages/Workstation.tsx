@@ -57,6 +57,14 @@ const MAX_TOTAL_CANDLES: Record<Timeframe, number> = {
 export function Workstation() {
   const [activePair, setActivePair] = useState<string>(DEFAULT_PAIR);
   const [timeframe, setTimeframe] = useState<Timeframe>("1H");
+  /**
+   * Unix-ms timestamp the chart should anchor to after the next candle load.
+   * Set by `handleSelectSignal`; consumed by `MarketChart` once its candles
+   * have arrived. Stored as state (not via custom event) because cross-pair
+   * selection clears `candles` and unmounts the chart — a synchronous event
+   * would race against that unmount and never reach the new mount.
+   */
+  const [pendingSeekMs, setPendingSeekMs] = useState<number | null>(null);
 
   // ── Command palette ──────────────────────────────────────────────────────
   const handleSelectSymbol = useCallback((symbol: string) => {
@@ -66,14 +74,18 @@ export function Workstation() {
   }, []);
 
   const handleSelectSignal = useCallback((selection: SignalSelection) => {
-    // Switch to the signal's pair then seek the chart viewport to asOf.
+    // Queue the seek before switching pairs. setActivePair will clear the
+    // candle array (see the [activePair, timeframe] effect below) which causes
+    // MarketChart to unmount; the queued seek is consumed by the freshly
+    // mounted chart once the new pair's candles arrive. Same-pair selection
+    // also works — the candle effect doesn't re-run, and the seek effect
+    // anchors immediately because candles are already non-empty.
+    setPendingSeekMs(selection.asOf);
     setActivePair(selection.pair);
-    // Dispatch a custom event so MarketChart can scroll its time axis.
-    // Using a custom event (not a callback prop) keeps the chart decoupled from
-    // the palette — MarketChart already subscribes via an imperative API.
-    window.dispatchEvent(
-      new CustomEvent("quantara:chart-seek", { detail: { asOfMs: selection.asOf } }),
-    );
+  }, []);
+
+  const handleSeekConsumed = useCallback(() => {
+    setPendingSeekMs(null);
   }, []);
 
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette(handleSelectSymbol);
@@ -207,6 +219,8 @@ export function Workstation() {
                 timeframe={TIMEFRAME_TO_API[timeframe]}
                 onBackfillNeeded={handleBackfillNeeded}
                 backfillExhausted={backfillExhaustedDisplay}
+                pendingSeekMs={pendingSeekMs}
+                onSeekConsumed={handleSeekConsumed}
               />
             )}
           </div>
@@ -224,6 +238,7 @@ export function Workstation() {
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
+        activePair={activePair}
         onSelectSymbol={handleSelectSymbol}
         onSelectSignal={handleSelectSignal}
       />

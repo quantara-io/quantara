@@ -148,8 +148,22 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
-/** Module-level cache so it survives palette open/close cycles. */
+/**
+ * Module-level cache so it survives palette open/close cycles.
+ * Exported for tests — see `__resetSignalCacheForTests` and
+ * `__getSignalCacheSizeForTests` below.
+ */
 const signalCache = new Map<string, CacheEntry>();
+
+/** Resets the module-level cache. Test-only helper. */
+export function __resetSignalCacheForTests(): void {
+  signalCache.clear();
+}
+
+/** Returns the current cache size. Test-only helper. */
+export function __getSignalCacheSizeForTests(): number {
+  return signalCache.size;
+}
 
 function getCachedSignals(pair: string): BlendedSignal[] | null {
   const entry = signalCache.get(pair);
@@ -165,6 +179,60 @@ function setCachedSignals(pair: string, signals: BlendedSignal[]): void {
   signalCache.set(pair, { signals, fetchedAt: Date.now() });
 }
 
+// ── fetchSignalsForPair — pure async function (for tests) ────────────────────
+
+/** Subset of `apiFetch` the data path actually depends on. */
+export type SignalsFetcher = (
+  path: string,
+  opts?: { signal?: AbortSignal },
+) => Promise<{
+  success: boolean;
+  data?: { signals: BlendedSignal[] };
+  error?: { code: string; message: string };
+}>;
+
+/**
+ * Pure data-path for fetching signals for a single pair with a 30 s cache.
+ * Factored out of `useSignals` so the cache behaviour and error handling can
+ * be tested independently of React. Returns the cached array on hit and on
+ * apiFetch errors — never throws.
+ *
+ *   - Returns `[]` if `pair` is falsy.
+ *   - Returns `[]` if the underlying fetcher rejects or returns an error
+ *     envelope (other than "ABORTED").
+ *   - Returns `null` for aborted requests so the caller can ignore the stale
+ *     outcome.
+ */
+export async function fetchSignalsForPair(
+  pair: string,
+  fetcher: SignalsFetcher,
+  abortSignal?: AbortSignal,
+): Promise<BlendedSignal[] | null> {
+  if (!pair) return [];
+  const cached = getCachedSignals(pair);
+  if (cached) return cached;
+  try {
+    const res = await fetcher(`/api/admin/signals?pair=${encodeURIComponent(pair)}&limit=10`, {
+      signal: abortSignal,
+    });
+    if (abortSignal?.aborted) return null;
+    if (res.success && res.data) {
+      const fetched = res.data.signals ?? [];
+      setCachedSignals(pair, fetched);
+      return fetched;
+    }
+    if (res.error?.code === "ABORTED") return null;
+    return [];
+  } catch (err) {
+    // apiFetch already returns a typed envelope for network errors, so this
+    // catch only fires for genuinely unexpected throws (e.g. JSON.stringify
+    // failure in a future refactor). Swallow and degrade to empty so the UI
+    // shows the empty state instead of getting stuck on "loading" forever.
+    console.warn("[useSignals] fetchSignalsForPair threw", err);
+    return [];
+  }
+}
+
 // ── useSignals hook ───────────────────────────────────────────────────────────
 
 type SignalFetchStatus = "idle" | "loading" | "done" | "error";
@@ -178,6 +246,10 @@ interface UseSignalsResult {
  * Fetches signals for the given pair (e.g. "ETH/USDT") with a 30 s
  * module-level cache. Returns immediately from cache when available.
  * `pair` must be a full trading pair string or empty string (no fetch).
+ *
+ * Note: a 150 ms anti-flash delay was considered but is not implemented —
+ * the cached returns make any flash imperceptible in practice. Loading
+ * skeletons render for the duration of the fetch only on a cold cache.
  */
 function useSignals(pair: string): UseSignalsResult {
   const [signals, setSignals] = useState<BlendedSignal[]>([]);
@@ -191,7 +263,7 @@ function useSignals(pair: string): UseSignalsResult {
       return;
     }
 
-    // Cache hit — return immediately.
+    // Cache hit — return immediately, no loading state.
     const cached = getCachedSignals(pair);
     if (cached) {
       setSignals(cached);
@@ -206,22 +278,10 @@ function useSignals(pair: string): UseSignalsResult {
 
     setStatus("loading");
     void (async () => {
-      const res = await apiFetch<{ signals: BlendedSignal[] }>(
-        `/api/admin/signals?pair=${encodeURIComponent(pair)}&limit=10`,
-        { signal: ctrl.signal },
-      );
-      if (ctrl.signal.aborted) return;
-      if (res.success && res.data) {
-        const fetched = res.data.signals ?? [];
-        setCachedSignals(pair, fetched);
-        setSignals(fetched);
-        setStatus("done");
-      } else if (res.error?.code === "ABORTED") {
-        // stale request — ignore
-      } else {
-        setSignals([]);
-        setStatus("error");
-      }
+      const result = await fetchSignalsForPair(pair, apiFetch, ctrl.signal);
+      if (ctrl.signal.aborted || result === null) return;
+      setSignals(result);
+      setStatus("done");
     })();
 
     return () => {
@@ -262,21 +322,60 @@ function ConfidenceChip({ signal }: { signal: BlendedSignal }) {
 interface SignalsSectionProps {
   /** Full trading pair, e.g. "ETH/USDT". Empty string = fetch nothing. */
   pair: string;
-  /** Whether the palette is in # (signal-only) mode. Controls heading label. */
+  /**
+   * Whether the palette is in `#` (signal-only) mode. Controls heading label,
+   * empty-state copy, and triggers `labelFilter` client-side filtering.
+   */
   hashMode: boolean;
+  /**
+   * In `#` mode, the substring (after the `#`) the user typed. Used to filter
+   * the active-pair's signals client-side by the derived `signalStrengthLabel`
+   * (e.g. "bull div" → only rows whose label contains "bull div"). Cross-symbol
+   * search is tracked as a follow-up — see the `# mode` placeholder copy and
+   * the GitHub issue linked in the PR.
+   */
+  labelFilter: string;
   /** Called when user selects a signal row. */
   onSelect: (signal: BlendedSignal) => void;
 }
 
-function SignalsSection({ pair, hashMode, onSelect }: SignalsSectionProps) {
+function SignalsSection({ pair, hashMode, labelFilter, onSelect }: SignalsSectionProps) {
   const { signals, status } = useSignals(pair);
   const sym = pairToSymbol(pair);
 
-  const heading = hashMode ? `Signals (recent)` : pair ? `Signals · ${sym}` : "Signals (recent)";
+  // In `#` mode, filter the fetched signals client-side by the derived label
+  // (Strong Buy / Bull Div / Breakout / etc.). This is a single-symbol filter
+  // by design — cross-symbol label search requires a new backend endpoint
+  // (currently `/api/admin/signals?pair=…` only). Tracked as a follow-up.
+  const filteredSignals =
+    hashMode && labelFilter
+      ? signals.filter((s) => signalStrengthLabel(s).toLowerCase().includes(labelFilter))
+      : signals;
+
+  const heading = hashMode
+    ? sym
+      ? `Signals · ${sym} (label filter)`
+      : "Signals (label filter)"
+    : pair
+      ? `Signals · ${sym}`
+      : "Signals";
 
   const showSkeleton = status === "loading";
-  const showEmpty = status === "done" && signals.length === 0;
-  const showRows = status === "done" && signals.length > 0;
+  // Render the empty state in `#` mode even when no pair is set so the user
+  // gets a heading + explanation instead of a blank palette panel.
+  const showEmpty =
+    (status === "done" && filteredSignals.length === 0) || (hashMode && status === "idle");
+  const showRows = status === "done" && filteredSignals.length > 0;
+
+  // Empty-state copy differs between normal mode, `#` mode with no pair, and
+  // `#` mode with a label that matched no rows.
+  const emptyText = hashMode
+    ? !pair
+      ? "No active pair — select one from Recent first"
+      : labelFilter
+        ? `No signals matching "${labelFilter}" on ${sym}`
+        : `No recent signals for ${sym}`
+    : `No recent signals for ${sym}`;
 
   return (
     <Command.Group
@@ -290,11 +389,9 @@ function SignalsSection({ pair, hashMode, onSelect }: SignalsSectionProps) {
           <SignalSkeletonRow />
         </>
       )}
-      {showEmpty && (
-        <div className="px-4 py-3 text-sm text-muted2">No recent signals for {sym}</div>
-      )}
+      {showEmpty && <div className="px-4 py-3 text-sm text-muted2">{emptyText}</div>}
       {showRows &&
-        signals.map((signal) => (
+        filteredSignals.map((signal) => (
           <Command.Item
             key={`${signal.pair}-${signal.asOf}`}
             value={`signal ${signal.pair} ${signalStrengthLabel(signal)} ${pairToSymbol(signal.pair)}`}
@@ -337,6 +434,15 @@ export interface SignalSelection {
 interface CommandPaletteProps {
   open: boolean;
   onClose: () => void;
+  /**
+   * Currently-active trading pair, e.g. "BTC/USDT". Drives the Signals section
+   * fetch path so the palette always shows signals for the pair the user is
+   * looking at (matching the right-rail SignalsRail). In `#` (label-filter)
+   * mode this also scopes the filter to the active pair — cross-symbol label
+   * search is a follow-up. Optional with a sensible default so existing tests
+   * and ad-hoc usages keep working.
+   */
+  activePair?: string;
   /** Called when user selects a symbol from Recent */
   onSelectSymbol?: (symbol: string) => void;
   /**
@@ -350,6 +456,7 @@ interface CommandPaletteProps {
 export function CommandPalette({
   open,
   onClose,
+  activePair = "",
   onSelectSymbol,
   onSelectSignal,
 }: CommandPaletteProps) {
@@ -394,29 +501,26 @@ export function CommandPalette({
   const symbolQuery = hashMode ? query.slice(1).trim() : query.trim();
 
   /**
-   * The pair to fetch signals for:
-   *   - In hash mode: use symbolQuery as a symbol prefix to find a matching pair.
-   *     If no match, use the first entry in recent as a fallback (still shows all).
-   *   - In normal mode: derive from the first recognisable symbol in the query.
+   * The pair to fetch signals for. Reads from `recent` state (loaded once per
+   * open in the effect above) rather than calling `loadRecentSymbols()` on
+   * every keystroke.
+   *
+   *   - In `#` (label-filter) mode: always use `activePair` so the user sees
+   *     signals on the symbol they're looking at. Cross-symbol label search
+   *     is a documented follow-up (no backend route yet).
+   *   - In normal mode: try to derive a pair from a recognisable symbol in
+   *     the query; if nothing matches, fall back to `activePair` (or empty)
+   *     so the Signals section still surfaces something meaningful.
    */
   const signalPair: string = (() => {
     if (hashMode) {
-      // Try to match the rest of the query as a symbol (e.g. "#eth" → "ETH/USDT").
-      const upper = symbolQuery.toUpperCase();
-      const match = [...Object.keys(SYMBOL_LABELS), ...loadRecentSymbols()].find((s) =>
-        s.startsWith(upper),
-      );
-      // If the query isn't a symbol prefix, show recent signals (use first recent pair).
-      if (match) return symbolToPair(match);
-      const firstRecent = loadRecentSymbols()[0];
-      return firstRecent ? symbolToPair(firstRecent) : "";
+      return activePair;
     }
-    // Normal mode: try to find a matching symbol in the query.
     const upper = symbolQuery.toUpperCase();
-    const match = [...Object.keys(SYMBOL_LABELS), ...loadRecentSymbols()].find(
-      (s) => s === upper || s.startsWith(upper),
-    );
-    return match ? symbolToPair(match) : "";
+    const candidates = [...Object.keys(SYMBOL_LABELS), ...recent];
+    const match = candidates.find((s) => s === upper || s.startsWith(upper));
+    if (match) return symbolToPair(match);
+    return activePair;
   })();
 
   const handleSelectSymbol = useCallback(
@@ -492,7 +596,7 @@ export function CommandPalette({
               onValueChange={setQuery}
               placeholder={
                 hashMode
-                  ? "Signal filter… (type a symbol or rule)"
+                  ? `Filter signals on ${pairToSymbol(activePair) || "active pair"} by label…`
                   : "Search markets, signals, jump to…"
               }
               className="flex-1 h-12 bg-transparent text-sm text-ink placeholder:text-muted2 outline-none"
@@ -545,9 +649,18 @@ export function CommandPalette({
               </Command.Group>
             )}
 
-            {/* Signals section */}
-            {signalPair && (
-              <SignalsSection pair={signalPair} hashMode={hashMode} onSelect={handleSelectSignal} />
+            {/* Signals section.
+                Rendered whenever `signalPair` resolves AND, in `#` mode,
+                always — even with an empty `signalPair` — so the user sees a
+                heading + empty state instead of a blank panel when no active
+                pair is set. */}
+            {(signalPair || hashMode) && (
+              <SignalsSection
+                pair={signalPair}
+                hashMode={hashMode}
+                labelFilter={hashMode ? symbolQuery.toLowerCase() : ""}
+                onSelect={handleSelectSignal}
+              />
             )}
 
             {/* Jump To — hidden in # mode */}
