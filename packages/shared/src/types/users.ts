@@ -1,6 +1,7 @@
 import { PAIRS } from "../constants/pairs.js";
 
 import type { RiskProfileMap, RiskProfile } from "./risk.js";
+import type { BlendProfileMap } from "./blend.js";
 
 export const USER_TYPES = ["retail", "institutional", "admin"] as const;
 export type UserType = (typeof USER_TYPES)[number];
@@ -33,6 +34,16 @@ export interface UserProfile {
    * Design: §9.2 of docs/SIGNALS_AND_RISK.md / Fix 1
    */
   riskProfiles: RiskProfileMap;
+  /**
+   * Per-pair blend profiles. Optional for backwards-compatibility — existing DDB
+   * records without this field default to "strict" on read (see getBlendProfile).
+   * Populated at user creation by defaultBlendProfiles() and updated on tier change.
+   * Users may override individual pairs via PATCH /users/me/settings (companion issue).
+   *
+   * Design: §5.10 of docs/SIGNALS_AND_RISK.md (escape hatch — profile applied at read path).
+   * Storage (signals_v2) always uses strict — canonical blend has one ground truth.
+   */
+  blendProfiles?: BlendProfileMap;
 }
 
 /**

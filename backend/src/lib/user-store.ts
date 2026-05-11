@@ -12,7 +12,12 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { UserProfile, Tier } from "@quantara/shared";
-import { defaultRiskProfiles, mergeTierRiskProfiles } from "@quantara/shared";
+import {
+  defaultRiskProfiles,
+  mergeTierRiskProfiles,
+  defaultBlendProfiles,
+  mergeTierBlendProfiles,
+} from "@quantara/shared";
 
 const USERS_TABLE =
   process.env.TABLE_USERS ?? `${process.env.TABLE_PREFIX ?? "quantara-dev-"}users`;
@@ -104,6 +109,10 @@ export async function getOrCreateUserRecord(
     userType: "retail",
     tier: "free",
     riskProfiles: defaultRiskProfiles("free"),
+    // #302 acceptance: seed defaultBlendProfiles at creation so paid-tier users
+    // receive their tier default (balanced) on first authenticated read instead
+    // of silently falling back to "strict" via getBlendProfile's undefined path.
+    blendProfiles: defaultBlendProfiles("free"),
     createdAt: now,
     updatedAt: now,
   };
@@ -125,6 +134,12 @@ export async function updateUserTier(userId: string, newTier: Tier): Promise<Use
     ...existing,
     tier: newTier,
     riskProfiles: mergeTierRiskProfiles(existing.riskProfiles, existing.tier, newTier),
+    // #302 acceptance: parallel to riskProfiles, re-derive blendProfiles on
+    // tier change. mergeTierBlendProfiles preserves per-pair overrides set
+    // by the user (only pairs still matching the old default move to the new
+    // default) and seeds the full map when existing.blendProfiles is absent
+    // (pre-302 records).
+    blendProfiles: mergeTierBlendProfiles(existing.blendProfiles, existing.tier, newTier),
     updatedAt: new Date().toISOString(),
   };
   await putUserUnchecked(updatedProfile);

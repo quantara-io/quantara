@@ -1,3 +1,10 @@
+export type * from "./types/blend.js";
+export {
+  BLEND_PROFILES,
+  defaultBlendProfiles,
+  getBlendProfile,
+  mergeTierBlendProfiles,
+} from "./types/blend.js";
 export type * from "./types/tiers.js";
 export type * from "./types/signal-tags.js";
 export type * from "./types/signals.js";
@@ -43,6 +50,9 @@ export type { GlossaryEntry, GlossaryKey } from "./constants/glossary.js";
 
 // Signal interpretation helper — Phase B2 (#171)
 export { buildInterpretation } from "./signals/interpretation.js";
+
+// Read-path re-blend helper — applies user BlendProfile to persisted per-TF votes (#302)
+export { reblendWithProfile } from "./signals/blend.js";
 
 // Signal explanation templater — v2 Phase 2 (#253)
 export { explainRules } from "./signals/explain.js";
