@@ -243,6 +243,24 @@ describe("closeCommand.parse", () => {
     const result = closeCommand.parse("VERYLONGSYMBOL");
     expect(result.ok).toBe(false);
   });
+
+  it("accepts digit-prefix tickers like 1INCH (issue #331 regex regression)", () => {
+    const result = closeCommand.parse("1INCH");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.payload).toEqual({ symbol: "1INCH" });
+  });
+
+  it("accepts mixed letters-and-digits tickers like KAS5 (defensive)", () => {
+    const result = closeCommand.parse("KAS5");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.payload).toEqual({ symbol: "KAS5" });
+  });
+
+  it("still rejects all-digit input (no alphabetic char)", () => {
+    const result = closeCommand.parse("12345");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/valid symbol/i);
+  });
 });
 
 // ── /close run + preview ──────────────────────────────────────────────────────

@@ -186,8 +186,11 @@ export const closeCommand: Command<ClosePayload> = {
     if (!arg) {
       return { ok: false, error: "Missing symbol argument. Example: /close BTC" };
     }
-    // Basic sanity: 2–10 uppercase letters.
-    if (!/^[A-Z]{2,10}$/.test(arg)) {
+    // Basic sanity: 2–10 chars, uppercase letters and/or digits. Real-world
+    // tickers like 1INCH include a leading digit, so we accept any [A-Z0-9]
+    // mix while still requiring at least one alphabetic character (purely
+    // numeric strings like "1234" are not tickers).
+    if (!/^[A-Z0-9]{2,10}$/.test(arg) || !/[A-Z]/.test(arg)) {
       return {
         ok: false,
         error: `"${arg}" is not a valid symbol. Use the base currency, e.g. BTC, ETH, SOL`,

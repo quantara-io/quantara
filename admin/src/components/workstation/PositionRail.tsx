@@ -18,6 +18,25 @@ import { metaForPair } from "./symbols";
  * shows a "Position closed" placeholder instead of the position card.
  */
 
+/**
+ * Pure render-mode selector for PositionRail.
+ *
+ * Extracted so the closed-state branch is unit-testable under the node-only
+ * vitest config (no jsdom/RTL needed). Returns:
+ *   - "closed": the rail should render the "Position closed." placeholder.
+ *   - "card":   the rail should render the full position card.
+ *
+ * Currently a thin wrapper around the `closed` flag, but isolating it gives
+ * us a pure assertion target and a single place to expand the logic when
+ * additional states land (loading, error, no-position).
+ */
+export type PositionRailMode = "closed" | "card";
+export const POSITION_CLOSED_LABEL = "Position closed.";
+
+export function positionRailMode(closed: boolean | undefined): PositionRailMode {
+  return closed ? "closed" : "card";
+}
+
 export function PositionRail({
   activePair,
   onClose,
@@ -32,7 +51,7 @@ export function PositionRail({
   const meta = metaForPair(activePair);
   const pos = MOCK_POSITION;
 
-  if (closed) {
+  if (positionRailMode(closed) === "closed") {
     return (
       <div className="flex flex-col">
         <SectionHeader
@@ -45,7 +64,7 @@ export function PositionRail({
             </span>
           }
         />
-        <div className="px-4 py-6 text-sm text-muted2 text-center">Position closed.</div>
+        <div className="px-4 py-6 text-sm text-muted2 text-center">{POSITION_CLOSED_LABEL}</div>
       </div>
     );
   }
