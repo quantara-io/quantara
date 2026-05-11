@@ -12,11 +12,43 @@ import { metaForPair } from "./symbols";
  * so the layout, alignments, and interactions are visible. When a real
  * `/api/admin/positions/:pair` endpoint lands this component swaps in the
  * fetch with no markup change. Source of truth lives in `./mock-data.ts`.
+ *
+ * Issue #331: `onClose` wires the Close button to the real backend endpoint
+ * via Workstation's `closePosition` handler. When `closed` is true the rail
+ * shows a "Position closed" placeholder instead of the position card.
  */
 
-export function PositionRail({ activePair }: { activePair: string }) {
+export function PositionRail({
+  activePair,
+  onClose,
+  closed = false,
+}: {
+  activePair: string;
+  /** Called when the user confirms Close. Resolves after backend round-trip. */
+  onClose?: () => Promise<void>;
+  /** When true, renders a "Position closed" placeholder instead of the card. */
+  closed?: boolean;
+}) {
   const meta = metaForPair(activePair);
   const pos = MOCK_POSITION;
+
+  if (closed) {
+    return (
+      <div className="flex flex-col">
+        <SectionHeader
+          title={
+            <span>
+              Position ·{" "}
+              <span className="text-ink2 font-semibold normal-case tracking-normal">
+                {meta.symbol}
+              </span>
+            </span>
+          }
+        />
+        <div className="px-4 py-6 text-sm text-muted2 text-center">Position closed.</div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col">
@@ -51,7 +83,13 @@ export function PositionRail({ activePair }: { activePair: string }) {
         />
       </div>
       <div className="px-4 pb-4 pt-1 flex gap-2">
-        <Button variant="primary" size="md" className="flex-1" disabled>
+        <Button
+          variant="primary"
+          size="md"
+          className="flex-1"
+          disabled={!onClose}
+          onClick={onClose}
+        >
           Close
         </Button>
         <Button variant="secondary" size="md" className="flex-1" disabled>

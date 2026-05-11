@@ -1,12 +1,10 @@
 /**
  * Unit tests for cmdk-commands.ts
  *
- * Covers: parse() for both commands, registry lookup, parseCommandInput.
+ * Covers: parse() for all commands, registry lookup, parseCommandInput.
  * Pure-logic only — no React, no DOM, no side effects.
  *
- * NOTE: /close was deferred from the initial release of this palette section
- * (no real position-close handler exists). Re-introduction is tracked as a
- * follow-up issue from PR #326 review.
+ * Issue #331: adds /close command tests.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -14,6 +12,8 @@ import { describe, it, expect, vi } from "vitest";
 import {
   tfCommand,
   toggleCommand,
+  closeCommand,
+  symbolToPositionId,
   lookupCommand,
   allCommands,
   parseCommandInput,
@@ -31,6 +31,7 @@ function makeCtx(overrides?: Partial<WorkstationContext>): WorkstationContext {
     setTimeframe: vi.fn(),
     overlays: { ema20: false, ema50: false, volume: true },
     setOverlays: vi.fn(),
+    closePosition: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -179,6 +180,104 @@ describe("toggleCommand.preview", () => {
   });
 });
 
+// ── symbolToPositionId ────────────────────────────────────────────────────────
+
+describe("symbolToPositionId", () => {
+  it("converts BTC to BTC-USDT", () => {
+    expect(symbolToPositionId("BTC")).toBe("BTC-USDT");
+  });
+
+  it("converts ETH to ETH-USDT", () => {
+    expect(symbolToPositionId("ETH")).toBe("ETH-USDT");
+  });
+
+  it("lowercases input before converting", () => {
+    expect(symbolToPositionId("btc")).toBe("BTC-USDT");
+  });
+});
+
+// ── /close parse ──────────────────────────────────────────────────────────────
+
+describe("closeCommand.parse", () => {
+  it.each(["BTC", "ETH", "SOL", "AVAX"])("accepts known symbols %s", (sym) => {
+    const result = closeCommand.parse(sym);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.payload).toEqual({ symbol: sym });
+  });
+
+  it("normalises lowercase input to uppercase symbol", () => {
+    const result = closeCommand.parse("btc");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.payload).toEqual({ symbol: "BTC" });
+  });
+
+  it("strips surrounding whitespace", () => {
+    const result = closeCommand.parse("  ETH  ");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.payload).toEqual({ symbol: "ETH" });
+  });
+
+  it("rejects empty input", () => {
+    const result = closeCommand.parse("");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/Missing symbol/);
+  });
+
+  it("rejects whitespace-only input", () => {
+    const result = closeCommand.parse("   ");
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects numeric-only input", () => {
+    const result = closeCommand.parse("123");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/valid symbol/i);
+  });
+
+  it("rejects a full pair string like BTC/USDT", () => {
+    const result = closeCommand.parse("BTC/USDT");
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects symbol longer than 10 chars", () => {
+    const result = closeCommand.parse("VERYLONGSYMBOL");
+    expect(result.ok).toBe(false);
+  });
+});
+
+// ── /close run + preview ──────────────────────────────────────────────────────
+
+describe("closeCommand.run", () => {
+  it("calls ctx.closePosition with the symbol", async () => {
+    const ctx = makeCtx();
+    await closeCommand.run({ symbol: "BTC" }, ctx);
+    expect(ctx.closePosition).toHaveBeenCalledWith("BTC");
+    expect(ctx.closePosition).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mutate setTimeframe or setOverlays", async () => {
+    const ctx = makeCtx();
+    await closeCommand.run({ symbol: "ETH" }, ctx);
+    expect(ctx.setTimeframe).not.toHaveBeenCalled();
+    expect(ctx.setOverlays).not.toHaveBeenCalled();
+  });
+});
+
+describe("closeCommand.preview", () => {
+  it("mentions the symbol and positionId in the preview", () => {
+    const ctx = makeCtx();
+    const preview = closeCommand.preview({ symbol: "BTC" }, ctx);
+    expect(preview).toMatch(/BTC/);
+    expect(preview).toMatch(/BTC-USDT/);
+  });
+
+  it("mentions the API endpoint path", () => {
+    const ctx = makeCtx();
+    const preview = closeCommand.preview({ symbol: "ETH" }, ctx);
+    expect(preview).toMatch(/positions/);
+  });
+});
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 describe("lookupCommand", () => {
@@ -191,14 +290,16 @@ describe("lookupCommand", () => {
     expect(lookupCommand("/toggle")).toBeDefined();
   });
 
+  it("finds /close", () => {
+    expect(lookupCommand("/close")).toBeDefined();
+    expect(lookupCommand("/close")?.name).toBe("/close");
+  });
+
   it("is case-insensitive", () => {
     expect(lookupCommand("/TF")?.name).toBe("/tf");
     expect(lookupCommand("/Tf")?.name).toBe("/tf");
     expect(lookupCommand("/Toggle")?.name).toBe("/toggle");
-  });
-
-  it("does not find /close (deferred)", () => {
-    expect(lookupCommand("/close")).toBeUndefined();
+    expect(lookupCommand("/Close")?.name).toBe("/close");
   });
 
   it("returns undefined for unknown command", () => {
@@ -211,12 +312,12 @@ describe("lookupCommand", () => {
 });
 
 describe("allCommands", () => {
-  it("returns the v0 commands (without deferred /close)", () => {
+  it("returns /tf, /toggle, and /close", () => {
     const cmds = allCommands();
     const names = cmds.map((c) => c.name);
     expect(names).toContain("/tf");
     expect(names).toContain("/toggle");
-    expect(names).not.toContain("/close");
+    expect(names).toContain("/close");
   });
 
   it("returns a copy (mutation does not affect registry)", () => {
@@ -256,10 +357,13 @@ describe("parseCommandInput", () => {
     if (r.mode === "unknown") expect(r.name).toBe("/foo");
   });
 
-  it("returns unknown mode for '/close BTC' (deferred command)", () => {
+  it("returns parse mode for '/close BTC' (now a real command)", () => {
     const r = parseCommandInput("/close BTC");
-    expect(r.mode).toBe("unknown");
-    if (r.mode === "unknown") expect(r.name).toBe("/close");
+    expect(r.mode).toBe("parse");
+    if (r.mode === "parse") {
+      expect(r.command.name).toBe("/close");
+      expect(r.result.ok).toBe(true);
+    }
   });
 
   // parse mode — known command + space
@@ -363,5 +467,28 @@ describe("COMMANDS registry — parse → run integration", () => {
     if (!parsed.result.ok) throw new Error("expected ok parse");
     void parsed.command.run(parsed.result.payload, ctx);
     expect(ctx.setTimeframe).toHaveBeenCalledWith("4H");
+  });
+
+  it("'/close BTC' parses then runs ctx.closePosition('BTC')", async () => {
+    const ctx = makeCtx();
+    const parsed = parseCommandInput("/close BTC");
+    expect(parsed.mode).toBe("parse");
+    if (parsed.mode !== "parse") return;
+    expect(parsed.result.ok).toBe(true);
+    if (!parsed.result.ok) return;
+    await parsed.command.run(parsed.result.payload, ctx);
+    expect(ctx.closePosition).toHaveBeenCalledWith("BTC");
+    expect(ctx.setTimeframe).not.toHaveBeenCalled();
+    expect(ctx.setOverlays).not.toHaveBeenCalled();
+  });
+
+  it("'/Close btc' (case-insensitive command + lowercase sym) reaches /close and calls closePosition('BTC')", async () => {
+    const ctx = makeCtx();
+    const parsed = parseCommandInput("/Close btc");
+    expect(parsed.mode).toBe("parse");
+    if (parsed.mode !== "parse") return;
+    if (!parsed.result.ok) throw new Error("expected ok parse");
+    await parsed.command.run(parsed.result.payload, ctx);
+    expect(ctx.closePosition).toHaveBeenCalledWith("BTC");
   });
 });

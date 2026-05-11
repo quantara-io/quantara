@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../lib/api";
+import { symbolToPositionId } from "../components/workstation/cmdk-commands";
 import { AlertsRail } from "../components/workstation/AlertsRail";
 import {
   CommandPalette,
@@ -77,6 +78,16 @@ export function Workstation() {
     volume: true,
   });
 
+  // ── Position close (used by /close command + PositionRail) ───────────────
+  // Tracks whether the position for the active pair has been closed this
+  // session. Resets when activePair changes (new pair → fresh position state).
+  const [positionClosed, setPositionClosed] = useState(false);
+
+  // Reset position-closed state when the active pair changes.
+  useEffect(() => {
+    setPositionClosed(false);
+  }, [activePair]);
+
   // ── Command palette ──────────────────────────────────────────────────────
   const handleSelectSymbol = useCallback((symbol: string) => {
     // Map symbol code → pair (e.g. "BTC" → "BTC/USDT")
@@ -97,6 +108,22 @@ export function Workstation() {
 
   const handleSeekConsumed = useCallback(() => {
     setPendingSeekMs(null);
+  }, []);
+
+  /**
+   * Close the position for `symbol` (e.g. "BTC").
+   * Calls POST /api/admin/positions/:id/close and marks the position as closed
+   * so PositionRail renders the "Position closed" placeholder.
+   */
+  const closePosition = useCallback(async (symbol: string) => {
+    const positionId = symbolToPositionId(symbol);
+    const res = await apiFetch<{ closed: boolean; positionId: string }>(
+      `/api/admin/positions/${positionId}/close`,
+      { method: "POST" },
+    );
+    if (res.success) {
+      setPositionClosed(true);
+    }
   }, []);
 
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette(handleSelectSymbol);
@@ -256,7 +283,14 @@ export function Workstation() {
             <SignalsRail activePair={activePair} />
           </div>
           <div className="hairline" />
-          <PositionRail activePair={activePair} />
+          <PositionRail
+            activePair={activePair}
+            closed={positionClosed}
+            onClose={async () => {
+              const symbol = activePair.split("/")[0] ?? activePair;
+              await closePosition(symbol);
+            }}
+          />
         </aside>
       </div>
 
@@ -273,6 +307,7 @@ export function Workstation() {
           setTimeframe,
           overlays,
           setOverlays,
+          closePosition,
         }}
       />
     </>

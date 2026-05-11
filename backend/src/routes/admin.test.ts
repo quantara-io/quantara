@@ -1900,3 +1900,69 @@ describe("POST /debug/force-indicators", () => {
     expect(forceIndicatorsMock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /positions/:id/close  (issue #331)
+// ---------------------------------------------------------------------------
+
+describe("POST /positions/:id/close", () => {
+  function makePostRequest(): RequestInit {
+    return { method: "POST" };
+  }
+
+  it("returns 200 with closed:true for a valid positionId", async () => {
+    const app = await loadApp();
+    const res = await app.request("/positions/BTC-USDT/close", makePostRequest());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { closed: boolean; positionId: string };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.closed).toBe(true);
+    expect(body.data.positionId).toBe("BTC-USDT");
+  });
+
+  it("returns 200 for ETH-USDT", async () => {
+    const app = await loadApp();
+    const res = await app.request("/positions/ETH-USDT/close", makePostRequest());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { positionId: string } };
+    expect(body.data.positionId).toBe("ETH-USDT");
+  });
+
+  it("returns 400 for a positionId with invalid characters (e.g. slash)", async () => {
+    const app = await loadApp();
+    const res = await app.request("/positions/BTC%2FUSDT/close", makePostRequest());
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: { code: string } };
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 for a positionId that is too short (1 char)", async () => {
+    const app = await loadApp();
+    const res = await app.request("/positions/X/close", makePostRequest());
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 for a positionId that is too long (>20 chars)", async () => {
+    const app = await loadApp();
+    const res = await app.request(
+      "/positions/AVERYLONGPOSITIONIDTHATEXCEEDS/close",
+      makePostRequest(),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 403 when caller is not admin", async () => {
+    currentAuth = { ...currentAuth, role: "user" };
+    const app = await loadApp();
+    const res = await app.request("/positions/BTC-USDT/close", makePostRequest());
+    expect(res.status).toBe(403);
+  });
+});

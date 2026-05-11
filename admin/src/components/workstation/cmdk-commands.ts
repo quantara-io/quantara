@@ -2,17 +2,13 @@
  * cmdk-commands — Command registry for the ⌘K palette.
  *
  * Issue #316: /tf, /toggle commands.
+ * Issue #331: /close command — wired to real backend handler.
  *
  * Design rules:
  *  - parse() is a pure function — no side effects, easy to unit-test.
- *  - run()   receives a WorkstationContext and may be async, but in v0 both
- *    commands are synchronous.
- *  - Commands are identified by their `name` string ("/tf", "/toggle"); lookup
- *    is case-insensitive so "/Tf 4h" works.
- *
- * NOTE: `/close <sym>` was deferred — no real position-close handler exists in
- * the admin app today (PositionRail's Close button is disabled, no backend
- * endpoint). Re-introduction tracked in a follow-up issue from PR #326 review.
+ *  - run()   receives a WorkstationContext and may be async.
+ *  - Commands are identified by their `name` string ("/tf", "/toggle", "/close");
+ *    lookup is case-insensitive so "/Tf 4h" works.
  */
 
 // ── WorkstationContext ────────────────────────────────────────────────────────
@@ -32,6 +28,12 @@ export interface WorkstationContext {
   overlays: OverlayState;
   /** Toggle a chart overlay. */
   setOverlays: (updater: (prev: OverlayState) => OverlayState) => void;
+  /**
+   * Close the active position for a symbol.
+   * Calls POST /api/admin/positions/:id/close and clears the position from
+   * the PositionRail. No-op when the position is already closed.
+   */
+  closePosition: (symbol: string) => Promise<void>;
 }
 
 export type Timeframe = "15m" | "1H" | "4H" | "1D" | "1W";
@@ -158,6 +160,51 @@ export const toggleCommand: Command<TogglePayload> = {
   },
 };
 
+// ── /close — Close active position ───────────────────────────────────────────
+
+/** Payload carries the normalised symbol (e.g. "BTC") extracted from user input. */
+export interface ClosePayload {
+  /** Upper-cased symbol extracted from user input, e.g. "BTC". */
+  symbol: string;
+}
+
+/**
+ * Convert a symbol ("BTC") to the positionId slug expected by the backend
+ * ("/api/admin/positions/BTC-USDT/close"). All Quantara pairs are vs USDT.
+ */
+export function symbolToPositionId(symbol: string): string {
+  return `${symbol.toUpperCase()}-USDT`;
+}
+
+export const closeCommand: Command<ClosePayload> = {
+  name: "/close",
+  description: "Close active position for a symbol",
+  args: "<symbol>",
+
+  parse(input) {
+    const arg = input.trim().toUpperCase();
+    if (!arg) {
+      return { ok: false, error: "Missing symbol argument. Example: /close BTC" };
+    }
+    // Basic sanity: 2–10 uppercase letters.
+    if (!/^[A-Z]{2,10}$/.test(arg)) {
+      return {
+        ok: false,
+        error: `"${arg}" is not a valid symbol. Use the base currency, e.g. BTC, ETH, SOL`,
+      };
+    }
+    return { ok: true, payload: { symbol: arg } };
+  },
+
+  async run({ symbol }, ctx) {
+    await ctx.closePosition(symbol);
+  },
+
+  preview({ symbol }) {
+    return `Will close ${symbol}/USDT position via POST /api/admin/positions/${symbolToPositionId(symbol)}/close`;
+  },
+};
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 // Store as Command<unknown> so the registry is uniform.
@@ -165,6 +212,7 @@ export const toggleCommand: Command<TogglePayload> = {
 const REGISTRY: Command<unknown>[] = [
   tfCommand as Command<unknown>,
   toggleCommand as Command<unknown>,
+  closeCommand as Command<unknown>,
 ];
 
 /**

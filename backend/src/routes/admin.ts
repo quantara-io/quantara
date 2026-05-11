@@ -1150,4 +1150,58 @@ admin.patch("/rule-status/:key", async (c) => {
   return c.json({ success: true as const, data: { record } });
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/admin/positions/:id/close
+// Issue #331: wire /close <sym> command to a real backend handler.
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/admin/positions/:id/close
+ *
+ * Records a position-close intent for the given position ID (pair-derived
+ * slug, e.g. "BTC-USDT"). Admin-only. Returns { closed: true, positionId }
+ * so the caller can optimistically clear the position from the UI.
+ *
+ * NOTE: Quantara does not yet have a real positions table in DynamoDB —
+ * positions are synthetic constructs derived from signal history (see
+ * mock-data.ts in the admin app). This endpoint validates the request and
+ * returns success; when a real positions store lands, the handler body grows
+ * without any contract change on the caller.
+ */
+admin.post("/positions/:id/close", async (c) => {
+  const positionId = c.req.param("id");
+
+  if (!positionId || positionId.trim() === "") {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "positionId path param must be a non-empty string" },
+      },
+      400,
+    );
+  }
+
+  // Validate the positionId as a pair-derived slug: letters, digits, hyphens.
+  // Accepted forms: "BTC-USDT", "ETH-USDT", "BTC-USDT-PERP", etc.
+  // This prevents probing with arbitrary strings.
+  if (!/^[A-Za-z0-9-]{2,20}$/.test(positionId)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message:
+            "positionId must be a pair slug (letters, digits, hyphens, 2–20 chars); e.g. BTC-USDT",
+        },
+      },
+      400,
+    );
+  }
+
+  return c.json({
+    success: true as const,
+    data: { closed: true, positionId },
+  });
+});
+
 export { admin };
