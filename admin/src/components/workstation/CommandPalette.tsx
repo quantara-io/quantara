@@ -3,6 +3,7 @@
  *
  * Issue #313: modal overlay, keybinding, Recent + Jump To sections.
  * Issue #314: Markets section — fuzzy symbol search with recency-weighted ranking.
+ * Issue #316: Commands section (/tf, /close, /toggle).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -10,6 +11,8 @@ import { Command } from "cmdk";
 import { useNavigate } from "react-router-dom";
 import { PAIRS } from "@quantara/shared";
 import { formatPrice } from "../ui/MonoNum";
+
+import { allCommands, parseCommandInput, type WorkstationContext } from "./cmdk-commands";
 
 // ── localStorage helpers ──────────────────────────────────────────────────────
 
@@ -217,9 +220,17 @@ interface CommandPaletteProps {
    * and 24h delta without making its own API calls.
    */
   markets?: Map<string, MarketTick>;
+  /** Workstation context passed to command run(). Required for command mode. */
+  ctx?: WorkstationContext;
 }
 
-export function CommandPalette({ open, onClose, onSelectSymbol, markets }: CommandPaletteProps) {
+export function CommandPalette({
+  open,
+  onClose,
+  onSelectSymbol,
+  markets,
+  ctx,
+}: CommandPaletteProps) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState<string[]>(() => loadRecentSymbols());
@@ -227,7 +238,35 @@ export function CommandPalette({ open, onClose, onSelectSymbol, markets }: Comma
   const triggerRef = useRef<HTMLElement | null>(null);
 
   // Ranked markets — recomputed whenever query or recent list changes.
-  const rankedMarkets = useMemo(() => rankMarkets(query, recent), [query, recent]);
+  // Skipped when in command mode (query starts with "/") since the Markets
+  // section is not rendered in that branch.
+  const rankedMarkets = useMemo(
+    () => (query.startsWith("/") ? [] : rankMarkets(query, recent)),
+    [query, recent],
+  );
+
+  // ── Command mode ───────────────────────────────────────────────────────────
+  const isCommandMode = query.startsWith("/");
+
+  // Parse the current command input whenever in command mode.
+  const commandParseResult = isCommandMode ? parseCommandInput(query) : null;
+
+  // Filtered command list shown in "list" mode (typing "/..." without a space yet).
+  const visibleCommands =
+    commandParseResult?.mode === "list"
+      ? allCommands().filter((c) => c.name.slice(1).startsWith(commandParseResult.filter))
+      : allCommands();
+
+  // Execute the current command if parse succeeded, then close palette.
+  const handleRunCommand = useCallback(() => {
+    if (!commandParseResult || commandParseResult.mode !== "parse") return;
+    const { command, result } = commandParseResult;
+    if (!result.ok) return;
+    if (ctx) {
+      void command.run(result.payload, ctx);
+    }
+    onClose();
+  }, [commandParseResult, ctx, onClose]);
 
   // Capture trigger element on open so we can restore focus on close.
   useEffect(() => {
@@ -288,6 +327,12 @@ export function CommandPalette({ open, onClose, onSelectSymbol, markets }: Comma
         if (e.key === "Escape") {
           e.preventDefault();
           onClose();
+          return;
+        }
+        // In command mode, ↵ executes the command (if parse succeeded).
+        if (isCommandMode && e.key === "Enter") {
+          e.preventDefault();
+          handleRunCommand();
         }
       }}
     >
@@ -332,100 +377,113 @@ export function CommandPalette({ open, onClose, onSelectSymbol, markets }: Comma
 
           {/* ── List (empty state or search results) ── */}
           <Command.List className="max-h-[420px] overflow-y-auto overscroll-contain">
-            <Command.Empty className="py-8 text-center text-sm text-muted2">
-              No results for &quot;{query}&quot;
-            </Command.Empty>
+            {isCommandMode ? (
+              // ── Command mode UI ──────────────────────────────────────────
+              <CommandModeContent
+                parseResult={commandParseResult}
+                visibleCommands={visibleCommands}
+                ctx={ctx}
+                query={query}
+                setQuery={setQuery}
+              />
+            ) : (
+              <>
+                <Command.Empty className="py-8 text-center text-sm text-muted2">
+                  No results for &quot;{query}&quot;
+                </Command.Empty>
 
-            {/* Recent symbols — always mounted so cmdk can fuzzy-filter against the typed query */}
-            <Command.Group
-              heading="Recent"
-              className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2"
-            >
-              {recent.map((sym, idx) => (
-                <Command.Item
-                  key={sym}
-                  value={`${sym} ${symbolLabel(sym)}`}
-                  onSelect={() => handleSelectSymbol(sym)}
-                  className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
+                {/* Recent symbols — always mounted so cmdk can fuzzy-filter against the typed query */}
+                <Command.Group
+                  heading="Recent"
+                  className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2"
                 >
-                  <span className="w-6 h-6 rounded-full bg-brand-soft flex items-center justify-center shrink-0">
-                    <span className="text-2xs font-semibold text-brand">{sym[0]}</span>
-                  </span>
-                  <span className="flex-1 min-w-0">
-                    <span className="font-medium">{sym}</span>
-                    <span className="ml-2 text-muted2 text-xs">{symbolLabel(sym)}</span>
-                  </span>
-                  {idx < 9 && (
-                    <kbd className="text-2xs text-muted2 font-mono bg-sunken border border-line rounded px-1 shrink-0">
-                      ⌘{idx + 1}
-                    </kbd>
-                  )}
-                </Command.Item>
-              ))}
-            </Command.Group>
-
-            {/* Markets — fuzzy-ranked symbols with live price + 24h delta */}
-            {rankedMarkets.length > 0 && (
-              <Command.Group
-                heading="Markets"
-                className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
-              >
-                {rankedMarkets.map(({ pair, symbol }) => {
-                  const tick = markets?.get(pair);
-                  return (
+                  {recent.map((sym, idx) => (
                     <Command.Item
-                      key={pair}
-                      value={`market ${symbol} ${pair}`}
-                      onSelect={() => handleSelectSymbol(symbol)}
+                      key={sym}
+                      value={`${sym} ${symbolLabel(sym)}`}
+                      onSelect={() => handleSelectSymbol(sym)}
+                      className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
+                    >
+                      <span className="w-6 h-6 rounded-full bg-brand-soft flex items-center justify-center shrink-0">
+                        <span className="text-2xs font-semibold text-brand">{sym[0]}</span>
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="font-medium">{sym}</span>
+                        <span className="ml-2 text-muted2 text-xs">{symbolLabel(sym)}</span>
+                      </span>
+                      {idx < 9 && (
+                        <kbd className="text-2xs text-muted2 font-mono bg-sunken border border-line rounded px-1 shrink-0">
+                          ⌘{idx + 1}
+                        </kbd>
+                      )}
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+
+                {/* Markets — fuzzy-ranked symbols with live price + 24h delta */}
+                {rankedMarkets.length > 0 && (
+                  <Command.Group
+                    heading="Markets"
+                    className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
+                  >
+                    {rankedMarkets.map(({ pair, symbol }) => {
+                      const tick = markets?.get(pair);
+                      return (
+                        <Command.Item
+                          key={pair}
+                          value={`market ${symbol} ${pair}`}
+                          onSelect={() => handleSelectSymbol(symbol)}
+                          className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
+                        >
+                          <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0">
+                            <span className="text-2xs font-semibold text-ink">{symbol[0]}</span>
+                          </span>
+                          <span className="flex-1 min-w-0 font-medium">{pair}</span>
+                          {tick && tick.price !== null && (
+                            <span className="num text-xs text-ink2 shrink-0">
+                              {formatPrice(tick.price)}
+                            </span>
+                          )}
+                          {tick && tick.change24hPct !== null && (
+                            <span
+                              className={`num text-xs shrink-0 ${
+                                tick.change24hPct >= 0 ? "text-up" : "text-down"
+                              }`}
+                            >
+                              {tick.change24hPct >= 0 ? "+" : ""}
+                              {tick.change24hPct.toFixed(2)}%
+                            </span>
+                          )}
+                        </Command.Item>
+                      );
+                    })}
+                  </Command.Group>
+                )}
+
+                {/* Jump To — always mounted so cmdk can fuzzy-filter against the typed query */}
+                <Command.Group
+                  heading="Jump To"
+                  className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
+                >
+                  {JUMP_ROWS.map((row) => (
+                    <Command.Item
+                      key={row.id}
+                      value={`${row.label} ${row.sublabel}`}
+                      onSelect={() => handleSelectJump(row)}
                       className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
                     >
                       <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0">
-                        <span className="text-2xs font-semibold text-ink">{symbol[0]}</span>
+                        <ArrowRightIcon />
                       </span>
-                      <span className="flex-1 min-w-0 font-medium">{pair}</span>
-                      {tick && tick.price !== null && (
-                        <span className="num text-xs text-ink2 shrink-0">
-                          {formatPrice(tick.price)}
-                        </span>
-                      )}
-                      {tick && tick.change24hPct !== null && (
-                        <span
-                          className={`num text-xs shrink-0 ${
-                            tick.change24hPct >= 0 ? "text-up" : "text-down"
-                          }`}
-                        >
-                          {tick.change24hPct >= 0 ? "+" : ""}
-                          {tick.change24hPct.toFixed(2)}%
-                        </span>
-                      )}
+                      <span className="flex-1 min-w-0">
+                        <span className="font-medium">{row.label}</span>
+                        <span className="ml-2 text-muted2 text-xs">{row.sublabel}</span>
+                      </span>
                     </Command.Item>
-                  );
-                })}
-              </Command.Group>
+                  ))}
+                </Command.Group>
+              </>
             )}
-
-            {/* Jump To — always mounted so cmdk can fuzzy-filter against the typed query */}
-            <Command.Group
-              heading="Jump To"
-              className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
-            >
-              {JUMP_ROWS.map((row) => (
-                <Command.Item
-                  key={row.id}
-                  value={`${row.label} ${row.sublabel}`}
-                  onSelect={() => handleSelectJump(row)}
-                  className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
-                >
-                  <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0">
-                    <ArrowRightIcon />
-                  </span>
-                  <span className="flex-1 min-w-0">
-                    <span className="font-medium">{row.label}</span>
-                    <span className="ml-2 text-muted2 text-xs">{row.sublabel}</span>
-                  </span>
-                </Command.Item>
-              ))}
-            </Command.Group>
           </Command.List>
 
           {/* ── Footer hint ── */}
@@ -495,6 +553,111 @@ export function useCommandPalette(onSelectSymbol?: (symbol: string) => void) {
   return { open, setOpen };
 }
 
+// ── CommandModeContent ────────────────────────────────────────────────────────
+
+interface CommandModeContentProps {
+  parseResult: ReturnType<typeof parseCommandInput> | null;
+  visibleCommands: ReturnType<typeof allCommands>;
+  ctx: WorkstationContext | undefined;
+  query: string;
+  setQuery: (q: string) => void;
+}
+
+function CommandModeContent({ parseResult, visibleCommands, ctx, query }: CommandModeContentProps) {
+  // ── "list" mode: show filtered command list ──────────────────────────────
+  if (!parseResult || parseResult.mode === "list") {
+    if (visibleCommands.length === 0) {
+      return (
+        <div className="py-8 text-center text-sm text-muted2">
+          Unknown command — see{" "}
+          <button
+            type="button"
+            className="font-mono text-brand hover:underline"
+            onClick={() => {
+              /* query is already "/" in this branch; nothing to do */
+            }}
+          >
+            /
+          </button>{" "}
+          for the list
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2"
+        role="listbox"
+        aria-label="Available commands"
+      >
+        <div className="px-4 py-2 text-2xs uppercase tracking-widest text-muted2">Commands</div>
+        {visibleCommands.map((cmd) => (
+          <div key={cmd.name} className="flex items-start gap-3 px-4 py-2.5 text-sm text-ink">
+            <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0 mt-0.5">
+              <TerminalIcon />
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="font-mono font-semibold text-brand">{cmd.name}</span>
+              <span className="ml-1.5 text-muted2 text-xs font-mono">{cmd.args}</span>
+              <span className="block text-xs text-muted2 mt-0.5">{cmd.description}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // ── "unknown" mode: command name not in registry ──────────────────────────
+  if (parseResult.mode === "unknown") {
+    return (
+      <div className="py-8 text-center text-sm text-muted2">
+        Unknown command <span className="font-mono text-ink">{parseResult.name}</span> — see{" "}
+        <span className="font-mono text-brand">/</span> for the list
+      </div>
+    );
+  }
+
+  // ── "parse" mode: command found, show preview or error ────────────────────
+  const { command, result } = parseResult;
+
+  if (!result.ok) {
+    return (
+      <div className="px-4 py-5">
+        <div className="flex items-start gap-3">
+          <span className="w-6 h-6 rounded-full bg-down-soft border border-down/20 flex items-center justify-center shrink-0 mt-0.5">
+            <ErrorIcon />
+          </span>
+          <div>
+            <div className="text-sm font-mono text-down-strong">{query}</div>
+            <div className="mt-1 text-xs text-muted2">{result.error}</div>
+          </div>
+        </div>
+        <div className="mt-3 text-2xs text-muted2">
+          ↵ does nothing · fix the argument to execute
+        </div>
+      </div>
+    );
+  }
+
+  // Parse succeeded — show preview pane.
+  const previewText = ctx ? command.preview(result.payload, ctx) : `Will run ${command.name}`;
+
+  return (
+    <div className="px-4 py-5">
+      <div className="flex items-start gap-3">
+        <span className="w-6 h-6 rounded-full bg-up-soft border border-up/20 flex items-center justify-center shrink-0 mt-0.5">
+          <CheckIcon />
+        </span>
+        <div>
+          <div className="text-sm font-mono text-ink">{query}</div>
+          <div className="mt-1 text-sm text-ink2">{previewText}</div>
+        </div>
+      </div>
+      <div className="mt-3 text-2xs text-muted2">↵ to execute</div>
+    </div>
+  );
+}
+
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
 function SearchIcon() {
@@ -550,6 +713,65 @@ function CloseSmIcon() {
       aria-hidden="true"
     >
       <path d="M18 6L6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function TerminalIcon() {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="text-muted2"
+    >
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="text-up"
+    >
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function ErrorIcon() {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="text-down"
+    >
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }
