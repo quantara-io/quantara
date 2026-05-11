@@ -24,6 +24,10 @@ export interface Candle {
    *  - "backfill"        = historical fetch.
    *  Used by DDB Streams FilterCriteria so the IndicatorLambda only fires on live closes. */
   source: "live" | "live-synthesized" | "backfill";
+  /** Set when this candle was synthesized by aggregating finer-grained source candles
+   *  rather than fetched directly from the exchange (e.g. "1h×4" for a 4h candle
+   *  built from four 1h candles). Informational — does not affect indicator logic. */
+  aggregatedFrom?: string;
 }
 
 export interface RawNewsEvent {

@@ -63,6 +63,7 @@ export async function storeCandles(candles: Candle[]): Promise<void> {
                 volume: c.volume,
                 isClosed: c.isClosed,
                 source: c.source,
+                ...(c.aggregatedFrom !== undefined && { aggregatedFrom: c.aggregatedFrom }),
                 ttl: Math.floor(Date.now() / 1000) + TTL_SECONDS[c.timeframe as Timeframe],
               },
             },
@@ -109,6 +110,7 @@ export async function storeCandlesConditional(candles: Candle[]): Promise<void> 
       volume: c.volume,
       isClosed: c.isClosed,
       source: c.source,
+      ...(c.aggregatedFrom !== undefined && { aggregatedFrom: c.aggregatedFrom }),
       ttl: Math.floor(Date.now() / 1000) + TTL_SECONDS[c.timeframe as Timeframe],
     };
 

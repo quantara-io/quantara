@@ -19,7 +19,7 @@
 import ccxt from "ccxt";
 import type { Candle, Timeframe } from "@quantara/shared";
 
-import { storeCandles } from "./lib/candle-store.js";
+import { storeCandles, getCandles } from "./lib/candle-store.js";
 import {
   EXCHANGES,
   PAIRS,
@@ -141,6 +141,94 @@ async function fetchAndStoreLatestCandle(
   }
 }
 
+/**
+ * Exchanges that do not natively support a given timeframe and must be handled
+ * by aggregating from a finer-grained timeframe already stored in DynamoDB.
+ *
+ * Coinbase exposes 1m/5m/15m/30m/1h/2h/6h/1d — no native 4h. We build 4h by
+ * reading the 4 most recent closed 1h candles for that pair from DDB and
+ * rolling them up. This avoids a round-trip to the exchange for a timeframe
+ * it cannot serve, and keeps the consensus quorum at 3 instead of 2.
+ */
+const AGGREGATED_TIMEFRAMES: Partial<Record<ExchangeId, Partial<Record<Timeframe, Timeframe>>>> = {
+  coinbase: { "4h": "1h" },
+};
+
+/**
+ * Aggregate a synthetic 4h candle for coinbase from its stored 1h candles.
+ *
+ * Queries DDB for the 4 most recent closed 1h candles whose openTime falls
+ * within the closed 4h window [boundary - 4h, boundary). Returns true when
+ * the aggregated candle is written, false when there are not enough source
+ * candles (< 4) — logs a single warning in that case.
+ *
+ * Exported for unit testing; not part of the public API.
+ */
+export async function aggregateCoinbase4hFromHourly(
+  pair: TradingPair,
+  now: number,
+): Promise<boolean> {
+  const tfMs4h = TF_MS["4h"];
+  const tfMs1h = TF_MS["1h"];
+
+  // The 4h window that just closed: [windowStart, windowEnd)
+  const windowEnd = Math.floor(now / tfMs4h) * tfMs4h;
+  const windowStart = windowEnd - tfMs4h;
+
+  // Fetch the 8 most recent 1h candles for this pair from coinbase in DDB.
+  // We request 8 (2× the required 4) so that if a slightly stale or extra row
+  // is present before the window, the window filter below still surfaces the
+  // correct 4. getCandles returns descending order (newest first).
+  const hourlyCandles = await getCandles(pair, "coinbase", "1h", 8);
+  // Reverse to ascending (oldest first) for correct open/close assignment.
+  const ascending = [...hourlyCandles].reverse();
+
+  // Filter to only those candles whose openTime falls within the 4h window.
+  const windowCandles = ascending.filter(
+    (c) => c.openTime >= windowStart && c.openTime < windowEnd,
+  );
+
+  if (windowCandles.length < 4) {
+    console.warn(
+      `[higher-tf-poller] coinbase 4h aggregation skipped — only ${windowCandles.length}/4 hourly candles available (pair=${pair} window=${new Date(windowStart).toISOString()})`,
+    );
+    return false;
+  }
+
+  // Sanity-check: each source candle should span exactly 1h (no gaps).
+  for (let i = 1; i < windowCandles.length; i++) {
+    if (windowCandles[i]!.openTime !== windowCandles[i - 1]!.openTime + tfMs1h) {
+      console.warn(
+        `[higher-tf-poller] coinbase 4h aggregation skipped — non-contiguous 1h candles for ${pair} @ ${new Date(windowStart).toISOString()}`,
+      );
+      return false;
+    }
+  }
+
+  const first = windowCandles[0]!;
+  const last = windowCandles[windowCandles.length - 1]!;
+
+  const aggregated: Candle = {
+    exchange: "coinbase",
+    symbol: getSymbol("coinbase", pair),
+    pair,
+    timeframe: "4h",
+    openTime: first.openTime,
+    closeTime: last.closeTime,
+    open: first.open,
+    close: last.close,
+    high: Math.max(...windowCandles.map((c) => c.high)),
+    low: Math.min(...windowCandles.map((c) => c.low)),
+    volume: windowCandles.reduce((sum, c) => sum + c.volume, 0),
+    isClosed: true,
+    source: "live",
+    aggregatedFrom: "1h×4",
+  };
+
+  await storeCandles([aggregated]);
+  return true;
+}
+
 export const handler = async (event: ScheduledEvent): Promise<void> => {
   const now = event.time ? Date.parse(event.time) : Date.now();
 
@@ -158,21 +246,47 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
   // and the rate limiter only governs that single in-flight request.
   const clients = buildExchangeClients();
 
-  // For each TF that just closed, fetch one candle per (exchange, pair).
-  // Tasks share the per-exchange client (rate-limited) — ccxt serializes
-  // requests within a client when enableRateLimit is on.
-  const tasks: Promise<boolean>[] = [];
+  // Phase 1: fetch + store all native-exchange candles (including coinbase 1h).
+  // These writes must complete before Phase 2 reads from DDB, because the
+  // coinbase 4h aggregator reads the 1h rows that Phase 1 just wrote.
+  // Mixing both phases into a single Promise.allSettled would let the aggregator
+  // read DDB before the 1h write settles, reproducing the "only N/4 hourly candles
+  // available" skip that issue #321 describes.
+  const fetchTasks: Promise<boolean>[] = [];
+  const aggregateTfs: Array<{ tf: Timeframe; pairs: TradingPair[] }> = [];
+
   for (const tf of dueTfs) {
     for (const exchangeId of EXCHANGES) {
+      const aggregateFromTf = AGGREGATED_TIMEFRAMES[exchangeId]?.[tf];
+      if (aggregateFromTf !== undefined) {
+        // Collect aggregation work for Phase 2 — do not start yet.
+        if (exchangeId === "coinbase" && tf === "4h") {
+          aggregateTfs.push({ tf, pairs: [...PAIRS] });
+        }
+        continue;
+      }
       const exchange = clients[exchangeId];
       if (!exchange) continue; // exchange class missing — already logged
       for (const pair of PAIRS) {
-        tasks.push(fetchAndStoreLatestCandle(exchangeId, exchange, pair, tf, now));
+        fetchTasks.push(fetchAndStoreLatestCandle(exchangeId, exchange, pair, tf, now));
       }
     }
   }
 
-  const results = await Promise.allSettled(tasks);
-  const ok = results.filter((r) => r.status === "fulfilled" && r.value).length;
-  console.log(`[higher-tf-poller] Wrote ${ok}/${tasks.length} candles`);
+  // Await all Phase 1 writes before starting aggregation reads.
+  const fetchResults = await Promise.allSettled(fetchTasks);
+
+  // Phase 2: DDB-aggregation tasks that depend on Phase 1 writes being visible.
+  const aggregateTasks: Promise<boolean>[] = [];
+  for (const { pairs } of aggregateTfs) {
+    for (const pair of pairs) {
+      aggregateTasks.push(aggregateCoinbase4hFromHourly(pair, now));
+    }
+  }
+  const aggregateResults = await Promise.allSettled(aggregateTasks);
+
+  const allResults = [...fetchResults, ...aggregateResults];
+  const ok = allResults.filter((r) => r.status === "fulfilled" && r.value).length;
+  const total = fetchTasks.length + aggregateTasks.length;
+  console.log(`[higher-tf-poller] Wrote ${ok}/${total} candles`);
 };
