@@ -233,7 +233,6 @@ describe("handler — Kraken second-tick (issue #342)", () => {
     // Kraken fetchOHLCV must NOT have been called — candle already in DDB.
     expect(krakenFetchOHLCVMock).not.toHaveBeenCalled();
   });
-
 });
 
 describe("handler — mixed-exchange window isolation (issue #342)", () => {
