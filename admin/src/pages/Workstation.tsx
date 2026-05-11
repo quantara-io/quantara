@@ -18,7 +18,7 @@ import {
 } from "../components/workstation/SymbolHeader";
 import { WatchlistRail } from "../components/workstation/WatchlistRail";
 import { DEFAULT_EXCHANGE, DEFAULT_PAIR, metaForPair } from "../components/workstation/symbols";
-import type { OverlayState, PositionSnapshot } from "../components/workstation/cmdk-commands";
+import type { OverlayState } from "../components/workstation/cmdk-commands";
 
 interface MarketData {
   prices: Array<{ pair: string; exchange: string; price: number; volume24h?: number }>;
@@ -55,22 +55,16 @@ const MAX_TOTAL_CANDLES: Record<Timeframe, number> = {
   "1W": 500,
 };
 
-/** Mock position for /close command preview. Mirrors PositionRail's MOCK_POSITION. */
-const MOCK_POSITION: PositionSnapshot = {
-  symbol: "BTC",
-  size: 8.42,
-  mark: 71_092,
-  pnl: 1_858_740,
-};
-
 export function Workstation() {
   const [activePair, setActivePair] = useState<string>(DEFAULT_PAIR);
   const [timeframe, setTimeframe] = useState<Timeframe>("1H");
 
   // ── Chart overlays (used by /toggle command) ─────────────────────────────
+  // Default all overlays on — matches the chart's pre-#316 behaviour where
+  // EMA20, EMA50, and volume always rendered. /toggle now flips these.
   const [overlays, setOverlays] = useState<OverlayState>({
-    ema20: false,
-    ema50: false,
+    ema20: true,
+    ema50: true,
     volume: true,
   });
 
@@ -224,6 +218,7 @@ export function Workstation() {
                 timeframe={TIMEFRAME_TO_API[timeframe]}
                 onBackfillNeeded={handleBackfillNeeded}
                 backfillExhausted={backfillExhaustedDisplay}
+                overlays={overlays}
               />
             )}
           </div>
@@ -249,11 +244,6 @@ export function Workstation() {
           setTimeframe,
           overlays,
           setOverlays,
-          closePosition: (_symbol: string) => {
-            // Mocked — live trading not enabled.
-            // When live trading lands: dispatch close order for _symbol here.
-          },
-          position: activePair.startsWith("BTC") ? MOCK_POSITION : null,
         }}
       />
     </>

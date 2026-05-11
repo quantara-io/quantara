@@ -1,22 +1,25 @@
 /**
  * Unit tests for cmdk-commands.ts
  *
- * Covers: parse() for all three commands, registry lookup, parseCommandInput.
+ * Covers: parse() for both commands, registry lookup, parseCommandInput.
  * Pure-logic only — no React, no DOM, no side effects.
+ *
+ * NOTE: /close was deferred from the initial release of this palette section
+ * (no real position-close handler exists). Re-introduction is tracked as a
+ * follow-up issue from PR #326 review.
  */
 
 import { describe, it, expect, vi } from "vitest";
 
 import {
   tfCommand,
-  closeCommand,
   toggleCommand,
   lookupCommand,
   allCommands,
   parseCommandInput,
+  parseOverlayKey,
   type WorkstationContext,
   type OverlayState,
-  type PositionSnapshot,
 } from "./cmdk-commands";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -28,18 +31,9 @@ function makeCtx(overrides?: Partial<WorkstationContext>): WorkstationContext {
     setTimeframe: vi.fn(),
     overlays: { ema20: false, ema50: false, volume: true },
     setOverlays: vi.fn(),
-    closePosition: vi.fn(),
-    position: null,
     ...overrides,
   };
 }
-
-const MOCK_POSITION: PositionSnapshot = {
-  symbol: "BTC",
-  size: 0.42,
-  mark: 72_092,
-  pnl: 1_059_746,
-};
 
 // ── /tf parse ────────────────────────────────────────────────────────────────
 
@@ -103,88 +97,17 @@ describe("tfCommand.preview", () => {
   });
 });
 
-// ── /close parse ──────────────────────────────────────────────────────────────
+// ── parseOverlayKey ───────────────────────────────────────────────────────────
 
-describe("closeCommand.parse", () => {
-  it.each(["BTC", "ETH", "SOL", "DOGE", "AVAX"])("accepts valid symbol %s", (sym) => {
-    const result = closeCommand.parse(sym);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.payload).toEqual({ symbol: sym });
+describe("parseOverlayKey", () => {
+  it.each(["ema20", "ema50", "volume"])("accepts known overlay %s", (k) => {
+    expect(parseOverlayKey(k)).toBe(k);
   });
 
-  it("uppercases lowercase input", () => {
-    const result = closeCommand.parse("btc");
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.payload).toEqual({ symbol: "BTC" });
-  });
-
-  it("rejects empty input", () => {
-    const result = closeCommand.parse("");
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/Missing symbol/);
-  });
-
-  it("rejects symbol with digits", () => {
-    const result = closeCommand.parse("BTC1");
-    expect(result.ok).toBe(false);
-  });
-
-  it("rejects symbol that is too short (1 char)", () => {
-    const result = closeCommand.parse("B");
-    expect(result.ok).toBe(false);
-  });
-
-  it("rejects symbol that is too long (11 chars)", () => {
-    const result = closeCommand.parse("ABCDEFGHIJK");
-    expect(result.ok).toBe(false);
-  });
-});
-
-// ── /close run + preview ──────────────────────────────────────────────────────
-
-describe("closeCommand.run", () => {
-  it("calls closePosition with the symbol", () => {
-    const ctx = makeCtx();
-    closeCommand.run({ symbol: "BTC" }, ctx);
-    expect(ctx.closePosition).toHaveBeenCalledWith("BTC");
-  });
-});
-
-describe("closeCommand.preview", () => {
-  it("shows position details when position exists for the symbol", () => {
-    const ctx = makeCtx({ position: MOCK_POSITION });
-    const preview = closeCommand.preview({ symbol: "BTC" }, ctx);
-    expect(preview).toMatch(/0\.42 BTC/);
-    expect(preview).toMatch(/MARK/);
-    expect(preview).toMatch(/PnL/);
-    expect(preview).toMatch(/1,059,746/);
-  });
-
-  it("shows generic preview when no position exists", () => {
-    const ctx = makeCtx({ position: null });
-    const preview = closeCommand.preview({ symbol: "BTC" }, ctx);
-    expect(preview).toMatch(/BTC/);
-    expect(preview).toMatch(/position/i);
-  });
-
-  it("shows generic preview when position is for a different symbol", () => {
-    const ctx = makeCtx({ position: { symbol: "ETH", size: 1, mark: 3000, pnl: 100 } });
-    const preview = closeCommand.preview({ symbol: "BTC" }, ctx);
-    // Not matching ETH position data — generic fallback
-    expect(preview).toMatch(/BTC/);
-  });
-
-  it("shows positive pnl with '+' prefix", () => {
-    const ctx = makeCtx({ position: MOCK_POSITION });
-    const preview = closeCommand.preview({ symbol: "BTC" }, ctx);
-    expect(preview).toContain("+");
-  });
-
-  it("shows negative pnl without '+' prefix", () => {
-    const ctx = makeCtx({ position: { symbol: "BTC", size: 1, mark: 60000, pnl: -500 } });
-    const preview = closeCommand.preview({ symbol: "BTC" }, ctx);
-    expect(preview).not.toContain("+-");
-    expect(preview).toContain("-");
+  it("returns null for unknown overlay", () => {
+    expect(parseOverlayKey("macd")).toBeNull();
+    expect(parseOverlayKey("")).toBeNull();
+    expect(parseOverlayKey("EMA20")).toBeNull(); // case-sensitive at the parser layer
   });
 });
 
@@ -264,12 +187,18 @@ describe("lookupCommand", () => {
     expect(lookupCommand("/tf")?.name).toBe("/tf");
   });
 
-  it("finds /close", () => {
-    expect(lookupCommand("/close")).toBeDefined();
-  });
-
   it("finds /toggle", () => {
     expect(lookupCommand("/toggle")).toBeDefined();
+  });
+
+  it("is case-insensitive", () => {
+    expect(lookupCommand("/TF")?.name).toBe("/tf");
+    expect(lookupCommand("/Tf")?.name).toBe("/tf");
+    expect(lookupCommand("/Toggle")?.name).toBe("/toggle");
+  });
+
+  it("does not find /close (deferred)", () => {
+    expect(lookupCommand("/close")).toBeUndefined();
   });
 
   it("returns undefined for unknown command", () => {
@@ -282,12 +211,12 @@ describe("lookupCommand", () => {
 });
 
 describe("allCommands", () => {
-  it("returns all three v0 commands", () => {
+  it("returns the v0 commands (without deferred /close)", () => {
     const cmds = allCommands();
     const names = cmds.map((c) => c.name);
     expect(names).toContain("/tf");
-    expect(names).toContain("/close");
     expect(names).toContain("/toggle");
+    expect(names).not.toContain("/close");
   });
 
   it("returns a copy (mutation does not affect registry)", () => {
@@ -314,10 +243,10 @@ describe("parseCommandInput", () => {
     if (r.mode === "list") expect(r.filter).toBe("tf");
   });
 
-  it("returns list mode for '/clo' (partial)", () => {
-    const r = parseCommandInput("/clo");
+  it("returns list mode for '/tog' (partial)", () => {
+    const r = parseCommandInput("/tog");
     expect(r.mode).toBe("list");
-    if (r.mode === "list") expect(r.filter).toBe("clo");
+    if (r.mode === "list") expect(r.filter).toBe("tog");
   });
 
   // unknown command
@@ -325,6 +254,12 @@ describe("parseCommandInput", () => {
     const r = parseCommandInput("/foo 4h");
     expect(r.mode).toBe("unknown");
     if (r.mode === "unknown") expect(r.name).toBe("/foo");
+  });
+
+  it("returns unknown mode for '/close BTC' (deferred command)", () => {
+    const r = parseCommandInput("/close BTC");
+    expect(r.mode).toBe("unknown");
+    if (r.mode === "unknown") expect(r.name).toBe("/close");
   });
 
   // parse mode — known command + space
@@ -337,20 +272,31 @@ describe("parseCommandInput", () => {
     }
   });
 
+  it("is case-insensitive on the command name — '/Tf 4h' routes to /tf", () => {
+    const r = parseCommandInput("/Tf 4h");
+    expect(r.mode).toBe("parse");
+    if (r.mode === "parse") {
+      expect(r.command.name).toBe("/tf");
+      expect(r.result.ok).toBe(true);
+      if (r.result.ok) expect(r.result.payload).toBe("4H");
+    }
+  });
+
+  it("is case-insensitive on the command name — '/TOGGLE ema20' routes to /toggle", () => {
+    const r = parseCommandInput("/TOGGLE ema20");
+    expect(r.mode).toBe("parse");
+    if (r.mode === "parse") {
+      expect(r.command.name).toBe("/toggle");
+      expect(r.result.ok).toBe(true);
+    }
+  });
+
   it("returns parse mode for '/tf 5m' with error", () => {
     const r = parseCommandInput("/tf 5m");
     expect(r.mode).toBe("parse");
     if (r.mode === "parse") {
       expect(r.result.ok).toBe(false);
       if (!r.result.ok) expect(r.result.error).toMatch(/5m/);
-    }
-  });
-
-  it("returns parse mode for '/close BTC' with ok payload", () => {
-    const r = parseCommandInput("/close BTC");
-    expect(r.mode).toBe("parse");
-    if (r.mode === "parse") {
-      expect(r.result.ok).toBe(true);
     }
   });
 
@@ -368,5 +314,54 @@ describe("parseCommandInput", () => {
     if (r.mode === "parse") {
       expect(r.result.ok).toBe(false);
     }
+  });
+});
+
+// ── Integration: end-to-end registry path ─────────────────────────────────────
+//
+// Asserts the COMMANDS registry is reachable via its public parse → run path
+// using a mock CommandCtx. This is the closest we can get to "Enter actually
+// triggers setTimeframe" without setting up a DOM environment for cmdk.
+// (Vitest config is environment:"node", include:"src/**/*.test.ts".)
+
+describe("COMMANDS registry — parse → run integration", () => {
+  it("'/tf 4h' parses then runs ctx.setTimeframe('4H')", () => {
+    const ctx = makeCtx();
+    const parsed = parseCommandInput("/tf 4h");
+    expect(parsed.mode).toBe("parse");
+    if (parsed.mode !== "parse") return;
+    expect(parsed.result.ok).toBe(true);
+    if (!parsed.result.ok) return;
+    void parsed.command.run(parsed.result.payload, ctx);
+    expect(ctx.setTimeframe).toHaveBeenCalledTimes(1);
+    expect(ctx.setTimeframe).toHaveBeenCalledWith("4H");
+    expect(ctx.setOverlays).not.toHaveBeenCalled();
+  });
+
+  it("'/toggle ema20' parses then runs ctx.setOverlays() flipping ema20", () => {
+    const ctx = makeCtx({ overlays: { ema20: false, ema50: false, volume: true } });
+    const parsed = parseCommandInput("/toggle ema20");
+    expect(parsed.mode).toBe("parse");
+    if (parsed.mode !== "parse") return;
+    expect(parsed.result.ok).toBe(true);
+    if (!parsed.result.ok) return;
+    void parsed.command.run(parsed.result.payload, ctx);
+    expect(ctx.setOverlays).toHaveBeenCalledTimes(1);
+    const updater = vi.mocked(ctx.setOverlays).mock.calls[0][0];
+    expect(updater({ ema20: false, ema50: false, volume: true })).toEqual({
+      ema20: true,
+      ema50: false,
+      volume: true,
+    });
+  });
+
+  it("'/Tf 4h' (case-insensitive) reaches /tf and calls setTimeframe", () => {
+    const ctx = makeCtx();
+    const parsed = parseCommandInput("/Tf 4h");
+    expect(parsed.mode).toBe("parse");
+    if (parsed.mode !== "parse") return;
+    if (!parsed.result.ok) throw new Error("expected ok parse");
+    void parsed.command.run(parsed.result.payload, ctx);
+    expect(ctx.setTimeframe).toHaveBeenCalledWith("4H");
   });
 });

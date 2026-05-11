@@ -1,13 +1,18 @@
 /**
  * cmdk-commands — Command registry for the ⌘K palette.
  *
- * Issue #316: /tf, /close, /toggle commands.
+ * Issue #316: /tf, /toggle commands.
  *
  * Design rules:
  *  - parse() is a pure function — no side effects, easy to unit-test.
- *  - run()   receives a WorkstationContext and may be async, but in v0 all
- *    three commands are synchronous.
- *  - Commands are identified by their `name` string ("/tf", "/close", etc.).
+ *  - run()   receives a WorkstationContext and may be async, but in v0 both
+ *    commands are synchronous.
+ *  - Commands are identified by their `name` string ("/tf", "/toggle"); lookup
+ *    is case-insensitive so "/Tf 4h" works.
+ *
+ * NOTE: `/close <sym>` was deferred — no real position-close handler exists in
+ * the admin app today (PositionRail's Close button is disabled, no backend
+ * endpoint). Re-introduction tracked in a follow-up issue from PR #326 review.
  */
 
 // ── WorkstationContext ────────────────────────────────────────────────────────
@@ -27,27 +32,27 @@ export interface WorkstationContext {
   overlays: OverlayState;
   /** Toggle a chart overlay. */
   setOverlays: (updater: (prev: OverlayState) => OverlayState) => void;
-  /** Close the active position for a symbol.  Mocked in v0 — live trading not enabled. */
-  closePosition: (symbol: string) => void;
-  /** Mock position data for the /close preview. null = no open position. */
-  position: PositionSnapshot | null;
 }
 
 export type Timeframe = "15m" | "1H" | "4H" | "1D" | "1W";
 
-export type OverlayKey = "ema20" | "ema50" | "volume";
+/** Valid overlay keys, ordered for display. */
+export const OVERLAY_KEYS = ["ema20", "ema50", "volume"] as const;
+export type OverlayKey = (typeof OVERLAY_KEYS)[number];
+
+/**
+ * Validate a raw string against the known overlay keys.
+ * Returns the typed key on success or null on unknown input — the caller is
+ * responsible for surfacing a helpful error message.
+ */
+export function parseOverlayKey(raw: string): OverlayKey | null {
+  return (OVERLAY_KEYS as readonly string[]).includes(raw) ? (raw as OverlayKey) : null;
+}
 
 export interface OverlayState {
   ema20: boolean;
   ema50: boolean;
   volume: boolean;
-}
-
-export interface PositionSnapshot {
-  symbol: string;
-  size: number;
-  mark: number;
-  pnl: number;
 }
 
 // ── Command type ──────────────────────────────────────────────────────────────
@@ -114,48 +119,7 @@ export const tfCommand: Command<Timeframe> = {
   },
 };
 
-// ── /close — Close active position for symbol ─────────────────────────────────
-
-export interface ClosePayload {
-  symbol: string;
-}
-
-export const closeCommand: Command<ClosePayload> = {
-  name: "/close",
-  description: "Close active position",
-  args: "<symbol>",
-
-  parse(input) {
-    const symbol = input.trim().toUpperCase();
-    if (!symbol) {
-      return { ok: false, error: "Missing symbol argument. Example: /close BTC" };
-    }
-    if (!/^[A-Z]{2,10}$/.test(symbol)) {
-      return {
-        ok: false,
-        error: `Invalid symbol "${symbol}". Expected 2–10 uppercase letters (e.g. BTC, ETH).`,
-      };
-    }
-    return { ok: true, payload: { symbol } };
-  },
-
-  run({ symbol }, ctx) {
-    ctx.closePosition(symbol);
-  },
-
-  preview({ symbol }, ctx) {
-    if (ctx.position && ctx.position.symbol === symbol) {
-      const { size, mark, pnl } = ctx.position;
-      const pnlStr = pnl >= 0 ? `+${pnl.toLocaleString()}` : pnl.toLocaleString();
-      return `Will close ${size.toFixed(2)} ${symbol} at MARK ${mark.toLocaleString()} — PnL ${pnlStr}`;
-    }
-    return `Will close ${symbol} position`;
-  },
-};
-
 // ── /toggle — Toggle chart overlay ───────────────────────────────────────────
-
-const VALID_OVERLAYS: OverlayKey[] = ["ema20", "ema50", "volume"];
 
 export interface TogglePayload {
   overlay: OverlayKey;
@@ -167,20 +131,21 @@ export const toggleCommand: Command<TogglePayload> = {
   args: "<ema20|ema50|volume>",
 
   parse(input) {
-    const arg = input.trim().toLowerCase() as OverlayKey;
+    const arg = input.trim().toLowerCase();
     if (!arg) {
       return {
         ok: false,
-        error: `Missing overlay argument. Valid: ${VALID_OVERLAYS.join(", ")}`,
+        error: `Missing overlay argument. Valid: ${OVERLAY_KEYS.join(", ")}`,
       };
     }
-    if (!VALID_OVERLAYS.includes(arg)) {
+    const overlay = parseOverlayKey(arg);
+    if (!overlay) {
       return {
         ok: false,
-        error: `Unknown overlay "${arg}"; valid: ema20, ema50, volume`,
+        error: `Unknown overlay "${arg}"; valid: ${OVERLAY_KEYS.join(", ")}`,
       };
     }
-    return { ok: true, payload: { overlay: arg } };
+    return { ok: true, payload: { overlay } };
   },
 
   run({ overlay }, ctx) {
@@ -199,16 +164,17 @@ export const toggleCommand: Command<TogglePayload> = {
 // Callers that need the typed payload use the individual exports above.
 const REGISTRY: Command<unknown>[] = [
   tfCommand as Command<unknown>,
-  closeCommand as Command<unknown>,
   toggleCommand as Command<unknown>,
 ];
 
 /**
- * Look up a command by its exact name (e.g. "/tf").
+ * Look up a command by its name (e.g. "/tf").  Case-insensitive — so "/Tf"
+ * and "/TF" both find /tf.
  * Returns `undefined` for unknown commands.
  */
 export function lookupCommand(name: string): Command<unknown> | undefined {
-  return REGISTRY.find((c) => c.name === name);
+  const key = name.toLowerCase();
+  return REGISTRY.find((c) => c.name.toLowerCase() === key);
 }
 
 /**
@@ -242,7 +208,8 @@ export function parseCommandInput(raw: string): CommandParseMode {
     return { mode: "list", filter: withoutSlash.toLowerCase() };
   }
 
-  const name = "/" + withoutSlash.slice(0, spaceIdx); // e.g. "/tf"
+  // Normalise the typed name to lowercase so "/Tf 4h" routes to /tf.
+  const name = "/" + withoutSlash.slice(0, spaceIdx).toLowerCase(); // e.g. "/tf"
   const args = withoutSlash.slice(spaceIdx + 1); // e.g. "4h"
 
   const command = lookupCommand(name);

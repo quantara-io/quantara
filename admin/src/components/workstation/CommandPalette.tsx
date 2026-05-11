@@ -329,8 +329,15 @@ export function CommandPalette({
           onClose();
           return;
         }
-        // In command mode, ↵ executes the command (if parse succeeded).
-        if (isCommandMode && e.key === "Enter") {
+        // In command "parse" mode (e.g. "/tf 4h"), ↵ executes the command.
+        // In "list" mode (e.g. "/" or "/tf" with no space), let cmdk handle
+        // ↵ so the selected Command.Item's onSelect fires for autocomplete.
+        if (
+          isCommandMode &&
+          e.key === "Enter" &&
+          commandParseResult?.mode === "parse" &&
+          commandParseResult.result.ok
+        ) {
           e.preventDefault();
           handleRunCommand();
         }
@@ -563,36 +570,42 @@ interface CommandModeContentProps {
   setQuery: (q: string) => void;
 }
 
-function CommandModeContent({ parseResult, visibleCommands, ctx, query }: CommandModeContentProps) {
+function CommandModeContent({
+  parseResult,
+  visibleCommands,
+  ctx,
+  query,
+  setQuery,
+}: CommandModeContentProps) {
   // ── "list" mode: show filtered command list ──────────────────────────────
   if (!parseResult || parseResult.mode === "list") {
     if (visibleCommands.length === 0) {
       return (
         <div className="py-8 text-center text-sm text-muted2">
-          Unknown command — see{" "}
-          <button
-            type="button"
-            className="font-mono text-brand hover:underline"
-            onClick={() => {
-              /* query is already "/" in this branch; nothing to do */
-            }}
-          >
-            /
-          </button>{" "}
-          for the list
+          Unknown command — type <span className="font-mono text-brand">/</span> for the list
         </div>
       );
     }
 
     return (
-      <div
+      <Command.Group
+        heading="Commands"
         className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2"
-        role="listbox"
-        aria-label="Available commands"
       >
-        <div className="px-4 py-2 text-2xs uppercase tracking-widest text-muted2">Commands</div>
         {visibleCommands.map((cmd) => (
-          <div key={cmd.name} className="flex items-start gap-3 px-4 py-2.5 text-sm text-ink">
+          // value matches the user-typed slash command verbatim so cmdk's
+          // fuzzy filter scores "/tf" against "/tf" cleanly.
+          <Command.Item
+            key={cmd.name}
+            value={cmd.name}
+            onSelect={() => {
+              // Auto-complete the slash command into the input so the user
+              // can immediately type the argument (e.g. picking /tf leaves
+              // them at "/tf " ready to type "4h").
+              setQuery(`${cmd.name} `);
+            }}
+            className="flex items-start gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
+          >
             <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0 mt-0.5">
               <TerminalIcon />
             </span>
@@ -601,9 +614,9 @@ function CommandModeContent({ parseResult, visibleCommands, ctx, query }: Comman
               <span className="ml-1.5 text-muted2 text-xs font-mono">{cmd.args}</span>
               <span className="block text-xs text-muted2 mt-0.5">{cmd.description}</span>
             </span>
-          </div>
+          </Command.Item>
         ))}
-      </div>
+      </Command.Group>
     );
   }
 
