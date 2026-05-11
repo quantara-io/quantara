@@ -13,6 +13,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
+  GetCommand,
   QueryCommand,
   ScanCommand,
   type QueryCommandInput,
@@ -116,7 +117,22 @@ export interface SignalHistoryPage {
  * DDB key: PK=pair, SK=signalId. We Query all rows for the pair, filter by
  * resolvedAt >= cutoff, and paginate via DDB LastEvaluatedKey encoded as a
  * base64url cursor.
+ *
+ * The `signal_outcomes` partition also contains rule-fan-out rows
+ * (signalId = "rule-fan-out#{rule}#{signalId}") written by
+ * `fanOutToRuleAttributionGSI` — those rows have no `resolvedAt`, and we
+ * never want to return them from /history. We add `attribute_exists(resolvedAt)`
+ * to the FilterExpression to drop them.
+ *
+ * DDB applies FilterExpression AFTER Limit, so fan-out rows still count
+ * against the page size and would leave pages sparse. As a heuristic, we
+ * scan 4x the requested limit internally and trim after filtering. This
+ * keeps the response dense in steady state without unbounded reads.
+ * Pagination cursor still uses DDB's LastEvaluatedKey (pre-filter) — the
+ * client may see slightly variable page sizes near partition boundaries.
  */
+const HISTORY_LIMIT_SAFETY_FACTOR = 4;
+
 export async function getSignalHistory(
   pair: string,
   window: string,
@@ -128,12 +144,15 @@ export async function getSignalHistory(
   const input: QueryCommandInput = {
     TableName: SIGNAL_OUTCOMES_TABLE,
     KeyConditionExpression: "pair = :pair",
-    FilterExpression: "resolvedAt >= :cutoff",
+    // attribute_exists(resolvedAt) drops rule-fan-out rows (no resolvedAt attr).
+    FilterExpression: "attribute_exists(resolvedAt) AND resolvedAt >= :cutoff",
     ExpressionAttributeValues: {
       ":pair": pair,
       ":cutoff": cutoff,
     },
-    Limit: limit,
+    // 4x safety factor: DDB filter runs AFTER Limit, so fan-out rows would
+    // leave pages sparse. Over-scan internally, then trim to `limit` below.
+    Limit: limit * HISTORY_LIMIT_SAFETY_FACTOR,
     ...(cursor
       ? {
           ExclusiveStartKey: JSON.parse(
@@ -144,7 +163,8 @@ export async function getSignalHistory(
   };
 
   const result = await client.send(new QueryCommand(input));
-  const outcomes = (result.Items ?? []) as z.infer<typeof SignalOutcomeEntry>[];
+  const allMatches = (result.Items ?? []) as z.infer<typeof SignalOutcomeEntry>[];
+  const outcomes = allMatches.slice(0, limit);
 
   const nextCursor = result.LastEvaluatedKey
     ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString("base64url")
@@ -160,67 +180,47 @@ export async function getSignalHistory(
 /**
  * Read the pre-aggregated accuracy badge from accuracy_aggregates.
  *
- * accuracy_aggregates PK: "pair#timeframe", SK: window.
- * We query across all timeframe variants for the pair and sum into one badge.
- * Returns null if no aggregate exists yet for this pair+window.
+ * accuracy_aggregates schema: hash key `pk = "{pair}#{timeframe}"`,
+ * range key `window`. We do a direct GetItem on the composite key — there is
+ * no honest way to aggregate across timeframes from a hash-key Query
+ * (DDB only allows `=` on a hash key, not `begins_with`), and summing
+ * pre-aggregated per-timeframe rows would also be statistically wrong
+ * (Brier / ECE are not linear across populations). The caller must pick
+ * a (pair, timeframe, window).
+ *
+ * Returns null if no aggregate exists for this (pair, timeframe, window).
  */
 export async function getAccuracyAggregate(
   pair: string,
+  timeframe: string,
   window: string,
 ): Promise<z.infer<typeof AccuracyBadge> | null> {
-  // Query all timeframe buckets for this pair using begins_with on pk.
   const result = await client.send(
-    new QueryCommand({
+    new GetCommand({
       TableName: ACCURACY_AGGREGATES_TABLE,
-      KeyConditionExpression: "begins_with(pk, :prefix) AND #w = :window",
-      ExpressionAttributeNames: { "#w": "window" },
-      ExpressionAttributeValues: {
-        ":prefix": `${pair}#`,
-        ":window": window,
+      Key: {
+        pk: `${pair}#${timeframe}`,
+        window,
       },
     }),
   );
 
-  const rows = result.Items ?? [];
-  if (rows.length === 0) return null;
+  const row = result.Item;
+  if (!row) return null;
 
-  // Sum across all timeframe rows into a single pair-level badge.
-  let totalResolved = 0;
-  let correctCount = 0;
-  let incorrectCount = 0;
-  let neutralCount = 0;
-  let invalidatedCount = 0;
-  let latestComputedAt = "";
-  let brierSum = 0;
-  let brierCount = 0;
-  let eceSum = 0;
-  let eceCount = 0;
-
-  for (const row of rows) {
-    totalResolved += (row["totalResolved"] as number | undefined) ?? 0;
-    correctCount += (row["correct"] as number | undefined) ?? 0;
-    incorrectCount += (row["incorrect"] as number | undefined) ?? 0;
-    neutralCount += (row["neutral"] as number | undefined) ?? 0;
-    invalidatedCount += (row["invalidatedExcluded"] as number | undefined) ?? 0;
-
-    const ca = (row["computedAt"] as string | undefined) ?? "";
-    if (ca > latestComputedAt) latestComputedAt = ca;
-
-    if (typeof row["brier"] === "number") {
-      brierSum += row["brier"] as number;
-      brierCount++;
-    }
-    if (typeof row["ece"] === "number") {
-      eceSum += row["ece"] as number;
-      eceCount++;
-    }
-  }
+  const totalResolved = (row["totalResolved"] as number | undefined) ?? 0;
+  const correctCount = (row["correct"] as number | undefined) ?? 0;
+  const incorrectCount = (row["incorrect"] as number | undefined) ?? 0;
+  const neutralCount = (row["neutral"] as number | undefined) ?? 0;
+  const invalidatedCount = (row["invalidatedExcluded"] as number | undefined) ?? 0;
+  const computedAt = (row["computedAt"] as string | undefined) ?? "";
 
   const directional = correctCount + incorrectCount;
   const accuracyPct = directional > 0 ? correctCount / directional : null;
 
   return {
     pair,
+    timeframe,
     window: window as "7d" | "30d" | "90d",
     totalResolved,
     correctCount,
@@ -228,9 +228,9 @@ export async function getAccuracyAggregate(
     neutralCount,
     invalidatedCount,
     accuracyPct,
-    brier: brierCount > 0 ? brierSum / brierCount : null,
-    ece: eceCount > 0 ? eceSum / eceCount : null,
-    computedAt: latestComputedAt,
+    brier: typeof row["brier"] === "number" ? (row["brier"] as number) : null,
+    ece: typeof row["ece"] === "number" ? (row["ece"] as number) : null,
+    computedAt,
   };
 }
 
@@ -247,9 +247,15 @@ export interface CalibrationResult {
  * Compute calibration chart data by reading raw signal_outcomes rows for the
  * given (pair, timeframe) and aggregating on the fly into K=10 bins.
  *
- * Reads up to 1000 rows — acceptable for the calibration endpoint which is
- * called infrequently and cacheable at the edge.
+ * Target sample is ~1000 directional rows for K=10 bins to be statistically
+ * meaningful. DDB applies FilterExpression AFTER Limit and the `signal_outcomes`
+ * partition contains rule-fan-out rows (no resolvedAt) + cross-timeframe rows
+ * that will be filtered out, so we over-scan by 4x and let the filter trim
+ * down. `attribute_exists(resolvedAt)` drops fan-out rows explicitly.
  */
+const CALIBRATION_TARGET_SAMPLE = 1000;
+const CALIBRATION_LIMIT_SAFETY_FACTOR = 4;
+
 export async function getCalibrationData(
   pair: string,
   timeframe: string,
@@ -261,14 +267,17 @@ export async function getCalibrationData(
     new QueryCommand({
       TableName: SIGNAL_OUTCOMES_TABLE,
       KeyConditionExpression: "pair = :pair",
-      FilterExpression: "resolvedAt >= :cutoff AND emittingTimeframe = :tf",
+      // attribute_exists(resolvedAt) drops rule-fan-out rows (no resolvedAt attr).
+      FilterExpression:
+        "attribute_exists(resolvedAt) AND resolvedAt >= :cutoff AND emittingTimeframe = :tf",
       ExpressionAttributeValues: {
         ":pair": pair,
         ":cutoff": cutoff,
         ":tf": timeframe,
       },
-      // Cap at 1000 rows — enough for calibration; avoids unbounded reads.
-      Limit: 1000,
+      // 4x safety factor: filter runs after Limit, so a Limit of 1000 yields
+      // far fewer post-filter rows in partitions with fan-out + multi-tf rows.
+      Limit: CALIBRATION_TARGET_SAMPLE * CALIBRATION_LIMIT_SAFETY_FACTOR,
     }),
   );
 

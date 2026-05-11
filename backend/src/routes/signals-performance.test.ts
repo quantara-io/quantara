@@ -87,6 +87,7 @@ const outcomeEntry = {
 
 const accuracyBadge = {
   pair: "BTC/USDT",
+  timeframe: "1h",
   window: "30d" as const,
   totalResolved: 100,
   correctCount: 60,
@@ -215,12 +216,13 @@ describe("GET /accuracy", () => {
     getAccuracyAggregateMock.mockResolvedValue(accuracyBadge);
 
     const app = await loadApp();
-    const res = await app.request("/accuracy?pair=BTC%2FUSDT&window=30d");
+    const res = await app.request("/accuracy?pair=BTC%2FUSDT&timeframe=1h&window=30d");
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as any;
     expect(body.success).toBe(true);
     expect(body.data.accuracy.pair).toBe("BTC/USDT");
+    expect(body.data.accuracy.timeframe).toBe("1h");
     expect(body.data.accuracy.totalResolved).toBe(100);
     expect(body.data.accuracy.correctCount).toBe(60);
     expect(body.data.accuracy.accuracyPct).toBeCloseTo(0.6667, 3);
@@ -228,20 +230,20 @@ describe("GET /accuracy", () => {
     expect(body.data.accuracy.ece).toBe(0.04);
   });
 
-  it("calls getAccuracyAggregate with pair and window", async () => {
+  it("calls getAccuracyAggregate with pair, timeframe, and window", async () => {
     getAccuracyAggregateMock.mockResolvedValue(accuracyBadge);
 
     const app = await loadApp();
-    await app.request("/accuracy?pair=ETH%2FUSDT&window=90d");
+    await app.request("/accuracy?pair=ETH%2FUSDT&timeframe=4h&window=90d");
 
-    expect(getAccuracyAggregateMock).toHaveBeenCalledWith("ETH/USDT", "90d");
+    expect(getAccuracyAggregateMock).toHaveBeenCalledWith("ETH/USDT", "4h", "90d");
   });
 
-  it("returns 404 when no aggregate exists for the pair+window", async () => {
+  it("returns 404 when no aggregate exists for the pair+timeframe+window", async () => {
     getAccuracyAggregateMock.mockResolvedValue(null);
 
     const app = await loadApp();
-    const res = await app.request("/accuracy?pair=BTC%2FUSDT&window=7d");
+    const res = await app.request("/accuracy?pair=BTC%2FUSDT&timeframe=1h&window=7d");
     expect(res.status).toBe(404);
 
     const body = (await res.json()) as any;
@@ -249,13 +251,19 @@ describe("GET /accuracy", () => {
     expect(body.error.code).toBe("NOT_FOUND");
   });
 
-  it("uses default window of 30d", async () => {
+  it("uses default window of 30d when only pair+timeframe provided", async () => {
     getAccuracyAggregateMock.mockResolvedValue(accuracyBadge);
 
     const app = await loadApp();
-    await app.request("/accuracy?pair=BTC%2FUSDT");
+    await app.request("/accuracy?pair=BTC%2FUSDT&timeframe=1h");
 
-    expect(getAccuracyAggregateMock).toHaveBeenCalledWith("BTC/USDT", "30d");
+    expect(getAccuracyAggregateMock).toHaveBeenCalledWith("BTC/USDT", "1h", "30d");
+  });
+
+  it("returns 400 when timeframe is omitted (now required)", async () => {
+    const app = await loadApp();
+    const res = await app.request("/accuracy?pair=BTC%2FUSDT&window=30d");
+    expect(res.status).toBe(400);
   });
 });
 

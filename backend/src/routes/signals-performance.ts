@@ -111,8 +111,8 @@ const accuracyRoute = createRoute({
 });
 
 signalsPerformance.openapi(accuracyRoute, async (c) => {
-  const { pair, window } = c.req.valid("query");
-  const accuracy = await getAccuracyAggregate(pair, window);
+  const { pair, timeframe, window } = c.req.valid("query");
+  const accuracy = await getAccuracyAggregate(pair, timeframe, window);
 
   if (!accuracy) {
     return c.json(
@@ -121,7 +121,7 @@ signalsPerformance.openapi(accuracyRoute, async (c) => {
         error: {
           code: "NOT_FOUND",
           message:
-            `No accuracy data found for pair=${pair} window=${window}. ` +
+            `No accuracy data found for pair=${pair} timeframe=${timeframe} window=${window}. ` +
             "Accuracy aggregates are computed as signals resolve — check back after outcomes have been recorded.",
         },
       } satisfies z.infer<typeof AccuracyNotFoundSchema>,

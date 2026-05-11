@@ -70,6 +70,14 @@ export const SignalHistoryPerformanceResponse = z
 export const SignalAccuracyQuerySchema = z
   .object({
     pair: z.string().describe("Trading pair e.g. BTC/USDT"),
+    // `timeframe` is REQUIRED. The accuracy_aggregates table is keyed
+    // `pk = "{pair}#{timeframe}"`, so we cannot honestly aggregate across
+    // timeframes from a hash-key Query (DDB only allows `=` on a hash key,
+    // not `begins_with`). Each (pair, timeframe, window) is its own stored
+    // row — the caller must pick one.
+    timeframe: z
+      .enum(["15m", "1h", "4h", "1d"])
+      .describe("Emitting timeframe — selects the accuracy bucket"),
     window: AccuracyWindowEnum.default("30d").describe("Rolling window: 7d | 30d | 90d"),
   })
   .openapi("SignalAccuracyQuery");
@@ -78,6 +86,7 @@ export const SignalAccuracyQuerySchema = z
 export const AccuracyBadge = z
   .object({
     pair: z.string(),
+    timeframe: z.string(),
     window: AccuracyWindowEnum,
     totalResolved: z.number(),
     correctCount: z.number(),

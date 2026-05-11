@@ -216,24 +216,45 @@ resource "aws_iam_role_policy" "lambda_signals_performance" {
   name = "${local.prefix}-signals-performance"
   role = aws_iam_role.lambda.id
 
+  # Two statements instead of one combined Action × Resource matrix — IAM
+  # treats a single statement's actions and resources as a cartesian product,
+  # which would over-grant `Scan` on `signal_outcomes` and
+  # `accuracy_aggregates` even though the code only Queries / GetItems them.
+  # Splitting keeps each grant scoped to the action it actually needs.
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:Query",
-        "dynamodb:GetItem",
-        "dynamodb:Scan",
-      ]
-      Resource = [
-        aws_dynamodb_table.signal_outcomes.arn,
-        "${aws_dynamodb_table.signal_outcomes.arn}/index/*",
-        aws_dynamodb_table.accuracy_aggregates.arn,
-        "${aws_dynamodb_table.accuracy_aggregates.arn}/index/*",
-        aws_dynamodb_table.rule_attribution.arn,
-        "${aws_dynamodb_table.rule_attribution.arn}/index/*",
-      ]
-    }]
+    Statement = [
+      {
+        # Query + GetItem on the two tables the API code only Queries/Gets.
+        # /history + /calibration → Query signal_outcomes.
+        # /accuracy              → GetItem accuracy_aggregates.
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Query",
+          "dynamodb:GetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.signal_outcomes.arn,
+          "${aws_dynamodb_table.signal_outcomes.arn}/index/*",
+          aws_dynamodb_table.accuracy_aggregates.arn,
+          "${aws_dynamodb_table.accuracy_aggregates.arn}/index/*",
+        ]
+      },
+      {
+        # /attribution scans rule_attribution (~560 rows max, per the
+        # Terraform comment on that table). Scan is intentional here.
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Query",
+          "dynamodb:GetItem",
+          "dynamodb:Scan",
+        ]
+        Resource = [
+          aws_dynamodb_table.rule_attribution.arn,
+          "${aws_dynamodb_table.rule_attribution.arn}/index/*",
+        ]
+      },
+    ]
   })
 }
 
