@@ -3,14 +3,21 @@
  *
  * The vitest config uses environment:"node" and includes only *.test.ts,
  * so React rendering tests are covered by manual test plan. These tests cover
- * the pure-logic exports: loadRecentSymbols, pushRecentSymbol, signalStrengthLabel,
- * signalTone, and formatSignalDate.
+ * the pure-logic exports: loadRecentSymbols, pushRecentSymbol, Markets scoring
+ * helpers (fuzzyScore / recencyFactor / scoreMarket / rankMarkets), Signals
+ * helpers (signalStrengthLabel / signalTone / formatSignalDate), and the
+ * fetchSignalsForPair data path with its 30 s module-level cache.
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   loadRecentSymbols,
   pushRecentSymbol,
+  fuzzyScore,
+  recencyFactor,
+  scoreMarket,
+  rankMarkets,
+  touchRecentTimestamp,
   signalStrengthLabel,
   signalTone,
   formatSignalDate,
@@ -385,5 +392,173 @@ describe("fetchSignalsForPair", () => {
     expect(btc).toEqual(btcRows);
     expect(eth).toEqual(ethRows);
     expect(__getSignalCacheSizeForTests()).toBe(2);
+  });
+});
+
+// ── fuzzyScore ────────────────────────────────────────────────────────────────
+
+describe("fuzzyScore", () => {
+  it("returns 0.5 for empty query (all symbols match equally)", () => {
+    expect(fuzzyScore("", "BTC")).toBe(0.5);
+  });
+
+  it("returns 1.0 for exact match (case-insensitive)", () => {
+    expect(fuzzyScore("BTC", "BTC")).toBe(1.0);
+    expect(fuzzyScore("btc", "BTC")).toBe(1.0);
+  });
+
+  it("returns 0.8 for prefix match", () => {
+    expect(fuzzyScore("BT", "BTC")).toBe(0.8);
+    expect(fuzzyScore("et", "ETH")).toBe(0.8);
+  });
+
+  it("returns 0.5 for substring match (not prefix)", () => {
+    // "OL" is a substring of "SOL" but not a prefix
+    expect(fuzzyScore("OL", "SOL")).toBe(0.5);
+  });
+
+  it("returns 0 for no match", () => {
+    expect(fuzzyScore("xyz", "BTC")).toBe(0);
+  });
+
+  it("surfaces ETH/USDT as top fuzzy result for 'eth'", () => {
+    expect(fuzzyScore("eth", "ETH")).toBeGreaterThan(0);
+    expect(fuzzyScore("eth", "BTC")).toBe(0);
+  });
+});
+
+// ── recencyFactor ─────────────────────────────────────────────────────────────
+
+const TS_KEY = "q.cmdk.recent.ts";
+const NOW = 1_700_000_000_000; // fixed epoch for deterministic tests
+
+describe("recencyFactor", () => {
+  it("returns 0 for a symbol not in recent list", () => {
+    expect(recencyFactor("XRP", ["BTC", "ETH"], NOW)).toBe(0);
+  });
+
+  it("returns 1.0 when symbol was used less than 1 hour ago", () => {
+    const ts = NOW - 30 * 60 * 1000; // 30 min ago
+    localStorageMock.setItem(TS_KEY, JSON.stringify({ BTC: ts }));
+    expect(recencyFactor("BTC", ["BTC"], NOW)).toBe(1.0);
+  });
+
+  it("returns 0.5 when symbol was used today (1h–24h ago)", () => {
+    const ts = NOW - 4 * 3600 * 1000; // 4 hours ago
+    localStorageMock.setItem(TS_KEY, JSON.stringify({ ETH: ts }));
+    expect(recencyFactor("ETH", ["ETH"], NOW)).toBe(0.5);
+  });
+
+  it("returns 0.1 when symbol was used within the past week", () => {
+    const ts = NOW - 3 * 86_400_000; // 3 days ago
+    localStorageMock.setItem(TS_KEY, JSON.stringify({ SOL: ts }));
+    expect(recencyFactor("SOL", ["SOL"], NOW)).toBe(0.1);
+  });
+
+  it("returns 0 when symbol was used more than a week ago", () => {
+    const ts = NOW - 10 * 86_400_000; // 10 days ago
+    localStorageMock.setItem(TS_KEY, JSON.stringify({ DOGE: ts }));
+    expect(recencyFactor("DOGE", ["DOGE"], NOW)).toBe(0);
+  });
+
+  it("uses position-based fallback when no timestamp is stored", () => {
+    // No TS_KEY set; BTC at index 0 gets 1.0, ETH at index 1 gets 0.5
+    const factor0 = recencyFactor("BTC", ["BTC", "ETH", "SOL"], NOW);
+    const factor1 = recencyFactor("ETH", ["BTC", "ETH", "SOL"], NOW);
+    expect(factor0).toBe(1.0);
+    expect(factor1).toBe(0.5);
+  });
+});
+
+// ── scoreMarket ───────────────────────────────────────────────────────────────
+
+describe("scoreMarket", () => {
+  it("returns 0 for a pair that does not fuzzy-match the query", () => {
+    expect(scoreMarket("ETH/USDT", "btc", [], NOW)).toBe(0);
+  });
+
+  it("ranks BTC above other 'b' matches when BTC is recent", () => {
+    // BTC is recent (<1h) → recency=1.0; suppose DOGE starts with 'd', not 'b'
+    // Use "b" query: BTC prefix-matches (0.8), recency 1.0 → 0.8*0.6 + 1.0*0.4 = 0.88
+    const ts = NOW - 10 * 60 * 1000; // 10 min ago
+    localStorageMock.setItem(TS_KEY, JSON.stringify({ BTC: ts }));
+    const btcScore = scoreMarket("BTC/USDT", "b", ["BTC"], NOW);
+    expect(btcScore).toBeCloseTo(0.88);
+  });
+
+  it("gives correct composite score for exact match + no recency", () => {
+    // fuzzy=1.0, recency=0 → 0.6*1.0 + 0.4*0 = 0.6
+    expect(scoreMarket("ETH/USDT", "eth", [], NOW)).toBeCloseTo(0.6);
+  });
+});
+
+// ── rankMarkets ───────────────────────────────────────────────────────────────
+
+describe("rankMarkets", () => {
+  it("surfaces ETH/USDT as the top result for query 'eth'", () => {
+    const results = rankMarkets("eth", [], NOW);
+    expect(results[0].pair).toBe("ETH/USDT");
+  });
+
+  it("returns an empty array when query matches no pair", () => {
+    const results = rankMarkets("zzz", [], NOW);
+    expect(results).toHaveLength(0);
+  });
+
+  it("ranks BTC above non-matching 'b' symbols when BTC is recent (recency weighting)", () => {
+    // With query "b", BTC prefix-matches (0.8); with BTC recent (<1h) score is 0.88.
+    // DOGE starts with 'd' → no match; only BTC matches "b" in our PAIRS.
+    const ts = NOW - 10 * 60 * 1000;
+    localStorageMock.setItem(TS_KEY, JSON.stringify({ BTC: ts }));
+    const results = rankMarkets("b", ["BTC"], NOW);
+    expect(results[0].symbol).toBe("BTC");
+    expect(results[0].score).toBeGreaterThan(0);
+  });
+
+  it("all pairs appear when query is empty (empty query → fuzz=0.5 > 0)", () => {
+    const results = rankMarkets("", [], NOW);
+    // All PAIRS should appear since fuzzyScore("", sym) = 0.5 > 0
+    expect(results.length).toBeGreaterThan(0);
+  });
+});
+
+// ── touchRecentTimestamp ──────────────────────────────────────────────────────
+
+describe("touchRecentTimestamp", () => {
+  it("writes a timestamp for the given symbol", () => {
+    touchRecentTimestamp("SOL", NOW);
+    const raw = localStorageMock.getItem(TS_KEY);
+    expect(raw).not.toBeNull();
+    const ts = JSON.parse(raw ?? "{}") as Record<string, number>;
+    expect(ts["SOL"]).toBe(NOW);
+  });
+
+  it("updates an existing timestamp without clearing others", () => {
+    localStorageMock.setItem(TS_KEY, JSON.stringify({ BTC: 1234 }));
+    touchRecentTimestamp("ETH", NOW);
+    const raw = localStorageMock.getItem(TS_KEY);
+    const ts = JSON.parse(raw ?? "{}") as Record<string, number>;
+    expect(ts["BTC"]).toBe(1234);
+    expect(ts["ETH"]).toBe(NOW);
+  });
+});
+
+// ── pushRecentSymbol bumps Recent (select-row effect) ─────────────────────────
+
+describe("select-row effect: pushRecentSymbol bumps Recent", () => {
+  it("after selecting ETH, ETH is in the #1 slot of Recent", () => {
+    localStorageMock.setItem(LS_KEY, JSON.stringify(["BTC", "SOL", "XRP"]));
+    const updated = pushRecentSymbol("ETH");
+    expect(updated[0]).toBe("ETH");
+    expect(updated).toContain("BTC");
+    expect(updated).toContain("SOL");
+  });
+
+  it("selecting the same symbol twice keeps it at #1 (dedup)", () => {
+    localStorageMock.setItem(LS_KEY, JSON.stringify(["BTC", "ETH", "SOL"]));
+    pushRecentSymbol("ETH");
+    const result = pushRecentSymbol("ETH");
+    expect(result[0]).toBe("ETH");
+    expect(result.filter((s) => s === "ETH")).toHaveLength(1);
   });
 });

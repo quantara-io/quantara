@@ -2,15 +2,17 @@
  * CommandPalette — ⌘K command palette shell for the Workstation.
  *
  * Issue #313: modal overlay, keybinding, Recent + Jump To sections.
+ * Issue #314: Markets section — fuzzy symbol search with recency-weighted ranking.
  * Issue #315: Signals section — fetch by symbol with 30 s cache, # prefix mode.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Command } from "cmdk";
 import { useNavigate } from "react-router-dom";
-import type { BlendedSignal } from "@quantara/shared";
+import { PAIRS, type BlendedSignal } from "@quantara/shared";
 
 import { apiFetch } from "../../lib/api";
+import { formatPrice } from "../ui/MonoNum";
 
 // ── localStorage helpers ──────────────────────────────────────────────────────
 
@@ -40,6 +42,113 @@ export function pushRecentSymbol(symbol: string): string[] {
     // storage full — silent fail
   }
   return next;
+}
+
+// ── Markets scoring ───────────────────────────────────────────────────────────
+
+/**
+ * Recency factor for a symbol.
+ * - 1.0 if last used < 1h ago
+ * - 0.5 if last used today (but ≥ 1h ago)
+ * - 0.1 if last used within the past week
+ * - 0.0 otherwise (or not in recent list at all)
+ */
+export function recencyFactor(symbol: string, recent: string[], nowMs?: number): number {
+  const idx = recent.indexOf(symbol);
+  if (idx === -1) return 0;
+
+  const now = nowMs ?? Date.now();
+  const raw = localStorage.getItem("q.cmdk.recent.ts");
+  let timestamps: Record<string, number> = {};
+  try {
+    if (raw) timestamps = JSON.parse(raw) as Record<string, number>;
+  } catch {
+    // corrupt — treat as no timestamps
+  }
+
+  const ts = timestamps[symbol];
+  if (!ts) {
+    // Symbol is in recent but has no timestamp — treat as position-based fallback.
+    // Earlier index = more recent; give top position maximum factor.
+    return idx === 0 ? 1.0 : idx === 1 ? 0.5 : 0.1;
+  }
+
+  const age = now - ts;
+  const ONE_HOUR = 3_600_000;
+  const ONE_DAY = 86_400_000;
+  const ONE_WEEK = 7 * ONE_DAY;
+
+  if (age < ONE_HOUR) return 1.0;
+  if (age < ONE_DAY) return 0.5;
+  if (age < ONE_WEEK) return 0.1;
+  return 0;
+}
+
+/**
+ * Fuzzy score for a query against a symbol code.
+ * Returns 1.0 for exact match, 0.8 for prefix match,
+ * 0.5 for substring match, 0 for no match.
+ */
+export function fuzzyScore(query: string, symbol: string): number {
+  if (!query) return 0.5; // empty query → all symbols match equally
+  const q = query.toLowerCase();
+  const s = symbol.toLowerCase();
+  if (s === q) return 1.0;
+  if (s.startsWith(q)) return 0.8;
+  if (s.includes(q)) return 0.5;
+  return 0;
+}
+
+/**
+ * Composite ranking score for a pair (e.g. "BTC/USDT") against a query and recent list.
+ * score = fuzzy(query, symbol) * 0.6 + recency(symbol) * 0.4
+ * Returns 0 if the symbol doesn't match the query at all.
+ */
+export function scoreMarket(pair: string, query: string, recent: string[], nowMs?: number): number {
+  const symbol = pair.split("/")[0] ?? pair;
+  const fuzz = fuzzyScore(query, symbol);
+  if (fuzz === 0) return 0; // no match → exclude
+  const recency = recencyFactor(symbol, recent, nowMs);
+  return fuzz * 0.6 + recency * 0.4;
+}
+
+/**
+ * Rank all PAIRS by composite score and return only those with score > 0.
+ * When query is empty, returns all pairs ordered by recency then alphabetical.
+ */
+export function rankMarkets(
+  query: string,
+  recent: string[],
+  nowMs?: number,
+): Array<{ pair: string; symbol: string; score: number }> {
+  return (PAIRS as readonly string[])
+    .map((pair) => ({
+      pair,
+      symbol: pair.split("/")[0] ?? pair,
+      score: scoreMarket(pair, query, recent, nowMs),
+    }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Persist a timestamp for when the symbol was last selected, used by recencyFactor.
+ */
+export function touchRecentTimestamp(symbol: string, nowMs?: number): void {
+  const now = nowMs ?? Date.now();
+  const raw = localStorage.getItem("q.cmdk.recent.ts");
+  let timestamps: Record<string, number> = {};
+  try {
+    if (raw) timestamps = JSON.parse(raw) as Record<string, number>;
+  } catch {
+    // corrupt — start fresh
+  }
+  timestamps[symbol] = now;
+  try {
+    localStorage.setItem("q.cmdk.recent.ts", JSON.stringify(timestamps));
+  } catch {
+    // storage full — silent fail
+  }
 }
 
 // ── Jump To rows ─────────────────────────────────────────────────────────────
@@ -431,6 +540,12 @@ export interface SignalSelection {
   asOf: number;
 }
 
+/** Live price + 24h delta for one pair, provided by the Workstation's poll. */
+export interface MarketTick {
+  price: number | null;
+  change24hPct: number | null;
+}
+
 interface CommandPaletteProps {
   open: boolean;
   onClose: () => void;
@@ -443,7 +558,7 @@ interface CommandPaletteProps {
    * and ad-hoc usages keep working.
    */
   activePair?: string;
-  /** Called when user selects a symbol from Recent */
+  /** Called when user selects a symbol from Recent or Markets */
   onSelectSymbol?: (symbol: string) => void;
   /**
    * Called when user selects a signal row.
@@ -451,6 +566,12 @@ interface CommandPaletteProps {
    * seeking the chart viewport to `asOf`.
    */
   onSelectSignal?: (selection: SignalSelection) => void;
+  /**
+   * Live market data keyed by pair (e.g. "BTC/USDT").
+   * Provided by the Workstation so the Markets section can show current price
+   * and 24h delta without making its own API calls.
+   */
+  markets?: Map<string, MarketTick>;
 }
 
 export function CommandPalette({
@@ -459,12 +580,16 @@ export function CommandPalette({
   activePair = "",
   onSelectSymbol,
   onSelectSignal,
+  markets,
 }: CommandPaletteProps) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState<string[]>(() => loadRecentSymbols());
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+
+  // Ranked markets — recomputed whenever query or recent list changes.
+  const rankedMarkets = useMemo(() => rankMarkets(query, recent), [query, recent]);
 
   // Capture trigger element on open so we can restore focus on close.
   useEffect(() => {
@@ -525,6 +650,7 @@ export function CommandPalette({
 
   const handleSelectSymbol = useCallback(
     (symbol: string) => {
+      touchRecentTimestamp(symbol);
       const updated = pushRecentSymbol(symbol);
       setRecent(updated);
       onSelectSymbol?.(symbol);
@@ -649,6 +775,47 @@ export function CommandPalette({
               </Command.Group>
             )}
 
+            {/* Markets — fuzzy-ranked symbols with live price + 24h delta.
+                Hidden in `#` mode so the palette stays focused on signals. */}
+            {!hashMode && rankedMarkets.length > 0 && (
+              <Command.Group
+                heading="Markets"
+                className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-muted2 border-t border-line"
+              >
+                {rankedMarkets.map(({ pair, symbol }) => {
+                  const tick = markets?.get(pair);
+                  return (
+                    <Command.Item
+                      key={pair}
+                      value={`market ${symbol} ${pair}`}
+                      onSelect={() => handleSelectSymbol(symbol)}
+                      className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm text-ink aria-selected:bg-sunken transition-colors"
+                    >
+                      <span className="w-6 h-6 rounded-full bg-sunken border border-line flex items-center justify-center shrink-0">
+                        <span className="text-2xs font-semibold text-ink">{symbol[0]}</span>
+                      </span>
+                      <span className="flex-1 min-w-0 font-medium">{pair}</span>
+                      {tick && tick.price !== null && (
+                        <span className="num text-xs text-ink2 shrink-0">
+                          {formatPrice(tick.price)}
+                        </span>
+                      )}
+                      {tick && tick.change24hPct !== null && (
+                        <span
+                          className={`num text-xs shrink-0 ${
+                            tick.change24hPct >= 0 ? "text-up" : "text-down"
+                          }`}
+                        >
+                          {tick.change24hPct >= 0 ? "+" : ""}
+                          {tick.change24hPct.toFixed(2)}%
+                        </span>
+                      )}
+                    </Command.Item>
+                  );
+                })}
+              </Command.Group>
+            )}
+
             {/* Signals section.
                 Rendered whenever `signalPair` resolves AND, in `#` mode,
                 always — even with an empty `signalPair` — so the user sees a
@@ -663,7 +830,7 @@ export function CommandPalette({
               />
             )}
 
-            {/* Jump To — hidden in # mode */}
+            {/* Jump To — hidden in `#` mode (signals-only focus) */}
             {!hashMode && (
               <Command.Group
                 heading="Jump To"
@@ -731,8 +898,11 @@ export function useCommandPalette(onSelectSymbol?: (symbol: string) => void) {
         if (idx < recent.length) {
           e.preventDefault();
           const symbol = recent[idx];
+          touchRecentTimestamp(symbol);
           pushRecentSymbol(symbol);
           onSelectSymbol?.(symbol);
+          // Close the palette if it's currently open.
+          setOpen(false);
         }
       }
     }

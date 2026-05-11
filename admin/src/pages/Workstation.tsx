@@ -5,6 +5,7 @@ import { AlertsRail } from "../components/workstation/AlertsRail";
 import {
   CommandPalette,
   useCommandPalette,
+  type MarketTick,
   type SignalSelection,
 } from "../components/workstation/CommandPalette";
 import { type Candle, MarketChart } from "../components/workstation/MarketChart";
@@ -190,6 +191,19 @@ export function Workstation() {
   const meta = useMemo(() => metaForPair(activePair), [activePair]);
   const stats = useMemo(() => deriveStats(data, candles, activePair), [data, candles, activePair]);
 
+  // Build a markets map for the CommandPalette — only the active pair has live data
+  // (the Workstation polls for one pair at a time; other pairs are shown without ticks).
+  const marketsMap = useMemo<Map<string, MarketTick>>(() => {
+    const m = new Map<string, MarketTick>();
+    if (stats.price !== null) {
+      m.set(activePair, {
+        price: stats.price,
+        change24hPct: stats.change24hPct,
+      });
+    }
+    return m;
+  }, [activePair, stats.price, stats.change24hPct]);
+
   return (
     <>
       <div className="grid grid-cols-[260px_minmax(0,1fr)_320px] min-h-[calc(100vh-5rem)]">
@@ -241,6 +255,7 @@ export function Workstation() {
         activePair={activePair}
         onSelectSymbol={handleSelectSymbol}
         onSelectSignal={handleSelectSignal}
+        markets={marketsMap}
       />
     </>
   );
