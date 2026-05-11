@@ -120,6 +120,11 @@ vi.mock("./calibration/math.js", () => ({
   applyPlattCalibration: applyPlattCalibrationMock,
 }));
 
+const listDisabledRuleKeysMock = vi.fn();
+vi.mock("./lib/rule-status-store.js", () => ({
+  listDisabledRuleKeys: listDisabledRuleKeysMock,
+}));
+
 // ---------------------------------------------------------------------------
 // Test data helpers
 // ---------------------------------------------------------------------------
@@ -279,9 +284,12 @@ beforeEach(() => {
   buildSentimentBundleMock.mockReset();
   getPlattRowMock.mockReset();
   applyPlattCalibrationMock.mockReset();
+  listDisabledRuleKeysMock.mockReset();
 
   // Default: no Platt coefficients available (backward-compat path).
   getPlattRowMock.mockResolvedValue(null);
+  // Default: no auto-disabled rules. Tests that care about the wiring override this.
+  listDisabledRuleKeysMock.mockResolvedValue(new Set<string>());
 
   process.env.TABLE_CLOSE_QUORUM = "test-close-quorum";
   process.env.TABLE_SIGNALS_V2 = "test-signals-v2";
@@ -1118,5 +1126,86 @@ describe("Platt calibration — emit path", () => {
     const signalPut = puts.find((c) => c[0]?.input?.TableName === "test-signals-v2");
     expect(signalPut).toBeDefined();
     expect(signalPut![0].input.Item.confidenceCalibrated).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8 §10.10 — auto-disabled rule wiring (AC #3)
+// ---------------------------------------------------------------------------
+
+describe("Phase 8 §10.10 — disabled rule wiring", () => {
+  it("loads disabled rule keys once per invocation and passes them to scoreTimeframe", async () => {
+    const disabledSet = new Set(["rsi-oversold#BTC/USDT#15m"]);
+    listDisabledRuleKeysMock.mockResolvedValueOnce(disabledSet);
+
+    // Provide a stored 1h IndicatorState so the non-emitting-TF re-score path
+    // also executes (so we can assert disabledRuleKeys threads to BOTH calls).
+    const stored1hState = makeIndicatorState();
+    getLatestIndicatorStateMock.mockImplementation(
+      (_pair: string, _exchange: string, tf: string) => {
+        if (tf === "1h") return Promise.resolve(stored1hState);
+        return Promise.resolve(null);
+      },
+    );
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // Cache is per-invocation: a single Lambda invocation should call
+    // listDisabledRuleKeys at most once even though scoreTimeframe is called
+    // multiple times (emitting + re-scored non-emitting TFs).
+    expect(listDisabledRuleKeysMock).toHaveBeenCalledTimes(1);
+
+    // Every scoreTimeframe call must receive disabledRuleKeys = the loaded set.
+    expect(scoreTimeframeMock).toHaveBeenCalled();
+    for (const call of scoreTimeframeMock.mock.calls) {
+      const options = call[3] as { disabledRuleKeys?: ReadonlySet<string> } | undefined;
+      expect(options?.disabledRuleKeys).toBe(disabledSet);
+    }
+  });
+
+  it("audit token 'disabled-eligible:<rule>' surfaces in the persisted signal's rulesFired", async () => {
+    // This is an integration-shape assertion: we wire scoreTimeframe to emit
+    // a vote whose rulesFired contains a "disabled-eligible:" entry, then
+    // confirm the entry survives the round-trip into the signals-v2 Put.
+    const voteWithDisabledEligible: TimeframeVote = {
+      ...makeVote("hold"),
+      rulesFired: ["disabled-eligible:rsi-oversold"],
+    };
+    scoreTimeframeMock.mockReturnValue(voteWithDisabledEligible);
+
+    // Blend echoes the same rulesFired through to the BlendedSignal so the Put
+    // captures it. (In production, blend.ts merges per-TF rulesFired into the
+    // top-level rulesFired; mocking the call is sufficient for this assertion.)
+    const blendedWithDisabledEligible: BlendedSignal = {
+      ...makeBlendedSignal(),
+      rulesFired: ["disabled-eligible:rsi-oversold"],
+    };
+    blendTimeframeVotesMock.mockReturnValue(blendedWithDisabledEligible);
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const signalsV2Put = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Put).toBeDefined();
+    const item = signalsV2Put![0].input.Item;
+    expect(item.rulesFired).toContain("disabled-eligible:rsi-oversold");
+  });
+
+  it("fails open when listDisabledRuleKeys throws — scoreTimeframe still receives an empty set", async () => {
+    listDisabledRuleKeysMock.mockRejectedValueOnce(new Error("ddb-throttled"));
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    // Handler should NOT have thrown — the batch record completes.
+    // scoreTimeframe should have been called with an empty disabledRuleKeys Set.
+    expect(scoreTimeframeMock).toHaveBeenCalled();
+    const firstCall = scoreTimeframeMock.mock.calls[0]!;
+    const options = firstCall[3] as { disabledRuleKeys?: ReadonlySet<string> } | undefined;
+    expect(options?.disabledRuleKeys).toBeInstanceOf(Set);
+    expect(options?.disabledRuleKeys?.size ?? -1).toBe(0);
   });
 });

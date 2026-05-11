@@ -29,6 +29,7 @@ import {
   FORCE_INDICATORS_TIMEFRAMES,
   FORCE_INDICATORS_EXCHANGES,
 } from "../services/admin-debug.service.js";
+import { listRuleStatuses, setManualOverride } from "../services/rule-status.service.js";
 
 const admin = new Hono();
 
@@ -1013,6 +1014,140 @@ admin.post("/debug/force-indicators", async (c) => {
     timeframe: timeframe as (typeof FORCE_INDICATORS_TIMEFRAMES)[number],
   });
   return c.json({ success: true as const, data: result });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/rule-status
+// Phase 8 §10.10: list all rule lifecycle status rows from the rule_status table.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/rule-status
+ *
+ * Returns all rule_status rows (≤280 entries — one per (rule, pair, TF) bucket).
+ * Each row includes status, brier, n, highBrierWindows, disabledAt, and
+ * manualOverrideUntil so the admin can see the current lifecycle state.
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/rule-status", async (c) => {
+  const items = await listRuleStatuses();
+  return c.json({ success: true as const, data: { items } });
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/admin/rule-status/:key
+// Phase 8 §10.10: set manual-override / re-enable a specific bucket.
+// ---------------------------------------------------------------------------
+
+/**
+ * PATCH /api/admin/rule-status/:key
+ *
+ * Upserts a rule_status row. The `:key` path param is the composite pk
+ * (`{rule}#{pair}#{TF}`, URL-encoded). Allows an admin to:
+ *   - Set status="manual-override" (prevents auto-disable by the prune job)
+ *   - Set status="enabled" (clears a previous disable or override)
+ *   - Set status="disabled" (manual disable — rare but supported)
+ *
+ * Body: { status: "manual-override" | "enabled" | "disabled", reason?: string, manualOverrideUntil?: string }
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+const VALID_OVERRIDE_STATUSES = ["manual-override", "enabled", "disabled"] as const;
+
+admin.patch("/rule-status/:key", async (c) => {
+  const key = c.req.param("key");
+  if (!key || key.trim() === "") {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "key path param is required" } },
+      400,
+    );
+  }
+  const pk = decodeURIComponent(key);
+
+  // Validate pk structure: must be "{rule}#{pair}#{TF}" — exactly two "#" separators.
+  // Reject both too-few parts (<3, e.g. missing TF) and too-many parts (>3, e.g. a
+  // stray "#" smuggled into the rule or pair) to keep downstream consumers honest.
+  const parts = pk.split("#");
+  if (parts.length !== 3) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: "key must be a composite pk in the form {rule}#{pair}#{TF}",
+        },
+      },
+      400,
+    );
+  }
+
+  // Guard JSON parsing: a malformed body should produce a 400, not a 500 from
+  // Hono's default error path. Hono's c.req.json() throws SyntaxError on bad
+  // input, which would otherwise surface as a generic server error.
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "request body must be valid JSON" },
+      },
+      400,
+    );
+  }
+  const auth = c.get("auth");
+
+  const { status, reason, manualOverrideUntil } = body;
+
+  if (
+    typeof status !== "string" ||
+    !(VALID_OVERRIDE_STATUSES as readonly string[]).includes(status)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `status must be one of: ${VALID_OVERRIDE_STATUSES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  if (reason !== undefined && typeof reason !== "string") {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "reason must be a string" } },
+      400,
+    );
+  }
+
+  if (manualOverrideUntil !== undefined) {
+    if (typeof manualOverrideUntil !== "string" || isNaN(Date.parse(manualOverrideUntil))) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: "manualOverrideUntil must be a valid ISO 8601 date string",
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  const record = await setManualOverride({
+    pk,
+    status: status as (typeof VALID_OVERRIDE_STATUSES)[number],
+    ...(typeof reason === "string" ? { reason } : {}),
+    ...(typeof manualOverrideUntil === "string" ? { manualOverrideUntil } : {}),
+    updatedBy: auth.userId,
+  });
+
+  return c.json({ success: true as const, data: { record } });
 });
 
 export { admin };

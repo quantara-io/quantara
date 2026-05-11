@@ -45,6 +45,8 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
           aws_dynamodb_table.campaigns.arn,
           aws_dynamodb_table.signals_v2.arn, "${aws_dynamodb_table.signals_v2.arn}/index/*",
           aws_dynamodb_table.indicator_state.arn,
+          # Phase 8 §10.10: admin rule-status routes (GET /admin/rule-status, PATCH /admin/rule-status/{key})
+          aws_dynamodb_table.rule_status.arn,
         ]
       },
       {
@@ -417,6 +419,7 @@ resource "aws_lambda_function" "api" {
       TABLE_SIGNAL_OUTCOMES       = aws_dynamodb_table.signal_outcomes.name
       TABLE_ACCURACY_AGGREGATES   = aws_dynamodb_table.accuracy_aggregates.name
       TABLE_RULE_ATTRIBUTION      = aws_dynamodb_table.rule_attribution.name
+      TABLE_RULE_STATUS           = aws_dynamodb_table.rule_status.name
       TABLE_SIGNALS_COLLECTION    = aws_dynamodb_table.signals_collection.name
       # Phase 7 Kelly unlock: signal-service.enrichWithRisk reads
       # kelly#{pair}#{TF}#{direction} rows from calibration-params on every

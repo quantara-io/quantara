@@ -1748,3 +1748,102 @@ describe("detectTags — Phase 2 (#253)", () => {
     expect(tags).not.toContain("rsi-overbought-watch");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8 §10.10: disabledRuleKeys — auto-disabled rule suppression
+// ---------------------------------------------------------------------------
+
+describe("scoreTimeframe — disabledRuleKeys (Phase 8 §10.10)", () => {
+  /** A rule that fires (rsi14=25 < 30). */
+  const fireingBullRule: Rule = {
+    name: "prune-test-bull",
+    direction: "bullish",
+    strength: 2.0,
+    when: (s) => s.rsi14 !== null && s.rsi14 < 30,
+    appliesTo: ["1h"],
+    requiresPrior: 0,
+  };
+
+  /** A second rule that also fires. */
+  const fireingBullRule2: Rule = {
+    name: "prune-test-bull-2",
+    direction: "bullish",
+    strength: 1.0,
+    when: (s) => s.rsi14 !== null && s.rsi14 < 30,
+    appliesTo: ["1h"],
+    requiresPrior: 0,
+  };
+
+  it("disabled rule is omitted from directional scoring", () => {
+    const state = makeState({ rsi14: 25, pair: "BTC/USDT", timeframe: "1h" });
+    // Disable prune-test-bull-2 — only prune-test-bull should score.
+    const disabledRuleKeys = new Set(["prune-test-bull-2#BTC/USDT#1h"]);
+    const vote = scoreTimeframe(
+      state,
+      [fireingBullRule, fireingBullRule2],
+      {},
+      {
+        disabledRuleKeys,
+      },
+    ) as TimeframeVote;
+    // Only fireingBullRule (strength 2.0) should contribute.
+    expect(vote.bullishScore).toBeCloseTo(2.0);
+    // prune-test-bull-2 should appear as disabled-eligible in rulesFired.
+    expect(vote.rulesFired).toContain("prune-test-bull");
+    expect(vote.rulesFired).toContain("disabled-eligible:prune-test-bull-2");
+  });
+
+  it("disabled rule that would fire appears in rulesFired as disabled-eligible:<name>", () => {
+    const state = makeState({ rsi14: 20, pair: "ETH/USDT", timeframe: "1h" });
+    const disabledRuleKeys = new Set(["prune-test-bull#ETH/USDT#1h"]);
+    const vote = scoreTimeframe(
+      state,
+      [fireingBullRule],
+      {},
+      { disabledRuleKeys },
+    ) as TimeframeVote;
+    expect(vote.rulesFired).toContain("disabled-eligible:prune-test-bull");
+    // The rule contributed nothing to the score.
+    expect(vote.bullishScore).toBe(0);
+  });
+
+  it("disabled rule that would NOT fire does not appear in rulesFired", () => {
+    // rsi14=50 → rule's when() returns false, so it won't fire even without disable.
+    const state = makeState({ rsi14: 50, pair: "BTC/USDT", timeframe: "1h" });
+    const disabledRuleKeys = new Set(["prune-test-bull#BTC/USDT#1h"]);
+    const vote = scoreTimeframe(state, [fireingBullRule], {}, { disabledRuleKeys });
+    // Rule would not fire anyway → should NOT appear as disabled-eligible:<name>.
+    if (vote !== null) {
+      expect(vote.rulesFired).not.toContain("disabled-eligible:prune-test-bull");
+    }
+  });
+
+  it("empty disabledRuleKeys set does not affect scoring", () => {
+    const state = makeState({ rsi14: 25, pair: "BTC/USDT", timeframe: "1h" });
+    const withoutDisabled = scoreTimeframe(state, [fireingBullRule], {}) as TimeframeVote;
+    const withEmptyDisabled = scoreTimeframe(
+      state,
+      [fireingBullRule],
+      {},
+      {
+        disabledRuleKeys: new Set(),
+      },
+    ) as TimeframeVote;
+    expect(withoutDisabled.bullishScore).toBe(withEmptyDisabled.bullishScore);
+    expect(withoutDisabled.rulesFired).toEqual(withEmptyDisabled.rulesFired);
+  });
+
+  it("disabledRuleKeys for a different pair does not suppress the rule", () => {
+    const state = makeState({ rsi14: 25, pair: "BTC/USDT", timeframe: "1h" });
+    // Key is for ETH/USDT, not BTC/USDT.
+    const disabledRuleKeys = new Set(["prune-test-bull#ETH/USDT#1h"]);
+    const vote = scoreTimeframe(
+      state,
+      [fireingBullRule],
+      {},
+      { disabledRuleKeys },
+    ) as TimeframeVote;
+    expect(vote.rulesFired).toContain("prune-test-bull");
+    expect(vote.rulesFired).not.toContain("disabled-eligible:prune-test-bull");
+  });
+});

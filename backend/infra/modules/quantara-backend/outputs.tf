@@ -12,27 +12,28 @@ output "lambda_function_arn" {
 
 output "table_names" {
   value = {
-    users                 = aws_dynamodb_table.users.name
-    signals               = aws_dynamodb_table.signals.name
-    signal_history        = aws_dynamodb_table.signal_history.name
-    coach_sessions        = aws_dynamodb_table.coach_sessions.name
-    coach_messages        = aws_dynamodb_table.coach_messages.name
-    deals                 = aws_dynamodb_table.deals.name
-    deal_interests        = aws_dynamodb_table.deal_interests.name
-    campaigns             = aws_dynamodb_table.campaigns.name
-    prices                = aws_dynamodb_table.prices.name
-    candles               = aws_dynamodb_table.candles.name
-    news_events           = aws_dynamodb_table.news_events.name
-    ingestion_metadata    = aws_dynamodb_table.ingestion_metadata.name
-    indicator_state       = aws_dynamodb_table.indicator_state.name
-    signals_v2            = aws_dynamodb_table.signals_v2.name
-    embedding_cache       = aws_dynamodb_table.embedding_cache.name
-    news_events_by_pair   = aws_dynamodb_table.news_events_by_pair.name
-    sentiment_aggregates  = aws_dynamodb_table.sentiment_aggregates.name
-    ratifications         = aws_dynamodb_table.ratifications.name
-    ratification_cache    = aws_dynamodb_table.ratification_cache.name
-    connection_registry   = aws_dynamodb_table.connection_registry.name
-    signals_collection    = aws_dynamodb_table.signals_collection.name
+    users                = aws_dynamodb_table.users.name
+    signals              = aws_dynamodb_table.signals.name
+    signal_history       = aws_dynamodb_table.signal_history.name
+    coach_sessions       = aws_dynamodb_table.coach_sessions.name
+    coach_messages       = aws_dynamodb_table.coach_messages.name
+    deals                = aws_dynamodb_table.deals.name
+    deal_interests       = aws_dynamodb_table.deal_interests.name
+    campaigns            = aws_dynamodb_table.campaigns.name
+    prices               = aws_dynamodb_table.prices.name
+    candles              = aws_dynamodb_table.candles.name
+    news_events          = aws_dynamodb_table.news_events.name
+    ingestion_metadata   = aws_dynamodb_table.ingestion_metadata.name
+    indicator_state      = aws_dynamodb_table.indicator_state.name
+    signals_v2           = aws_dynamodb_table.signals_v2.name
+    embedding_cache      = aws_dynamodb_table.embedding_cache.name
+    news_events_by_pair  = aws_dynamodb_table.news_events_by_pair.name
+    sentiment_aggregates = aws_dynamodb_table.sentiment_aggregates.name
+    ratifications        = aws_dynamodb_table.ratifications.name
+    ratification_cache   = aws_dynamodb_table.ratification_cache.name
+    connection_registry  = aws_dynamodb_table.connection_registry.name
+    signals_collection   = aws_dynamodb_table.signals_collection.name
+    rule_status          = aws_dynamodb_table.rule_status.name
   }
 }
 
