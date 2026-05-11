@@ -204,6 +204,39 @@ resource "aws_iam_role_policy" "lambda_admin_ops" {
   })
 }
 
+# Read-only perms for the Phase 8 performance API endpoints (#303):
+#   GET /api/signals/history    — Queries signal_outcomes
+#   GET /api/signals/accuracy   — Queries accuracy_aggregates
+#   GET /api/signals/calibration — Queries signal_outcomes (on-the-fly aggregation)
+#   GET /api/signals/attribution — Scans rule_attribution (~560 rows)
+#
+# Kept separate from lambda_dynamodb (which is read-write) to make the
+# blast radius explicit: these three tables are never written from the API.
+resource "aws_iam_role_policy" "lambda_signals_performance" {
+  name = "${local.prefix}-signals-performance"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+      ]
+      Resource = [
+        aws_dynamodb_table.signal_outcomes.arn,
+        "${aws_dynamodb_table.signal_outcomes.arn}/index/*",
+        aws_dynamodb_table.accuracy_aggregates.arn,
+        "${aws_dynamodb_table.accuracy_aggregates.arn}/index/*",
+        aws_dynamodb_table.rule_attribution.arn,
+        "${aws_dynamodb_table.rule_attribution.arn}/index/*",
+      ]
+    }]
+  })
+}
+
 # Write perms for the admin /debug/* endpoints (manual debug controls page,
 # PR #208). These are best-effort, low-frequency operator actions:
 #
@@ -342,8 +375,10 @@ resource "aws_lambda_function" "api" {
       TABLE_INDICATOR_STATE    = aws_dynamodb_table.indicator_state.name
       TABLE_SIGNALS_V2         = aws_dynamodb_table.signals_v2.name
       TABLE_RATIFICATIONS      = aws_dynamodb_table.ratifications.name
-      TABLE_SIGNAL_OUTCOMES    = aws_dynamodb_table.signal_outcomes.name
-      TABLE_SIGNALS_COLLECTION = aws_dynamodb_table.signals_collection.name
+      TABLE_SIGNAL_OUTCOMES       = aws_dynamodb_table.signal_outcomes.name
+      TABLE_ACCURACY_AGGREGATES   = aws_dynamodb_table.accuracy_aggregates.name
+      TABLE_RULE_ATTRIBUTION      = aws_dynamodb_table.rule_attribution.name
+      TABLE_SIGNALS_COLLECTION    = aws_dynamodb_table.signals_collection.name
       CORS_ORIGIN              = var.cors_origin
       CLOUDFRONT_URL           = "https://${aws_cloudfront_distribution.api.domain_name}"
       ENVIRONMENT              = var.environment

@@ -18,6 +18,7 @@ import { demo } from "./routes/demo.js";
 import { authDocs } from "./routes/auth-docs.js";
 import { admin } from "./routes/admin.js";
 import { genie } from "./routes/genie.js";
+import { signalsPerformance } from "./routes/signals-performance.js";
 
 const app = new OpenAPIHono();
 
@@ -104,6 +105,7 @@ app.route("/api/auth", authPassword);
 
 app.route("/api/admin", admin);
 app.route("/api/genie", genie);
+app.route("/api/signals", signalsPerformance);
 
 // --- OpenAPI spec (dynamic servers per environment) ---
 const ENV = process.env.ENVIRONMENT ?? "dev";
