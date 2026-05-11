@@ -130,6 +130,20 @@ interface MarketChartProps {
   /** When true, shows a muted footer label indicating the history cap was reached. */
   backfillExhausted?: boolean;
   /**
+   * Unix-ms timestamp the chart viewport should anchor to once candles for the
+   * current pair are loaded. Set by Workstation when the user picks a signal in
+   * the command palette. Anchoring is gated on `candles.length > 0` so that
+   * cross-pair selections (which clear candles + unmount the chart) still seek
+   * correctly once the new pair's candles arrive — see `onSeekConsumed` below.
+   */
+  pendingSeekMs?: number | null;
+  /**
+   * Called once the chart has anchored to `pendingSeekMs`. Parent should clear
+   * its pending state so the same seek doesn't fire again on the next render
+   * (e.g. when a live-poll causes the candles array to mutate).
+   */
+  onSeekConsumed?: () => void;
+  /**
    * Which chart overlays are visible. Undefined keys default to visible so
    * existing callers retain today's behaviour. The /toggle command wires this
    * through from Workstation state (issue #316).
@@ -171,6 +185,8 @@ export function MarketChart({
   height = 380,
   onBackfillNeeded,
   backfillExhausted = false,
+  pendingSeekMs = null,
+  onSeekConsumed,
   overlays,
 }: MarketChartProps) {
   // Merge caller-provided overlays with defaults so undefined keys = visible.
@@ -297,6 +313,35 @@ export function MarketChart({
       volumeSeriesRef.current = null;
     };
   }, []);
+
+  // Anchor the viewport to `pendingSeekMs` once candles for the active pair
+  // have loaded. We can't rely on a synchronously-dispatched event because the
+  // parent's `setActivePair` clears `candles` first, which unmounts this
+  // component (the parent renders a "Loading market…" placeholder while the
+  // candles array is empty). By the time the chart re-mounts with the new
+  // pair's data, any event already fired against the old MarketChart's
+  // listener — so we keep the seek as a state slot on the parent and consume
+  // it here when both the chart is built AND candles are present.
+  useEffect(() => {
+    if (pendingSeekMs == null) return;
+    const chart = chartRef.current;
+    if (!chart) return;
+    if (!candles || candles.length === 0) return;
+    // lightweight-charts time scale operates in UTC seconds.
+    const targetSec = Math.floor(pendingSeekMs / 1000) as UTCTimestamp;
+    const WINDOW_SEC = 12 * 3600;
+    try {
+      chart.timeScale().setVisibleRange({
+        from: (targetSec - WINDOW_SEC) as UTCTimestamp,
+        to: (targetSec + WINDOW_SEC) as UTCTimestamp,
+      });
+    } catch {
+      // setVisibleRange throws if the target is outside the loaded data range.
+      // Fall back to scrolling to realtime — the user can pan to the signal.
+      chart.timeScale().scrollToRealTime();
+    }
+    onSeekConsumed?.();
+  }, [pendingSeekMs, candles, onSeekConsumed]);
 
   // React to theme toggling via a MutationObserver on <html class="dark">.
   useEffect(() => {

@@ -6,6 +6,7 @@ import {
   CommandPalette,
   useCommandPalette,
   type MarketTick,
+  type SignalSelection,
 } from "../components/workstation/CommandPalette";
 import { type Candle, MarketChart } from "../components/workstation/MarketChart";
 import { PositionRail } from "../components/workstation/PositionRail";
@@ -58,6 +59,14 @@ const MAX_TOTAL_CANDLES: Record<Timeframe, number> = {
 export function Workstation() {
   const [activePair, setActivePair] = useState<string>(DEFAULT_PAIR);
   const [timeframe, setTimeframe] = useState<Timeframe>("1H");
+  /**
+   * Unix-ms timestamp the chart should anchor to after the next candle load.
+   * Set by `handleSelectSignal`; consumed by `MarketChart` once its candles
+   * have arrived. Stored as state (not via custom event) because cross-pair
+   * selection clears `candles` and unmounts the chart — a synchronous event
+   * would race against that unmount and never reach the new mount.
+   */
+  const [pendingSeekMs, setPendingSeekMs] = useState<number | null>(null);
 
   // ── Chart overlays (used by /toggle command) ─────────────────────────────
   // Default all overlays on — matches the chart's pre-#316 behaviour where
@@ -74,6 +83,22 @@ export function Workstation() {
     const pair = `${symbol}/USDT`;
     setActivePair(pair);
   }, []);
+
+  const handleSelectSignal = useCallback((selection: SignalSelection) => {
+    // Queue the seek before switching pairs. setActivePair will clear the
+    // candle array (see the [activePair, timeframe] effect below) which causes
+    // MarketChart to unmount; the queued seek is consumed by the freshly
+    // mounted chart once the new pair's candles arrive. Same-pair selection
+    // also works — the candle effect doesn't re-run, and the seek effect
+    // anchors immediately because candles are already non-empty.
+    setPendingSeekMs(selection.asOf);
+    setActivePair(selection.pair);
+  }, []);
+
+  const handleSeekConsumed = useCallback(() => {
+    setPendingSeekMs(null);
+  }, []);
+
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette(handleSelectSymbol);
   const [data, setData] = useState<MarketData | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -218,6 +243,8 @@ export function Workstation() {
                 timeframe={TIMEFRAME_TO_API[timeframe]}
                 onBackfillNeeded={handleBackfillNeeded}
                 backfillExhausted={backfillExhaustedDisplay}
+                pendingSeekMs={pendingSeekMs}
+                onSeekConsumed={handleSeekConsumed}
                 overlays={overlays}
               />
             )}
@@ -236,7 +263,9 @@ export function Workstation() {
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
+        activePair={activePair}
         onSelectSymbol={handleSelectSymbol}
+        onSelectSignal={handleSelectSignal}
         markets={marketsMap}
         ctx={{
           activePair,
