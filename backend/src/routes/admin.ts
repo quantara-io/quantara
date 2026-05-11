@@ -11,6 +11,7 @@ import {
   getWhitelist,
   setWhitelist,
   getSignals,
+  getSignalsCrossSymbol,
   getGenieMetrics,
   getRatifications,
   getPipelineHealth,
@@ -97,9 +98,56 @@ admin.get("/market", async (c) => {
 
 admin.get("/signals", async (c) => {
   const pair = c.req.query("pair");
+  const q = c.req.query("q");
+
+  // Cross-symbol label search path: ?q=<label-substring>
+  // Takes precedence over ?pair= so callers cannot accidentally mix the two.
+  if (q !== undefined) {
+    if (q.trim() === "") {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "q must be a non-empty string" } },
+        400,
+      );
+    }
+
+    const limitRaw = c.req.query("limit");
+    const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 20;
+    if (isNaN(limit) || limit < 1 || limit > 100) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "limit must be between 1 and 100" },
+        },
+        400,
+      );
+    }
+
+    const sinceRaw = c.req.query("since");
+    let since: Date | undefined;
+    if (sinceRaw !== undefined) {
+      since = new Date(sinceRaw);
+      if (isNaN(since.getTime())) {
+        return c.json(
+          {
+            success: false,
+            error: { code: "BAD_REQUEST", message: "since must be a valid ISO 8601 date" },
+          },
+          400,
+        );
+      }
+    }
+
+    const signals = await getSignalsCrossSymbol(q.trim(), limit, since);
+    return c.json({ success: true, data: { signals } });
+  }
+
+  // Per-pair path (existing behaviour): ?pair=<pair>
   if (!pair) {
     return c.json(
-      { success: false, error: { code: "BAD_REQUEST", message: "pair is required" } },
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "pair or q is required" },
+      },
       400,
     );
   }

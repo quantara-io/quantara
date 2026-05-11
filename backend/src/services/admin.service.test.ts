@@ -2167,3 +2167,161 @@ describe("getShadowSignals — source field validation", () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #332: getSignalsCrossSymbol — cross-symbol label search
+// ---------------------------------------------------------------------------
+
+describe("getSignalsCrossSymbol", () => {
+  const SIGNALS_TABLE = "quantara-dev-signals-v2";
+  const NOW_MS = 1_715_187_600_000;
+
+  /** Minimal signals-v2 row for cross-symbol tests. */
+  function makeRow(
+    pair: string,
+    tf: string,
+    type: string,
+    confidence: number,
+    rulesFired: string[] = [],
+    offsetMs = 0,
+  ) {
+    const closeTimeMs = NOW_MS - offsetMs;
+    return {
+      pair,
+      sk: `${tf}#${closeTimeMs}`,
+      signalId: `${closeTimeMs.toString(16).padStart(14, "0")}-aaaa`,
+      emittedAt: new Date(closeTimeMs).toISOString(),
+      asOf: closeTimeMs,
+      emittingTimeframe: tf,
+      type,
+      confidence,
+      volatilityFlag: false,
+      gateReason: null,
+      rulesFired,
+      perTimeframe: {},
+      weightsUsed: {},
+      risk: null,
+    };
+  }
+
+  it("fans out exactly 20 Queries (5 pairs × 4 TFs) per call", async () => {
+    dynamoSend.mockResolvedValue({ Items: [] });
+
+    const { getSignalsCrossSymbol } = await importService();
+    await getSignalsCrossSymbol("buy", 20);
+
+    const signalsCalls = dynamoSend.mock.calls.filter(
+      ([cmd]) => (cmd as { input: Record<string, unknown> }).input.TableName === SIGNALS_TABLE,
+    );
+    expect(signalsCalls).toHaveLength(20); // 5 pairs × 4 TFs
+  });
+
+  it("filters rows whose derived label matches the query substring (case-insensitive)", async () => {
+    // BTC/USDT 15m → buy, confidence 0.8 → label "Strong Buy" (matches "strong")
+    // ETH/USDT 1h  → hold, rulesFired has bull divergence → label "Bull Div" (no match for "strong")
+    const btcRow = makeRow("BTC/USDT", "15m", "buy", 0.8);
+    const ethRow = makeRow("ETH/USDT", "1h", "hold", 0.5, ["bull-div-15m"]);
+
+    dynamoSend.mockImplementation(async (cmd: { input: Record<string, unknown> }) => {
+      if (cmd.input.TableName !== SIGNALS_TABLE) return { Items: [] };
+      const values = cmd.input.ExpressionAttributeValues as {
+        ":pair": string;
+        ":lo": string;
+      };
+      if (values[":pair"] === "BTC/USDT" && (values[":lo"] as string).startsWith("15m#")) {
+        return { Items: [btcRow] };
+      }
+      if (values[":pair"] === "ETH/USDT" && (values[":lo"] as string).startsWith("1h#")) {
+        return { Items: [ethRow] };
+      }
+      return { Items: [] };
+    });
+
+    const { getSignalsCrossSymbol } = await importService();
+    const results = await getSignalsCrossSymbol("strong", 20);
+
+    // Only BTC row matches "strong" (Strong Buy).
+    expect(results).toHaveLength(1);
+    expect(results[0]?.pair).toBe("BTC/USDT");
+  });
+
+  it("respects the limit after label filtering", async () => {
+    // Return a buy row for every (pair, TF) cell — all 20 rows → label "Buy".
+    dynamoSend.mockImplementation(async (cmd: { input: Record<string, unknown> }) => {
+      if (cmd.input.TableName !== SIGNALS_TABLE) return { Items: [] };
+      const values = cmd.input.ExpressionAttributeValues as {
+        ":pair": string;
+        ":lo": string;
+      };
+      const tf = (values[":lo"] as string).split("#")[0] ?? "15m";
+      return { Items: [makeRow(values[":pair"] as string, tf, "buy", 0.6)] };
+    });
+
+    const { getSignalsCrossSymbol } = await importService();
+    const results = await getSignalsCrossSymbol("buy", 5);
+
+    expect(results).toHaveLength(5);
+  });
+
+  it("returns [] when no rows match the label filter", async () => {
+    // All cells return hold rows → label "hold" — filter for "strong" → 0 matches.
+    dynamoSend.mockImplementation(async (cmd: { input: Record<string, unknown> }) => {
+      if (cmd.input.TableName !== SIGNALS_TABLE) return { Items: [] };
+      const values = cmd.input.ExpressionAttributeValues as {
+        ":pair": string;
+        ":lo": string;
+      };
+      const tf = (values[":lo"] as string).split("#")[0] ?? "15m";
+      return { Items: [makeRow(values[":pair"] as string, tf, "hold", 0.5)] };
+    });
+
+    const { getSignalsCrossSymbol } = await importService();
+    const results = await getSignalsCrossSymbol("strong", 20);
+
+    expect(results).toHaveLength(0);
+  });
+
+  it("sorts results by emittedAt descending", async () => {
+    // Return one row per pair on 15m with staggered timestamps.
+    const PAIRS_LOCAL = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"];
+    dynamoSend.mockImplementation(async (cmd: { input: Record<string, unknown> }) => {
+      if (cmd.input.TableName !== SIGNALS_TABLE) return { Items: [] };
+      const values = cmd.input.ExpressionAttributeValues as {
+        ":pair": string;
+        ":lo": string;
+      };
+      if (!(values[":lo"] as string).startsWith("15m#")) return { Items: [] };
+      const pairIdx = PAIRS_LOCAL.indexOf(values[":pair"] as string);
+      if (pairIdx === -1) return { Items: [] };
+      // Earlier pairs get a newer timestamp so after sort they should be first.
+      return {
+        Items: [makeRow(values[":pair"] as string, "15m", "buy", 0.6, [], pairIdx * 60_000)],
+      };
+    });
+
+    const { getSignalsCrossSymbol } = await importService();
+    const results = await getSignalsCrossSymbol("buy", 10);
+
+    // Results should be sorted newest-first.
+    for (let i = 1; i < results.length; i++) {
+      const prev = results[i - 1]?.emittedAt ?? "";
+      const curr = results[i]?.emittedAt ?? "";
+      expect(curr <= prev).toBe(true);
+    }
+  });
+
+  it("returns [] and logs an error when DynamoDB throws", async () => {
+    dynamoSend.mockRejectedValue(new Error("DDB timeout"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { getSignalsCrossSymbol } = await importService();
+    const results = await getSignalsCrossSymbol("buy", 20);
+
+    expect(results).toEqual([]);
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining("getSignalsCrossSymbol failed"),
+      expect.any(Error),
+    );
+    errSpy.mockRestore();
+  });
+});

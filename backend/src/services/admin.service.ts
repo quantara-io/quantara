@@ -476,6 +476,117 @@ export async function getMarket(
   return { prices, candles, fearGreed, indicators, dispersion, pair, exchange, timeframe };
 }
 
+// ── signalLabel — derived label matching the frontend's signalStrengthLabel ──
+
+/**
+ * Derives the human-readable confidence chip label for a signal row fetched
+ * from DynamoDB. Mirrors the `signalStrengthLabel` function in
+ * `CommandPalette.tsx` so backend label-filter results are consistent with
+ * what the frontend renders.
+ */
+function signalLabel(type: string, confidence: number, rulesFired: string[]): string {
+  if (type === "strong-buy") return "Strong Buy";
+  if (type === "buy") return confidence >= 0.7 ? "Strong Buy" : "Buy";
+  if (type === "strong-sell") return "Strong Sell";
+  if (type === "sell") return confidence >= 0.7 ? "Strong Sell" : "Sell";
+  if (type === "hold") {
+    if (rulesFired.some((r) => /bull.*div|div.*bull/i.test(r))) return "Bull Div";
+    if (rulesFired.some((r) => /bear.*div|div.*bear/i.test(r))) return "Bear Div";
+    if (rulesFired.some((r) => /breakout/i.test(r))) return "Breakout";
+    if (rulesFired.some((r) => /rsi.*oversold|oversold/i.test(r))) return "RSI Oversold";
+  }
+  return type;
+}
+
+/**
+ * Cross-symbol signal label search: fans out Query over all known PAIRS × 4
+ * blended timeframes, derives each row's human-readable label, keeps only rows
+ * whose label contains `q` (case-insensitive), merges, sorts by `emittedAt`
+ * descending, and returns the top `limit` results.
+ *
+ * Queries use the same SK pattern as `getSignals` — `{tf}#{sinceMs}` lower
+ * bound, `{tf}#￿` upper bound — scoped to the last 24 hours by default. This
+ * keeps the fan-out bounded: 5 pairs × 4 TFs = 20 DDB Queries, each with
+ * Limit=`limit` (worst-case 20 × limit rows before filtering).
+ */
+export async function getSignalsCrossSymbol(
+  q: string,
+  limit: number,
+  since?: Date,
+): Promise<Array<BlendedSignal & { signalId: string; emittedAt: string }>> {
+  const sinceDate = since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const sinceMs = sinceDate.getTime();
+  const blendTfs = ["15m", "1h", "4h", "1d"] as const;
+  const labelQuery = q.toLowerCase();
+
+  try {
+    // Fan-out: one Query per (pair, timeframe) cell.
+    const perCell = await Promise.all(
+      (PAIRS as readonly string[]).flatMap((pair) =>
+        blendTfs.map(async (tf) => {
+          const tfPrefix = `${tf}#`;
+          const result = await dynamo.send(
+            new QueryCommand({
+              TableName: SIGNALS_V2_TABLE,
+              KeyConditionExpression: "#pair = :pair AND #sk BETWEEN :lo AND :hi",
+              ExpressionAttributeNames: { "#pair": "pair", "#sk": "sk" },
+              ExpressionAttributeValues: {
+                ":pair": pair,
+                ":lo": `${tfPrefix}${sinceMs}`,
+                ":hi": `${tfPrefix}￿`,
+              },
+              ScanIndexForward: false,
+              // Fetch up to `limit` rows per cell — after label filtering we
+              // slice to `limit` globally so over-fetching here ensures we
+              // can fill the response even when only a fraction match.
+              Limit: limit,
+            }),
+          );
+          return result.Items ?? [];
+        }),
+      ),
+    );
+
+    // Flatten, derive label, filter, sort, slice.
+    const allItems = perCell.flat();
+
+    const mapped = allItems
+      .map((item) => {
+        const type = item.type as string;
+        const confidence = item.confidence as number;
+        const rulesFired = (item.rulesFired as string[]) ?? [];
+        const label = signalLabel(type, confidence, rulesFired);
+        return { item, label };
+      })
+      .filter(({ label }) => label.toLowerCase().includes(labelQuery));
+
+    mapped.sort((a, b) => {
+      const aT = (a.item.emittedAt as string) ?? new Date(Number(a.item.asOf ?? 0)).toISOString();
+      const bT = (b.item.emittedAt as string) ?? new Date(Number(b.item.asOf ?? 0)).toISOString();
+      return bT.localeCompare(aT);
+    });
+
+    return mapped.slice(0, limit).map(({ item }) => ({
+      pair: item.pair as string,
+      type: item.type as BlendedSignal["type"],
+      confidence: item.confidence as number,
+      volatilityFlag: item.volatilityFlag as boolean,
+      gateReason: item.gateReason as BlendedSignal["gateReason"],
+      rulesFired: (item.rulesFired as string[]) ?? [],
+      risk: (item.risk as BlendedSignal["risk"]) ?? null,
+      perTimeframe: item.perTimeframe as BlendedSignal["perTimeframe"],
+      weightsUsed: item.weightsUsed as BlendedSignal["weightsUsed"],
+      asOf: item.asOf as number,
+      emittingTimeframe: item.emittingTimeframe as BlendedSignal["emittingTimeframe"],
+      signalId: item.signalId as string,
+      emittedAt: item.emittedAt as string,
+    }));
+  } catch (err) {
+    console.error(`[admin.service] getSignalsCrossSymbol failed for q="${q}":`, err);
+    return [];
+  }
+}
+
 export async function getSignals(
   pair: string,
   since: Date,
