@@ -520,6 +520,20 @@ describe("rankMarkets", () => {
     // All PAIRS should appear since fuzzyScore("", sym) = 0.5 > 0
     expect(results.length).toBeGreaterThan(0);
   });
+
+  it("rankMarkets returns all pairs for empty query but UI hides Markets section (issue #329)", () => {
+    // rankMarkets itself returns rows for empty query — the UI-level guard
+    // `query !== ""` is what prevents the Markets section from appearing in
+    // the empty state, deduplicated against Recent (BTC/ETH/SOL default).
+    // This test documents that rankMarkets is NOT the gating logic.
+    const emptyQueryResults = rankMarkets("", ["BTC", "ETH", "SOL"], NOW);
+    const nonEmptyQueryResults = rankMarkets("btc", ["BTC", "ETH", "SOL"], NOW);
+    // Both return results — the UI applies `query !== ""` to hide Markets on empty state.
+    expect(emptyQueryResults.length).toBeGreaterThan(0);
+    expect(nonEmptyQueryResults.length).toBeGreaterThan(0);
+    // BTC is the top result when query is "btc"
+    expect(nonEmptyQueryResults[0].symbol).toBe("BTC");
+  });
 });
 
 // ── touchRecentTimestamp ──────────────────────────────────────────────────────
