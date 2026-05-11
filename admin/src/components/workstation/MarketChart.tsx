@@ -269,6 +269,36 @@ export function MarketChart({
     };
   }, []);
 
+  // Subscribe to the quantara:chart-seek custom event dispatched by Workstation
+  // when the user selects a signal from the command palette. Scrolls the time
+  // axis so the signal's asOf timestamp is centered in the viewport.
+  useEffect(() => {
+    function onChartSeek(e: Event) {
+      const { asOfMs } = (e as CustomEvent<{ asOfMs: number }>).detail;
+      const chart = chartRef.current;
+      if (!chart) return;
+      // lightweight-charts time scale operates in UTC seconds.
+      const targetSec = Math.floor(asOfMs / 1000) as import("lightweight-charts").UTCTimestamp;
+      chart.timeScale().scrollToRealTime();
+      // setVisibleRange centers on the target with a ±12h window so the user
+      // can immediately see the signal candle plus surrounding context.
+      const WINDOW_SEC = 12 * 3600;
+      try {
+        chart.timeScale().setVisibleRange({
+          from: (targetSec - WINDOW_SEC) as import("lightweight-charts").UTCTimestamp,
+          to: (targetSec + WINDOW_SEC) as import("lightweight-charts").UTCTimestamp,
+        });
+      } catch {
+        // setVisibleRange throws if the target is out of the loaded data range.
+        // In that case just scroll to realtime — the user can pan to the signal.
+        chart.timeScale().scrollToRealTime();
+      }
+    }
+
+    window.addEventListener("quantara:chart-seek", onChartSeek);
+    return () => window.removeEventListener("quantara:chart-seek", onChartSeek);
+  }, []);
+
   // React to theme toggling via a MutationObserver on <html class="dark">.
   useEffect(() => {
     if (typeof MutationObserver === "undefined") return;

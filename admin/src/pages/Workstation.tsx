@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../lib/api";
 import { AlertsRail } from "../components/workstation/AlertsRail";
-import { CommandPalette, useCommandPalette } from "../components/workstation/CommandPalette";
+import {
+  CommandPalette,
+  useCommandPalette,
+  type SignalSelection,
+} from "../components/workstation/CommandPalette";
 import { type Candle, MarketChart } from "../components/workstation/MarketChart";
 import { PositionRail } from "../components/workstation/PositionRail";
 import { SignalsRail } from "../components/workstation/SignalsRail";
@@ -60,6 +64,18 @@ export function Workstation() {
     const pair = `${symbol}/USDT`;
     setActivePair(pair);
   }, []);
+
+  const handleSelectSignal = useCallback((selection: SignalSelection) => {
+    // Switch to the signal's pair then seek the chart viewport to asOf.
+    setActivePair(selection.pair);
+    // Dispatch a custom event so MarketChart can scroll its time axis.
+    // Using a custom event (not a callback prop) keeps the chart decoupled from
+    // the palette — MarketChart already subscribes via an imperative API.
+    window.dispatchEvent(
+      new CustomEvent("quantara:chart-seek", { detail: { asOfMs: selection.asOf } }),
+    );
+  }, []);
+
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette(handleSelectSymbol);
   const [data, setData] = useState<MarketData | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -209,6 +225,7 @@ export function Workstation() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onSelectSymbol={handleSelectSymbol}
+        onSelectSignal={handleSelectSignal}
       />
     </>
   );
