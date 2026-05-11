@@ -28,8 +28,6 @@ import {
   SignalAttributionQuerySchema,
   SignalAttributionResponse,
 } from "../lib/schemas/signals-performance.js";
-import { ErrorResponse } from "../lib/schemas/common.js";
-
 // Inline 404 response schema for accuracy — needed because OpenAPIHono sub-apps
 // don't have the global app.onError handler that maps NotFoundError → 404.
 const AccuracyNotFoundSchema = z
@@ -61,11 +59,7 @@ const historyRoute = createRoute({
   responses: {
     200: {
       content: { "application/json": { schema: SignalHistoryPerformanceResponse } },
-      description: "Resolved signal outcomes",
-    },
-    404: {
-      content: { "application/json": { schema: ErrorResponse } },
-      description: "No outcomes found for this pair",
+      description: "Resolved signal outcomes (empty array when none exist in the window)",
     },
   },
 });
@@ -73,16 +67,19 @@ const historyRoute = createRoute({
 signalsPerformance.openapi(historyRoute, async (c) => {
   const { pair, window, limit, cursor } = c.req.valid("query");
   const result = await getSignalHistory(pair, window, limit, cursor);
-  return c.json({
-    success: true as const,
-    data: {
-      outcomes: result.outcomes,
-      meta: {
-        hasMore: result.hasMore,
-        nextCursor: result.nextCursor,
+  return c.json(
+    {
+      success: true as const,
+      data: {
+        outcomes: result.outcomes,
+        meta: {
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+        },
       },
     },
-  });
+    200,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -132,10 +129,13 @@ signalsPerformance.openapi(accuracyRoute, async (c) => {
     );
   }
 
-  return c.json({
-    success: true as const,
-    data: { accuracy },
-  });
+  return c.json(
+    {
+      success: true as const,
+      data: { accuracy },
+    },
+    200,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -166,16 +166,19 @@ signalsPerformance.openapi(calibrationRoute, async (c) => {
   const { pair, timeframe, window } = c.req.valid("query");
   const result = await getCalibrationData(pair, timeframe, window);
 
-  return c.json({
-    success: true as const,
-    data: {
-      pair,
-      timeframe,
-      window,
-      totalUsed: result.totalUsed,
-      bins: result.bins,
+  return c.json(
+    {
+      success: true as const,
+      data: {
+        pair,
+        timeframe,
+        window,
+        totalUsed: result.totalUsed,
+        bins: result.bins,
+      },
     },
-  });
+    200,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -206,15 +209,18 @@ signalsPerformance.openapi(attributionRoute, async (c) => {
   const { pair, timeframe, window } = c.req.valid("query");
   const rules = await getRuleAttributionData(pair, timeframe, window);
 
-  return c.json({
-    success: true as const,
-    data: {
-      pair,
-      timeframe,
-      window,
-      rules,
+  return c.json(
+    {
+      success: true as const,
+      data: {
+        pair,
+        timeframe,
+        window,
+        rules,
+      },
     },
-  });
+    200,
+  );
 });
 
 export { signalsPerformance };
