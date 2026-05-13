@@ -98,10 +98,11 @@ resource "aws_iam_role_policy" "indicator_handler_dynamodb" {
         ]
       },
       {
-        Sid    = "ReadSentimentAggregates"
+        Sid    = "ReadWriteSentimentAggregates"
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
+          "dynamodb:PutItem",
         ]
         Resource = [
           aws_dynamodb_table.sentiment_aggregates.arn,
