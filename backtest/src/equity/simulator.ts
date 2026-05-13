@@ -5,8 +5,9 @@
  * applying:
  *   - Position sizing per strategy.sizing (fixed-pct supported; kelly + vol-target
  *     are documented as deferred — see below).
- *   - 15 bps round-trip transaction cost on every directional bet (configurable
- *     via equity/constants.ts: SLIPPAGE_BPS + FEE_BPS, each per-side).
+ *   - 15 bps round-trip transaction cost charged ONCE per resolved directional
+ *     bet (slippage + fees, entry + exit combined; configurable via
+ *     equity/constants.ts: ROUND_TRIP_COST_BPS).
  *   - Running drawdown tracking and Sharpe annualization.
  *
  * Kelly and vol-target sizing are deferred to a future phase. The simulator
@@ -194,7 +195,8 @@ export function simulateEquityCurve(
             ? -posSize * Math.abs(signedMove)
             : 0;
 
-      // Subtract round-trip transaction cost on every directional bet.
+      // Subtract the 15 bps round-trip transaction cost on every directional bet.
+      // Charged once per resolved signal (entry + exit combined), per issue #370.
       const netReturn = grossReturn - posSize * ROUND_TRIP_COST;
 
       equity = equity * (1 + netReturn);

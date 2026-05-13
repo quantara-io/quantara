@@ -1,16 +1,27 @@
 /**
  * engine.lookahead.test.ts — Phase 3 look-ahead protection unit tests.
  *
- * Six guard tests covering the most common backtest look-ahead bias patterns.
- * Each test is ≤30 LOC and fails loudly with a specific error message.
+ * Each test below exercises a real production code path: a regression that
+ * removes the look-ahead defense (e.g. dropping `baseSeries.slice(0, baseIdx+1)`
+ * from engine.ts, or letting the outcome resolver pick a candle beyond
+ * `expiresAt`) MUST cause one of these tests to fail.
  *
  * Test cases:
- *   1. Indicator state: candle[50] state uses ONLY candles 0-50, not 51-99.
- *   2. Outcome price lookup: resolver looks up candle at expiresAt, not a future candle.
- *   3. Calibration freeze: paramsAt > earliest_signal_emittedAt → warn/throw.
- *   4. Walk-forward calibration: window N params come from outcomes of windows < N.
- *   5. Sentiment timestamp: publishedAt > signal.emittedAt should be filtered out.
- *   6. Rule "since" filtering: assert harness no-op behavior (rules lack "since" field).
+ *   1. Indicator state — engine.ts `baseSeries.slice(0, baseIdx + 1)` defense:
+ *      no future candle can influence the indicator state at bar N.
+ *   2. Outcome price lookup — resolver uses the candle AT `expiresAt`, not a
+ *      later candle. (No TF_MS slack — strict equality.)
+ *   3. Calibration freeze — `checkFrozenCalibrationGuard` warns when
+ *      paramsAt > earliest signal emittedAt.
+ *   4. Walk-forward calibration — window N's Platt fit uses only outcomes from
+ *      windows < N, never the current or future window.
+ *
+ * Sentiment look-ahead (old test #5) and rule-"since" look-ahead (old test #6)
+ * are deferred until those features are wired through the engine. Sentiment is
+ * currently stubbed (Phase 1) and rules do not yet carry a `since` field, so
+ * there is no production code path to exercise. A test that filters an
+ * in-test array with `Array.filter` does not test the engine — it tests
+ * `Array.filter`. Better to leave the test out than ship a hollow guard.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -33,24 +44,38 @@ const BASE_TIME = 1_700_000_000_000;
 const TF_MS = 3_600_000; // 1h
 const EXCHANGES = ["binanceus", "coinbase", "kraken"] as const;
 
-function makeCandles(count: number, baseClose = 30_000): Candle[] {
-  return Array.from({ length: count }, (_, i) => ({
-    exchange: "binanceus",
-    symbol: "BTC/USDT",
-    pair: "BTC/USDT",
-    timeframe: "1h" as Timeframe,
-    openTime: BASE_TIME + i * TF_MS,
-    closeTime: BASE_TIME + i * TF_MS + TF_MS - 1,
-    open: baseClose,
-    high: baseClose * 1.001,
-    low: baseClose * 0.999,
-    close: baseClose,
-    volume: 100,
-    isClosed: true,
-    source: "backfill" as const,
-  }));
+/**
+ * Build a series of synthetic 1h candles. `closeAt(i)` controls per-bar close
+ * price (open/high/low track close ± 0.1% to keep bar shape consistent with
+ * the engine.test.ts fixtures).
+ */
+function makeCandles(count: number, closeAt: (i: number) => number): Candle[] {
+  return Array.from({ length: count }, (_, i) => {
+    const close = closeAt(i);
+    return {
+      exchange: "binanceus",
+      symbol: "BTC/USDT",
+      pair: "BTC/USDT",
+      timeframe: "1h" as Timeframe,
+      openTime: BASE_TIME + i * TF_MS,
+      closeTime: BASE_TIME + i * TF_MS + TF_MS - 1,
+      open: close,
+      high: close * 1.001,
+      low: close * 0.999,
+      close,
+      volume: 100,
+      isClosed: true,
+      source: "backfill" as const,
+    };
+  });
 }
 
+/**
+ * Mock store that returns the same candle series for every production exchange
+ * regardless of the requested fetch window — so the engine sees the full
+ * synthetic history (including any "future" bars we baked in) and must rely
+ * on its own internal slice to avoid look-ahead.
+ */
 function mockStore(candles: Candle[]): HistoricalCandleStore {
   const perExchange: Record<string, Candle[]> = {};
   for (const ex of EXCHANGES) perExchange[ex] = candles.map((c) => ({ ...c, exchange: ex }));
@@ -64,72 +89,118 @@ function mockStore(candles: Candle[]): HistoricalCandleStore {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Indicator state — candles available at evaluation time only
+// 1. Indicator state — `baseSeries.slice(0, baseIdx + 1)` defense
 // ---------------------------------------------------------------------------
 
 describe("look-ahead guard: indicator state", () => {
-  it("engine called with 100 candles starting from candle[50] uses only candles 0-50", async () => {
-    // 100 candles. Eval window starts at candle 50 (after warmup headroom).
-    // The engine fetches warmup bars BEFORE from, so it requests from - WARMUP_BARS.
-    // We verify it never reads candles AFTER evalFrom.
-    const candles = makeCandles(100);
-    const store = mockStore(candles);
-    const engine = new BacktestEngine(store);
+  it("indicator state at bar N reflects ONLY candles [0..N], not future bars", async () => {
+    // Fixture: 200 candles. Bars 0–99 are flat at $30,000 (RSI converges to
+    // 50, no momentum rule fires). Bars 100–199 are a sustained linear crash
+    // from $30,000 down to $1,500 — heavy enough that, computed at the END
+    // of the series, RSI would be deep in oversold territory (< 20).
+    //
+    // The store returns ALL 200 candles regardless of fetch window, so the
+    // engine's baseSeries will hold the full history. If the engine's
+    // `baseSeries.slice(0, baseIdx + 1)` defense is removed (or `baseIdx`
+    // wrong), `buildIndicatorState` will be called with bars 0..199 and the
+    // produced state will reflect the crash — triggering `rsi-oversold` or
+    // `rsi-oversold-strong`. With the defense intact, the state at bar 99
+    // sees only the flat history and no rsi-* rule fires.
+    const candles = makeCandles(200, (i) => (i < 100 ? 30_000 : 30_000 - (i - 99) * 285));
+    // Sanity-check the fixture: end of crash is well below baseline so a
+    // peek-ahead would unambiguously trip rsi-oversold-strong.
+    expect(candles[199]!.close).toBeLessThan(2_000);
 
-    const evalFrom = new Date(BASE_TIME + 50 * TF_MS);
-    const evalTo = new Date(BASE_TIME + 59 * TF_MS);
+    const engine = new BacktestEngine(mockStore(candles));
 
+    // Evaluate ONLY bar 99 (the last flat bar) so we're testing a single,
+    // well-defined indicator state. closeTime of bar 99 = BASE_TIME + 100*TF_MS - 1.
+    const bar99Close = BASE_TIME + 99 * TF_MS + TF_MS - 1;
     const result = await engine.run({
       pair: "BTC/USDT",
       timeframe: "1h",
-      from: evalFrom,
-      to: evalTo,
+      from: new Date(BASE_TIME + 99 * TF_MS), // bar 99 openTime
+      to: new Date(bar99Close), // bar 99 closeTime
     });
 
-    // All emittedAt timestamps must be in [evalFrom, evalTo].
-    for (const sig of result.signals) {
-      const emittedMs = new Date(sig.emittedAt).getTime();
-      expect(emittedMs).toBeGreaterThanOrEqual(evalFrom.getTime());
-      expect(emittedMs).toBeLessThanOrEqual(evalTo.getTime());
-    }
+    expect(result.signals.length).toBe(1);
+    const signal = result.signals[0]!;
+    expect(signal.closeTime).toBe(bar99Close);
 
-    // getCandlesForAllExchanges was called with a fetchFrom BEFORE evalFrom
-    // (warmup bars), never after.
-    const call = (store.getCandlesForAllExchanges as ReturnType<typeof vi.fn>).mock.calls[0];
-    const fetchFrom: Date = call[2];
-    const fetchTo: Date = call[3];
-    expect(fetchFrom.getTime()).toBeLessThan(evalFrom.getTime());
-    // fetchTo should not extend beyond the declared `to`.
-    expect(fetchTo.getTime()).toBeLessThanOrEqual(evalTo.getTime());
+    // priceAtSignal is the canonical close AT bar 99 — must be the flat
+    // baseline. (Independent of the slice defense but pins the test to the
+    // correct bar.)
+    expect(signal.priceAtSignal).toBe(30_000);
+
+    // Flat-past indicator state: ATR ≈ 0, realized vol ≈ 0, dispersion = 0.
+    // The volatility/dispersion gate in `evaluateGates` reads ATR + recent
+    // realized vol; both are computed by `buildIndicatorState`, which the
+    // slice feeds. With the slice defense intact, the engine sees the flat
+    // 0..99 history and the gate stays quiet. If the slice is removed and
+    // the engine reads the full 0..199 series, the same `buildIndicatorState`
+    // call now produces a state at bar 199 with extreme ATR / realized vol,
+    // and the volatility gate fires (gateReason="vol").
+    //
+    // Asserting `gateReason === null` is therefore a direct check on
+    // "indicator state was computed without future bars". This assertion has
+    // been mutation-tested: removing `baseSeries.slice(0, baseIdx + 1)` at
+    // engine.ts:769 flips gateReason from null → "vol" and fails this line.
+    expect(signal.gateReason).toBeNull();
+
+    // Belt-and-suspenders: the flat past gives RSI ≈ 50, so no rsi-* rule
+    // can fire on a defended state. (When the volatility gate fires it
+    // suppresses rulesFired regardless, so this is a secondary signal.)
+    expect(signal.type).toBe("hold");
+    const rsiRulesFired = signal.rulesFired.filter((r) => r.startsWith("rsi-"));
+    expect(rsiRulesFired).toEqual([]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 2. Outcome price lookup — resolver uses expiresAt candle, not a future one
+// 2. Outcome price lookup — resolver uses the candle AT expiresAt, not later
 // ---------------------------------------------------------------------------
 
 describe("look-ahead guard: outcome price lookup", () => {
-  it("priceAtResolution corresponds to the candle at expiresAt, not a later candle", async () => {
-    // 260 candles. Signals emitted at bars 205-259. expiresAt = emittedAt + 4 bars.
-    // Resolution candle must be at emittedAt + 4*TF_MS, not beyond.
-    const candles = makeCandles(260);
-    const store = mockStore(candles);
-    const engine = new BacktestEngine(store);
+  it("priceAtResolution is the close at expiresAt, NOT the close at expiresAt+TF_MS", async () => {
+    // Fixture engineering:
+    //   - Bars 0..104: flat at $30,000.
+    //   - Bar 105+:    jumps to $60,000 (huge gap).
+    //
+    // Signal emitted at bar 100 has expiresAtMs = bar104.closeTime, so the
+    // resolver MUST read the candle at bar 104 (close = $30,000). If the
+    // resolver peeks one bar ahead, it would return $60,000 — the assertion
+    // below catches that immediately.
+    const candles = makeCandles(210, (i) => (i <= 104 ? 30_000 : 60_000));
 
+    const engine = new BacktestEngine(mockStore(candles));
+
+    // Run with `to` = bar 104's closeTime so that ONLY the signal emitted at
+    // bar 100 will have its expiresAt fall inside the evaluation window (and
+    // therefore have a resolution candle available). Signals at bars 101–104
+    // expire past `to` and stay unresolved — they won't pollute the assertion.
+    const bar100Open = BASE_TIME + 100 * TF_MS;
+    const bar104Close = BASE_TIME + 104 * TF_MS + TF_MS - 1;
     const result = await engine.run({
       pair: "BTC/USDT",
       timeframe: "1h",
-      from: new Date(BASE_TIME + 205 * TF_MS),
-      to: new Date(BASE_TIME + 259 * TF_MS),
+      from: new Date(bar100Open),
+      to: new Date(bar104Close),
     });
 
-    for (const sig of result.signals) {
-      if (sig.priceAtResolution === null) continue;
-      const expiresMs = new Date(sig.expiresAt).getTime();
-      const resolvedMs = sig.resolvedAt ? new Date(sig.resolvedAt).getTime() : expiresMs;
-      // resolvedAt must be <= expiresAt (cannot use a candle after expiry).
-      expect(resolvedMs).toBeLessThanOrEqual(expiresMs + TF_MS);
-    }
+    // Find the signal emitted at bar 100.
+    const bar100Signal = result.signals.find(
+      (s) => s.closeTime === BASE_TIME + 100 * TF_MS + TF_MS - 1,
+    );
+    expect(bar100Signal, "engine should emit a signal at bar 100").toBeDefined();
+    expect(bar100Signal!.priceAtResolution).not.toBeNull();
+
+    // Strict equality: priceAtResolution must equal bar 104's close ($30,000),
+    // not bar 105's close ($60,000). Any one-bar look-ahead leaks $60,000.
+    expect(bar100Signal!.priceAtResolution).toBe(30_000);
+    expect(bar100Signal!.priceAtResolution).not.toBe(60_000);
+
+    // resolvedAt must equal expiresAt exactly — no TF_MS slack.
+    expect(bar100Signal!.resolvedAt).toBe(bar100Signal!.expiresAt);
   });
 });
 
@@ -138,30 +209,30 @@ describe("look-ahead guard: outcome price lookup", () => {
 // ---------------------------------------------------------------------------
 
 describe("look-ahead guard: frozen calibration", () => {
-  it("checkFrozenCalibrationGuard returns a warning when paramsAt is after earliest signal", () => {
-    const signals: BacktestSignal[] = [
-      {
-        emittedAt: "2026-01-15T00:00:00.000Z",
-        closeTime: BASE_TIME,
-        pair: "BTC/USDT",
-        timeframe: "1h",
-        type: "buy",
-        confidence: 0.7,
-        rulesFired: [],
-        gateReason: null,
-        resolvedAt: null,
-        outcome: null,
-        priceMovePct: null,
-        priceAtSignal: 30000,
-        priceAtResolution: null,
-        expiresAt: "2026-01-15T04:00:00.000Z",
-        ratificationStatus: "not-required",
-      },
-    ];
+  function fakeSignal(emittedAt: string): BacktestSignal {
+    return {
+      emittedAt,
+      closeTime: new Date(emittedAt).getTime(),
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      type: "buy",
+      confidence: 0.7,
+      rulesFired: [],
+      gateReason: null,
+      resolvedAt: null,
+      outcome: null,
+      priceMovePct: null,
+      priceAtSignal: 30000,
+      priceAtResolution: null,
+      expiresAt: new Date(new Date(emittedAt).getTime() + 4 * TF_MS).toISOString(),
+      ratificationStatus: "not-required",
+    };
+  }
 
+  it("warns when paramsAt is after earliest signal", () => {
     const warning = checkFrozenCalibrationGuard(
       { kind: "frozen", paramsAt: "2026-04-01T00:00:00.000Z" },
-      signals,
+      [fakeSignal("2026-01-15T00:00:00.000Z")],
     );
 
     expect(warning).not.toBeNull();
@@ -169,30 +240,10 @@ describe("look-ahead guard: frozen calibration", () => {
     expect(warning).toContain("paramsAt=2026-04-01");
   });
 
-  it("checkFrozenCalibrationGuard returns null when paramsAt is before earliest signal", () => {
-    const signals: BacktestSignal[] = [
-      {
-        emittedAt: "2026-04-15T00:00:00.000Z",
-        closeTime: BASE_TIME,
-        pair: "BTC/USDT",
-        timeframe: "1h",
-        type: "buy",
-        confidence: 0.7,
-        rulesFired: [],
-        gateReason: null,
-        resolvedAt: null,
-        outcome: null,
-        priceMovePct: null,
-        priceAtSignal: 30000,
-        priceAtResolution: null,
-        expiresAt: "2026-04-15T04:00:00.000Z",
-        ratificationStatus: "not-required",
-      },
-    ];
-
+  it("returns null when paramsAt is before earliest signal", () => {
     const warning = checkFrozenCalibrationGuard(
       { kind: "frozen", paramsAt: "2026-01-01T00:00:00.000Z" },
-      signals,
+      [fakeSignal("2026-04-15T00:00:00.000Z")],
     );
 
     expect(warning).toBeNull();
@@ -204,137 +255,115 @@ describe("look-ahead guard: frozen calibration", () => {
 // ---------------------------------------------------------------------------
 
 describe("look-ahead guard: walk-forward calibration", () => {
-  it("window N signals only see Platt params fit on prior-window outcomes", () => {
-    // 6 months of signals: Jan to Jun 2026, refitDays=30.
-    // January-February signals should have no Platt coefficients (no prior data).
-    // March signals should be fit on Jan+Feb outcomes only.
-    const fromMs = new Date("2026-01-01").getTime();
-    const toMs = new Date("2026-06-01").getTime();
+  it("window 1 confidences are calibrated using ONLY window 0 outcomes", () => {
+    // Build a 60-day period with refitDays=30 (exactly 2 windows). Each
+    // window contains 60 synthetic signals (well above
+    // CALIBRATION_MIN_SAMPLES=50 in `fitPlattCoeffs`) so the Platt fit will
+    // actually run on prior-window data instead of returning null.
+    //
+    // Per-window setup (raw confidence sweeps linearly across [0.3, 0.7] to
+    // give the Newton-Raphson solver a non-singular Hessian — constant x
+    // makes the Hessian determinant zero, so the fit degenerates to identity):
+    //
+    //   Window 0 (Jan 2026): 60 signals, raw conf ∈ [0.3, 0.7], outcome="correct".
+    //   Window 1 (Feb 2026): 60 signals, raw conf ∈ [0.3, 0.7], outcome="incorrect".
+    //
+    // With window-0-only training data (all y=1), Platt drives σ(a·x + b) → 1
+    // across the whole confidence range; calibrated values land at ≈ 1.0.
+    //
+    // If walk-forward LEAKED window 1's outcomes into its own fit, training
+    // would see 60 correct + 60 incorrect at matched x — labels balance per-x,
+    // Platt converges near identity, calibrated values stay ≈ raw. The
+    // assertion catches that drift.
+    const fromMs = new Date("2026-01-01T00:00:00.000Z").getTime();
     const refitDays = 30;
+    const windowMs = refitDays * 86_400_000;
+    const toMs = fromMs + 2 * windowMs;
 
     const windows = buildWalkForwardWindows(fromMs, toMs, refitDays);
-    // There should be 5 windows (Jan, Feb, Mar, Apr, May).
-    expect(windows.length).toBeGreaterThanOrEqual(5);
+    expect(windows.length).toBe(2);
 
-    // Build synthetic signals: 5 per window, all resolved as "correct".
-    const signals: BacktestSignal[] = [];
-    for (const w of windows) {
-      const midMs = (w.startMs + w.endMs) / 2;
-      for (let i = 0; i < 3; i++) {
-        signals.push({
-          emittedAt: new Date(midMs + i * 3600000).toISOString(),
-          closeTime: midMs + i * 3600000,
-          pair: "BTC/USDT",
-          timeframe: "1h",
-          type: "buy",
-          confidence: 0.65 + i * 0.05,
-          rulesFired: ["rsi-oversold"],
-          gateReason: null,
-          resolvedAt: new Date(midMs + i * 3600000 + 4 * TF_MS).toISOString(),
-          outcome: "correct",
-          priceMovePct: 0.01,
-          priceAtSignal: 30000,
-          priceAtResolution: 30300,
-          expiresAt: new Date(midMs + i * 3600000 + 4 * TF_MS).toISOString(),
-          ratificationStatus: "not-required",
-        });
-      }
+    const SIGNALS_PER_WINDOW = 60;
+
+    function rawConfidenceAt(i: number): number {
+      // Spread raw confidence in [0.3, 0.7] across the window. Variation in x
+      // is required to keep Platt's Hessian non-singular.
+      return 0.3 + (i / SIGNALS_PER_WINDOW) * 0.4;
     }
 
-    // applyWalkForwardCalibration must not throw and must return same count.
+    function buildSignal(
+      emittedMs: number,
+      rawConf: number,
+      outcome: "correct" | "incorrect",
+    ): BacktestSignal {
+      return {
+        emittedAt: new Date(emittedMs).toISOString(),
+        closeTime: emittedMs,
+        pair: "BTC/USDT",
+        timeframe: "1h",
+        type: "buy",
+        confidence: rawConf,
+        rulesFired: ["rsi-oversold"],
+        gateReason: null,
+        resolvedAt: new Date(emittedMs + 4 * TF_MS).toISOString(),
+        outcome,
+        priceMovePct: outcome === "correct" ? 0.01 : -0.01,
+        priceAtSignal: 30_000,
+        priceAtResolution: outcome === "correct" ? 30_300 : 29_700,
+        expiresAt: new Date(emittedMs + 4 * TF_MS).toISOString(),
+        ratificationStatus: "not-required",
+      };
+    }
+
+    const signals: BacktestSignal[] = [];
+    for (let w = 0; w < windows.length; w++) {
+      const win = windows[w]!;
+      // Spread the 60 signals evenly across the window so each one is
+      // unambiguously inside [startMs, endMs).
+      const spacing = Math.floor((win.endMs - win.startMs) / SIGNALS_PER_WINDOW);
+      const outcome: "correct" | "incorrect" = w === 0 ? "correct" : "incorrect";
+      for (let i = 0; i < SIGNALS_PER_WINDOW; i++) {
+        signals.push(buildSignal(win.startMs + i * spacing, rawConfidenceAt(i), outcome));
+      }
+    }
+    expect(signals).toHaveLength(SIGNALS_PER_WINDOW * 2);
+
     const calibrated = applyWalkForwardCalibration(
       signals,
       { kind: "walk-forward", refitDays },
       fromMs,
       toMs,
     );
+    expect(calibrated).toHaveLength(signals.length);
 
-    expect(calibrated.length).toBe(signals.length);
-
-    // Window 0 (January) has no prior outcomes → confidences should be UNCHANGED.
+    // Window 0 signals: no prior outcomes → fitPlattCoeffs returns null →
+    // confidence must be UNCHANGED.
     const window0End = windows[0]!.endMs;
-    const window0Signals = calibrated.filter((s) => new Date(s.emittedAt).getTime() < window0End);
-    const window0Original = signals.filter((s) => new Date(s.emittedAt).getTime() < window0End);
-
-    for (let i = 0; i < window0Signals.length; i++) {
-      // No prior data → no Platt fit → confidence unchanged.
-      expect(window0Signals[i]!.confidence).toBe(window0Original[i]!.confidence);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. Sentiment timestamp: publishedAt > signal.emittedAt should be filtered out
-// ---------------------------------------------------------------------------
-
-describe("look-ahead guard: sentiment timestamp", () => {
-  it("sentiment items with publishedAt after signal.emittedAt are excluded (stub behavior)", () => {
-    // Phase 1 stub: sentiment is not yet wired into the backtest engine.
-    // This test asserts the stub behavior: the engine does NOT use a future
-    // sentiment bundle (because it has no sentiment wiring at all).
-    // When sentiment is wired in a future phase, this test should be updated.
-    const signalEmittedAt = new Date("2026-03-01T12:00:00.000Z");
-
-    // Simulate filtering logic that would be applied when sentiment is wired.
-    const sentimentItems = [
-      { publishedAt: "2026-03-01T10:00:00.000Z", sentiment: "positive" },
-      { publishedAt: "2026-03-01T11:59:59.999Z", sentiment: "negative" },
-      { publishedAt: "2026-03-01T12:00:01.000Z", sentiment: "positive" }, // future — must be excluded
-      { publishedAt: "2026-03-02T00:00:00.000Z", sentiment: "positive" }, // future — must be excluded
-    ];
-
-    const filtered = sentimentItems.filter((item) => new Date(item.publishedAt) <= signalEmittedAt);
-
-    expect(filtered).toHaveLength(2);
-    for (const item of filtered) {
-      expect(new Date(item.publishedAt).getTime()).toBeLessThanOrEqual(signalEmittedAt.getTime());
-    }
-
-    // Assert that future items are absent.
-    const futureItems = sentimentItems.filter(
-      (item) => new Date(item.publishedAt) > signalEmittedAt,
+    const window0Calibrated = calibrated.filter(
+      (s) => new Date(s.emittedAt).getTime() < window0End,
     );
-    expect(futureItems).toHaveLength(2);
-    // None of the filtered items should be in the future set.
-    for (const item of filtered) {
-      expect(futureItems).not.toContain(item);
+    expect(window0Calibrated).toHaveLength(SIGNALS_PER_WINDOW);
+    for (let i = 0; i < window0Calibrated.length; i++) {
+      expect(window0Calibrated[i]!.confidence).toBe(rawConfidenceAt(i));
     }
-  });
-});
 
-// ---------------------------------------------------------------------------
-// 6. Rule "since" filtering — assert harness no-op behavior
-// ---------------------------------------------------------------------------
-
-describe("look-ahead guard: rule since field", () => {
-  it("rules do not have a since field yet — engine fires rules regardless of date (no-op)", async () => {
-    // This test asserts the current no-op behavior: rules in RULES[] do not have
-    // a "since" field, so the engine fires all enabled rules regardless of signal date.
-    // When a "since" field is added to rule definitions, this test should be updated
-    // to assert temporal filtering.
-    const candles = makeCandles(260);
-    const engine = new BacktestEngine(mockStore(candles));
-
-    const result = await engine.run({
-      pair: "BTC/USDT",
-      timeframe: "1h",
-      from: new Date(BASE_TIME + 205 * TF_MS),
-      to: new Date(BASE_TIME + 259 * TF_MS),
-    });
-
-    // Verify the engine ran without error and produced signals.
-    // No "since" filtering is applied — all rules fire freely.
-    expect(typeof result.metrics.totalSignals).toBe("number");
-
-    // Any rule that fires should produce a non-empty rulesFired array.
-    const withRules = result.signals.filter((s) => s.rulesFired.length > 0);
-    // Assert that rulesFired entries are strings (no "since" field attached).
-    for (const sig of withRules) {
-      for (const ruleName of sig.rulesFired) {
-        expect(typeof ruleName).toBe("string");
-        // The rule name should not contain a date suffix (no "since" in naming convention).
-        expect(ruleName).not.toMatch(/\d{4}-\d{2}-\d{2}/);
-      }
+    // Window 1 signals: Platt fit runs on window 0 outcomes (all "correct"),
+    // so calibrated confidence should be pushed strongly upward toward 1.0
+    // across the entire raw-confidence range. If window 1's own
+    // (all-incorrect) outcomes leaked into the fit, the calibration would be
+    // near identity (calibrated ≈ raw).
+    const window1Calibrated = calibrated.filter(
+      (s) => new Date(s.emittedAt).getTime() >= window0End,
+    );
+    expect(window1Calibrated).toHaveLength(SIGNALS_PER_WINDOW);
+    for (let i = 0; i < window1Calibrated.length; i++) {
+      const sig = window1Calibrated[i]!;
+      const raw = rawConfidenceAt(i);
+      // Decisive separation: > 0.99 if calibrated from window 0 alone (all y=1),
+      // ≈ raw (0.3..0.7) if window 1 leaked into its own fit. Margin is wide.
+      expect(sig.confidence).toBeGreaterThan(0.99);
+      // And the calibrated value must have actually shifted away from raw.
+      expect(sig.confidence - raw).toBeGreaterThan(0.25);
     }
   });
 });

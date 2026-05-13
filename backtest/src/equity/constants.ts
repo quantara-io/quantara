@@ -10,14 +10,19 @@
 // Transaction costs
 // ---------------------------------------------------------------------------
 
-/** Slippage per-side in bps. Production estimate: 5 bps. */
-export const SLIPPAGE_BPS = 5;
+/**
+ * Round-trip transaction cost in basis points (slippage + fees, entry + exit
+ * combined). Matches issue #370's "15 bps round-trip" specification.
+ *
+ * Composition (informational): ~5 bps slippage + ~10 bps exchange fees,
+ * totalled across both legs (open + close) of a position. The full 15 bps is
+ * charged ONCE per resolved directional signal in the equity simulator —
+ * not per leg.
+ */
+export const ROUND_TRIP_COST_BPS = 15;
 
-/** Exchange fee per-side in bps. Production estimate: 10 bps. */
-export const FEE_BPS = 10;
-
-/** Round-trip transaction cost (entry + exit) as a decimal fraction. */
-export const ROUND_TRIP_COST = (SLIPPAGE_BPS + FEE_BPS) * 2 * 1e-4;
+/** Round-trip transaction cost as a decimal fraction (15 bps = 0.0015). */
+export const ROUND_TRIP_COST = ROUND_TRIP_COST_BPS * 1e-4;
 
 // ---------------------------------------------------------------------------
 // Sizing defaults

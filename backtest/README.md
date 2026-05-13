@@ -117,19 +117,34 @@ export default strategy;
 
 ## Look-ahead guards
 
-Phase 3 adds `engine.lookahead.test.ts` with 6 tests that guard against common look-ahead bias patterns:
+Phase 3 adds `engine.lookahead.test.ts` with look-ahead bias guard tests. Each
+test exercises a real production code path and fails loudly if look-ahead
+protection is removed:
 
-1. **Indicator state** — eval window only sees candles up to and including the current bar
-2. **Outcome price lookup** — resolver uses the candle at `expiresAt`, not a future candle
-3. **Calibration freeze** — warns when `paramsAt` post-dates the earliest signal
-4. **Walk-forward calibration** — asserts window N params come from outcomes of windows < N
-5. **Sentiment timestamp** — asserts future `publishedAt` items are filtered out
-6. **Rule since field** — documents the current no-op behavior (rules lack a `since` field)
+1. **Indicator state** — `baseSeries.slice(0, baseIdx + 1)` defense: indicator
+   state at bar `N` is computed from candles `[0..N]` only, never from the
+   future. Test fixture: flat past + sustained-trend future + assert no
+   future-driven rule fires at the past midpoint.
+2. **Outcome price lookup** — resolver uses the candle AT `expiresAt`, not a
+   later one. Test fixture: candle at `expiresAt` has price X, candle at
+   `expiresAt+TF` has wildly different price Y; assert resolved price is X.
+3. **Calibration freeze** — `checkFrozenCalibrationGuard` warns when
+   `paramsAt` post-dates the earliest signal.
+4. **Walk-forward calibration** — window N's Platt fit uses ONLY outcomes
+   from windows `< N`. Test fixture: 60+ synthetic signals per window with
+   asymmetric outcomes; assert window 1 confidences are calibrated by window
+   0 outcomes only.
+
+Sentiment and "rule since" look-ahead tests are deferred until those features
+are wired through the engine (sentiment is currently stubbed; rules lack a
+`since` field).
 
 ## Transaction cost model
 
-15 bps round-trip per directional bet (configurable in `src/equity/constants.ts`):
+15 bps round-trip per resolved directional bet (configurable in `src/equity/constants.ts`
+via `ROUND_TRIP_COST_BPS`). The total is charged once per signal (entry + exit
+combined), matching issue #370's "round-trip" convention:
 
-- 5 bps slippage per-side
-- 10 bps exchange fee per-side
-- Total: (5 + 10) × 2 = 30 bps
+- ~5 bps slippage (combined both legs)
+- ~10 bps exchange fees (combined both legs)
+- Total: 15 bps applied once per resolved signal in `simulateEquityCurve`
