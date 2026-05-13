@@ -93,24 +93,32 @@ resource "aws_iam_role_policy" "backtest_runner_dynamodb_read" {
   })
 }
 
-# Write backtest-runs status + metrics rows.
+# Write backtest-runs status + metrics rows AND pipeline-events for the
+# live activity feed (PR #376 review finding 3 — runner-side emission).
 resource "aws_iam_role_policy" "backtest_runner_dynamodb_write" {
   name = "${local.prefix}-backtest-runner-ddb-write"
   role = aws_iam_role.backtest_runner_task.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-      ]
-      Resource = [
-        aws_dynamodb_table.backtest_runs.arn,
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.backtest_runs.arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = aws_dynamodb_table.pipeline_events.arn
+      },
+    ]
   })
 }
 
@@ -232,6 +240,7 @@ resource "aws_ecs_task_definition" "backtest_runner" {
       { name = "TABLE_BACKTEST_RUNS", value = aws_dynamodb_table.backtest_runs.name },
       { name = "BACKTEST_JOBS_QUEUE_URL", value = aws_sqs_queue.backtest_jobs.url },
       { name = "BACKTEST_RESULTS_BUCKET", value = aws_s3_bucket.backtest_results.id },
+      { name = "TABLE_PIPELINE_EVENTS", value = aws_dynamodb_table.pipeline_events.name },
       { name = "RATIFICATION_MODEL_ID", value = var.environment == "prod" ? "us.anthropic.claude-sonnet-4-6" : "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
     ]
 
@@ -284,10 +293,15 @@ resource "aws_appautoscaling_policy" "backtest_runner_scale_up" {
   scalable_dimension = aws_appautoscaling_target.backtest_runner.scalable_dimension
   service_namespace  = aws_appautoscaling_target.backtest_runner.service_namespace
 
+  # PR #376 review finding 7: the original config used
+  # adjustment_type = ExactCapacity with scaling_adjustment = 1, which clamps
+  # desired_count to 1 regardless of queue depth — autoscaling could never
+  # reach max_capacity = 5. ChangeInCapacity with +1 per step lets the policy
+  # walk capacity up to the configured max as the alarm keeps firing.
   step_scaling_policy_configuration {
-    adjustment_type          = "ExactCapacity"
-    cooldown                 = 60
-    metric_aggregation_type  = "Maximum"
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 60
+    metric_aggregation_type = "Maximum"
 
     step_adjustment {
       metric_interval_lower_bound = 0
@@ -321,14 +335,18 @@ resource "aws_appautoscaling_policy" "backtest_runner_scale_down" {
   scalable_dimension = aws_appautoscaling_target.backtest_runner.scalable_dimension
   service_namespace  = aws_appautoscaling_target.backtest_runner.service_namespace
 
+  # PR #376 review finding 7: scale-DOWN uses ChangeInCapacity = -1 (per step)
+  # which decrements running tasks one at a time when the queue stays empty.
+  # ExactCapacity = 0 here would tear down ALL in-flight runners
+  # mid-backtest if the queue briefly drained.
   step_scaling_policy_configuration {
-    adjustment_type          = "ExactCapacity"
-    cooldown                 = 300
-    metric_aggregation_type  = "Maximum"
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 300
+    metric_aggregation_type = "Maximum"
 
     step_adjustment {
       metric_interval_upper_bound = 0
-      scaling_adjustment          = 0
+      scaling_adjustment          = -1
     }
   }
 }

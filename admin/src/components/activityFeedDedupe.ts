@@ -46,6 +46,16 @@ export function eventKey(ev: PipelineEvent): string {
       return `quorum:${ev.pair}:${ev.timeframe}:${ev.closeTime}`;
     case "sentiment-shock-detected":
       return `shock:${ev.pair}:${ev.ts}`;
+    // Backtest lifecycle — Phase 4 finding 3. Stable key = type + runId + ts;
+    // progress events use the progress fraction so 25%/50%/75%/100% don't
+    // collide on the same runId.
+    case "backtest-queued":
+    case "backtest-started":
+    case "backtest-completed":
+    case "backtest-failed":
+      return `${ev.type}:${ev.runId}`;
+    case "backtest-progress":
+      return `backtest-progress:${ev.runId}:${ev.progress.toFixed(2)}`;
   }
 }
 

@@ -1,38 +1,19 @@
 /**
  * backtest-strategies.ts — Phase 4 (issue #371).
  *
- * Option B: strategies are version-controlled in backtest/strategies/*.ts
- * and exposed via a static registry. No user uploads, no dynamic import at
- * request time — just a curated list that the admin dropdown is populated from.
+ * Thin re-export of the auto-derived strategy registry that lives in the
+ * backtest workspace. Adding a new strategy is a single-file edit in
+ * `backtest/strategies/index.ts` — no second registry to keep in sync.
  *
- * To add a new strategy: add a file to backtest/strategies/ and add an entry
- * to BACKTEST_STRATEGIES below.
+ * Resolves PR #376 review finding 8 (hardcoded strategy array).
  */
 
-export interface StrategyMeta {
-  /** Filename (without .ts extension). Used as the strategy identifier in API calls. */
-  name: string;
-  /** Human-readable description shown in the admin UI dropdown. */
-  description: string;
-}
+import { listStrategies, type StrategyMeta } from "quantara-backtest";
+
+export type { StrategyMeta };
 
 /**
- * Curated list of available strategies.
- * Source of truth: backtest/strategies/*.ts
+ * Memoised view of the registry. Snapshotted once at module load — the list
+ * only changes when a strategy file is added (cold-start picks it up).
  */
-export const BACKTEST_STRATEGIES: StrategyMeta[] = [
-  {
-    name: "production-default",
-    description:
-      "Mirrors the live production pipeline: all rules enabled, default 15m/1h/4h/1d weights " +
-      "(0.15/0.20/0.30/0.35), 4-bar n-bars exit, 1% fixed sizing. " +
-      "Use as the baseline for A/B strategy comparisons.",
-  },
-  {
-    name: "aggressive-1d-weighted",
-    description:
-      "Heavier 1d weight (0.50) at the expense of 15m (0.05). " +
-      "Lower ratification confidence threshold (0.40 vs production 0.50). " +
-      "Experimental candidate for longer time-horizon bias.",
-  },
-];
+export const BACKTEST_STRATEGIES: ReadonlyArray<StrategyMeta> = listStrategies();

@@ -584,6 +584,33 @@ jobs:
             --force-new-deployment \
             --region ${{ env.AWS_REGION }}
 
+      # --- Fargate backtest-runner image (Phase 4, issue #371) ---
+      # Builds the backtest-runner image and pushes to its own ECR repo, then
+      # force-redeploys the ECS service so the next SQS poll uses :latest.
+      # Mirrors the ingestion build above but targets the backtest workspace.
+      # Resolves PR #376 review finding 1 (no CI build for runner image).
+      - name: Build and push backtest-runner (cached)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: backtest/Dockerfile
+          push: true
+          platforms: linux/arm64
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/quantara-dev-backtest-runner:latest
+            ${{ steps.ecr-login.outputs.registry }}/quantara-dev-backtest-runner:${{ github.sha }}
+          cache-from: type=gha,scope=backtest-runner
+          cache-to: type=gha,mode=max,scope=backtest-runner
+
+      - name: Force ECS redeploy (backtest-runner)
+        run: |
+          aws ecs update-service \
+            --cluster quantara-dev-ingestion \
+            --service quantara-dev-backtest-runner \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }} || \
+            echo "backtest-runner service not yet created — skipping force redeploy"
+
   # Deploy infra (terraform apply) on every push to main once tests pass and
   # only when backend/infra/** actually changed. Sibling to deploy-code-dev,
   # gated by the `dev-terraform` environment for human approval before any

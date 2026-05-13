@@ -7,8 +7,8 @@ import { describe, it, expect } from "vitest";
 import { ALL_SECTIONS, getNextFocusElement, isOutsideClick } from "./SectionsPopover";
 
 describe("ALL_SECTIONS", () => {
-  it("contains exactly 13 entries (all routes from App.tsx)", () => {
-    expect(ALL_SECTIONS).toHaveLength(13);
+  it("contains exactly 14 entries (all routes from App.tsx, incl. /backtest)", () => {
+    expect(ALL_SECTIONS).toHaveLength(14);
   });
 
   it("every entry has a non-empty label and a path starting with /", () => {
@@ -26,7 +26,7 @@ describe("ALL_SECTIONS", () => {
     expect(ALL_SECTIONS.some((s) => s.to === "/admin/glossary")).toBe(true);
   });
 
-  it("includes all 12 non-root routes from App.tsx", () => {
+  it("includes all 13 non-root routes from App.tsx", () => {
     const expectedPaths = [
       "/market",
       "/news",
@@ -39,6 +39,7 @@ describe("ALL_SECTIONS", () => {
       "/health",
       "/activity",
       "/ops",
+      "/backtest",
       "/admin/glossary",
     ];
     for (const path of expectedPaths) {

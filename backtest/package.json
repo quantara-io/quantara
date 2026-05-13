@@ -3,17 +3,25 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cost/estimator-pure": "./src/cost/estimator-pure.ts",
+    "./runner/main": "./src/runner/main.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --passWithNoTests --coverage",
     "smoke": "tsx src/smoke.ts",
     "backtest": "tsx src/cli.ts",
-    "backtest:estimate": "tsx src/cli.ts estimate"
+    "backtest:estimate": "tsx src/cli.ts estimate",
+    "runner": "tsx src/runner/main.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.750.0",
     "@aws-sdk/client-dynamodb": "^3.750.0",
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/client-sqs": "^3.750.0",
     "@aws-sdk/lib-dynamodb": "^3.750.0",
     "@quantara/shared": "*",
     "quantara-ingestion": "*",
