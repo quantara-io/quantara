@@ -35,6 +35,7 @@ output "table_names" {
     signals_collection   = aws_dynamodb_table.signals_collection.name
     rule_status          = aws_dynamodb_table.rule_status.name
     candles_archive      = aws_dynamodb_table.candles_archive.name
+    backtest_runs        = aws_dynamodb_table.backtest_runs.name
   }
 }
 
@@ -73,8 +74,17 @@ output "cloudfront_distribution_id" {
 
 output "sqs_queue_urls" {
   value = {
-    enrichment    = aws_sqs_queue.enrichment.url
-    market_events = aws_sqs_queue.market_events.url
-    enriched_news = aws_sqs_queue.enriched_news.url
+    enrichment      = aws_sqs_queue.enrichment.url
+    market_events   = aws_sqs_queue.market_events.url
+    enriched_news   = aws_sqs_queue.enriched_news.url
+    backtest_jobs   = aws_sqs_queue.backtest_jobs.url
   }
+}
+
+output "backtest_results_bucket" {
+  value = aws_s3_bucket.backtest_results.id
+}
+
+output "backtest_runner_ecr_url" {
+  value = aws_ecr_repository.backtest_runner.repository_url
 }

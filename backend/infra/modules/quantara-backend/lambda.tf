@@ -47,6 +47,9 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
           aws_dynamodb_table.indicator_state.arn,
           # Phase 8 §10.10: admin rule-status routes (GET /admin/rule-status, PATCH /admin/rule-status/{key})
           aws_dynamodb_table.rule_status.arn,
+          # Phase 4 backtest: admin POST/GET /admin/backtest routes read/write backtest-runs.
+          aws_dynamodb_table.backtest_runs.arn,
+          "${aws_dynamodb_table.backtest_runs.arn}/index/*",
         ]
       },
       {
@@ -345,6 +348,57 @@ resource "aws_iam_role_policy" "lambda_admin_debug_sqs" {
   })
 }
 
+# SendMessage permission for POST /admin/backtest, which enqueues a job onto
+# the backtest-jobs queue. Scoped to that single queue.
+resource "aws_iam_role_policy" "lambda_admin_backtest_sqs" {
+  name = "${local.prefix}-admin-backtest-sqs"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage"]
+      Resource = aws_sqs_queue.backtest_jobs.arn
+    }]
+  })
+}
+
+# S3 GetObject for GET /admin/backtest/:runId/artifact/:name (proxy download).
+# Scoped to the backtest-results bucket only. Read-only — the API never writes
+# back. Phase 4 follow-up (PR #376 review finding 4).
+resource "aws_iam_role_policy" "lambda_admin_backtest_s3_read" {
+  name = "${local.prefix}-admin-backtest-s3-read"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = "${aws_s3_bucket.backtest_results.arn}/*"
+    }]
+  })
+}
+
+# PutItem on pipeline-events so the admin POST /backtest emits a
+# `backtest-queued` event into the live activity feed. Read-only on the rest
+# of the table — no need to query. Phase 4 follow-up finding 3.
+resource "aws_iam_role_policy" "lambda_admin_pipeline_events_write" {
+  name = "${local.prefix}-admin-pipeline-events-write"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:PutItem"]
+      Resource = aws_dynamodb_table.pipeline_events.arn
+    }]
+  })
+}
+
+
 # InvokeFunction permission for /debug/force-indicators (issue #288), which
 # calls the indicator-handler Lambda with a synthetic DynamoDBStreamEvent to
 # recompute IndicatorState without waiting for the next live bar close.
@@ -444,6 +498,15 @@ resource "aws_lambda_function" "api" {
       # handler Lambda by name. Injected explicitly so the service never
       # constructs a function name from TABLE_PREFIX with a stale format.
       INDICATOR_HANDLER_FUNCTION_NAME = aws_lambda_function.indicator_handler.function_name
+      # Phase 4 backtest: admin backtest routes.
+      TABLE_BACKTEST_RUNS      = aws_dynamodb_table.backtest_runs.name
+      BACKTEST_JOBS_QUEUE_URL  = aws_sqs_queue.backtest_jobs.url
+      BACKTEST_RESULTS_BUCKET  = aws_s3_bucket.backtest_results.id
+      # Phase 4 follow-up (PR #376 finding 3): emit `backtest-queued` to the
+      # live activity feed from POST /admin/backtest. The runner emits the
+      # remaining started / progress / completed / failed events directly
+      # to this table.
+      TABLE_PIPELINE_EVENTS    = aws_dynamodb_table.pipeline_events.name
     }
   }
 

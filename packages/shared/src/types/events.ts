@@ -58,4 +58,53 @@ export type PipelineEvent =
       timeframe: string;
       closeTime: string;
       ts: string;
+    }
+  // Backtest lifecycle events — Phase 4 (issue #371).
+  // Emitted by the admin POST /admin/backtest route (queued) and the Fargate
+  // backtest-runner (started / progress / completed / failed). The activity
+  // feed renders these alongside production signal events so the operator
+  // sees the runner heartbeat without tailing CloudWatch.
+  | {
+      type: "backtest-queued";
+      runId: string;
+      strategy: string;
+      pair: string;
+      timeframe: string;
+      estimatedCostUsd: number;
+      ts: string;
+    }
+  | {
+      type: "backtest-started";
+      runId: string;
+      strategy: string;
+      pair: string;
+      timeframe: string;
+      ts: string;
+    }
+  | {
+      type: "backtest-progress";
+      runId: string;
+      /** 0..1 — fraction of the eval window processed. */
+      progress: number;
+      ts: string;
+    }
+  | {
+      type: "backtest-completed";
+      runId: string;
+      strategy: string;
+      pair: string;
+      timeframe: string;
+      durationMs: number;
+      actualCostUsd: number;
+      totalSignals: number;
+      ts: string;
+    }
+  | {
+      type: "backtest-failed";
+      runId: string;
+      strategy: string;
+      pair: string;
+      timeframe: string;
+      reason: string;
+      ts: string;
     };

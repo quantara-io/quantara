@@ -32,7 +32,10 @@ const SECTION_PAIRS: [Section, Section | null][] = [
     { label: "Ops", to: "/ops" },
     { label: "PnL", to: "/pnl" },
   ],
-  [{ label: "Glossary", to: "/admin/glossary" }, null],
+  [
+    { label: "Backtest", to: "/backtest" },
+    { label: "Glossary", to: "/admin/glossary" },
+  ],
 ];
 
 // Flattened list for keyboard navigation

@@ -46,6 +46,12 @@ const EVENT_TYPE_COLORS: Record<PipelineEvent["type"], string> = {
   "news-enriched": "bg-up-soft text-up-strong",
   "sentiment-shock-detected": "bg-warn-soft text-warn",
   "quorum-failed": "bg-down-soft text-down-strong",
+  // Backtest lifecycle — Phase 4 finding 3.
+  "backtest-queued": "bg-line text-muted2",
+  "backtest-started": "bg-brand-soft text-brand",
+  "backtest-progress": "bg-line text-ink2",
+  "backtest-completed": "bg-up-soft text-up-strong",
+  "backtest-failed": "bg-down-soft text-down-strong",
 };
 
 const ALL_EVENT_TYPES: PipelineEvent["type"][] = [
@@ -55,6 +61,11 @@ const ALL_EVENT_TYPES: PipelineEvent["type"][] = [
   "news-enriched",
   "sentiment-shock-detected",
   "quorum-failed",
+  "backtest-queued",
+  "backtest-started",
+  "backtest-progress",
+  "backtest-completed",
+  "backtest-failed",
 ];
 
 const ALL_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"] as const;
@@ -103,6 +114,16 @@ function eventSummary(event: PipelineEvent): string {
       return `${event.pair} delta=${event.deltaScore.toFixed(3)}`;
     case "quorum-failed":
       return `${event.pair} ${event.timeframe}`;
+    case "backtest-queued":
+      return `backtest queued runId=${event.runId.slice(0, 8)} ${event.pair} ${event.timeframe} est=$${event.estimatedCostUsd.toFixed(4)}`;
+    case "backtest-started":
+      return `backtest started runId=${event.runId.slice(0, 8)} ${event.pair} ${event.timeframe} strategy=${event.strategy}`;
+    case "backtest-progress":
+      return `backtest progress runId=${event.runId.slice(0, 8)} ${(event.progress * 100).toFixed(0)}%`;
+    case "backtest-completed":
+      return `backtest done runId=${event.runId.slice(0, 8)} signals=${event.totalSignals} cost=$${event.actualCostUsd.toFixed(4)} ${event.durationMs}ms`;
+    case "backtest-failed":
+      return `backtest failed runId=${event.runId.slice(0, 8)} ${event.pair} ${event.timeframe} reason=${event.reason}`;
   }
 }
 

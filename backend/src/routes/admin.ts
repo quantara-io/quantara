@@ -30,6 +30,14 @@ import {
   FORCE_INDICATORS_EXCHANGES,
 } from "../services/admin-debug.service.js";
 import { listRuleStatuses, setManualOverride } from "../services/rule-status.service.js";
+import { putRun, listRuns, getRunDetail } from "../lib/backtest-runs-store.js";
+import { BACKTEST_STRATEGIES } from "../lib/backtest-strategies.js";
+import {
+  estimateBacktestCost,
+  type EstimateBacktestInput,
+} from "../lib/backtest-cost-estimator.js";
+import { streamBacktestArtifact, isAllowedArtifactName } from "../lib/backtest-artifact-stream.js";
+import { emitPipelineEventSafe } from "../lib/pipeline-events.js";
 
 const admin = new Hono();
 
@@ -1202,6 +1210,598 @@ admin.post("/positions/:id/close", async (c) => {
     success: true as const,
     data: { closed: true, positionId },
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/backtest/strategies
+// Phase 4 (issue #371): list in-repo strategies from backtest/strategies/*.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/backtest/strategies
+ *
+ * Returns the list of available strategies (Option B: in-repo, version-controlled).
+ * No user uploads. The dropdown in BacktestNew.tsx is populated from this endpoint.
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/backtest/strategies", (c) => {
+  return c.json({
+    success: true as const,
+    data: { strategies: BACKTEST_STRATEGIES },
+  });
+});
+
+// Backtest validation constants — declared once and reused across the
+// estimate, submission, list, and detail endpoints below.
+const VALID_RATIFICATION_MODES = ["none", "skip-bedrock", "replay-bedrock"] as const;
+const VALID_BACKTEST_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
+const VALID_BACKTEST_MODELS = ["haiku", "sonnet"] as const;
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/backtest/estimate
+// Phase 4 follow-up (PR #376 review finding 2): live cost preview that
+// shares the SAME estimator code as the submission path (no duplicate
+// inline math, real gate-rate query, 4× multi-TF multiplier).
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/admin/backtest/estimate
+ *
+ * Body: { pair, timeframe, from, to, ratificationMode, model?, strategy? }
+ *
+ * Returns the same `RatificationCostEstimate` shape the engine uses, so the
+ * admin UI's pre-submit preview is byte-identical to what the submit path
+ * computes. The UI calls this on every relevant input change (debounced).
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.post("/backtest/estimate", async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "request body must be valid JSON" },
+      },
+      400,
+    );
+  }
+
+  const { pair, timeframe, from, to, ratificationMode, model, strategy } = body;
+
+  if (typeof pair !== "string" || !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+  if (
+    typeof timeframe !== "string" ||
+    !(VALID_BACKTEST_TIMEFRAMES as readonly string[]).includes(timeframe)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_BACKTEST_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+  if (typeof from !== "string" || isNaN(Date.parse(from))) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "from must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+  if (typeof to !== "string" || isNaN(Date.parse(to))) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "to must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+  if (
+    typeof ratificationMode !== "string" ||
+    !(VALID_RATIFICATION_MODES as readonly string[]).includes(ratificationMode)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `ratificationMode must be one of: ${VALID_RATIFICATION_MODES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  const modelValue =
+    typeof model === "string" && (VALID_BACKTEST_MODELS as readonly string[]).includes(model)
+      ? (model as "haiku" | "sonnet")
+      : undefined;
+
+  const estimate = await estimateBacktestCost({
+    pair,
+    timeframe,
+    from,
+    to,
+    ratificationMode: ratificationMode as EstimateBacktestInput["ratificationMode"],
+    ...(modelValue ? { model: modelValue } : {}),
+    ...(typeof strategy === "string" ? { strategy } : {}),
+  });
+
+  return c.json({ success: true as const, data: estimate });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/backtest
+// Phase 4 (issue #371): enqueue a new backtest run.
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/admin/backtest
+ *
+ * Body: {
+ *   strategy, baseline?, pair | pairs, timeframe | timeframes, from, to,
+ *   ratificationMode, model?, confirmCostUsd?
+ * }
+ *
+ * `pair` and `timeframe` accept BOTH string (single value, backward compat
+ * with v1) AND array forms. When arrays are supplied the cross-product
+ * expands to one queued run per (pair, TF) combination — e.g.
+ * `pairs=["BTC/USDT","ETH/USDT"]` × `timeframes=["15m","1h"]` produces
+ * 4 separate runs in a single submission. The response then contains
+ * `{ runs: [{runId, pair, timeframe, estimateUsd}, ...], totalEstimateUsd }`.
+ *
+ * The cost cap is applied to the SUM of all leaf estimates. `confirmCostUsd`
+ * acts as the operator's "I accept this cost" bypass for ≥$1 sums.
+ *
+ * Validates, estimates cost (rejects if total > $1 unless confirmCostUsd
+ * matches), writes one backtest-runs DDB row per leaf with status=queued,
+ * enqueues one SQS job per leaf, emits a `backtest-queued` pipeline event
+ * per leaf, returns the per-run breakdown.
+ *
+ * Auth: requireAuth + requireAdmin.
+ *
+ * Resolves PR #376 review findings 2, 3, 5, 6.
+ */
+admin.post("/backtest", async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "request body must be valid JSON" },
+      },
+      400,
+    );
+  }
+
+  const auth = c.get("auth");
+  const {
+    strategy,
+    baseline,
+    pair,
+    pairs,
+    timeframe,
+    timeframes,
+    from,
+    to,
+    ratificationMode,
+    model,
+    confirmCostUsd,
+  } = body;
+
+  // --- validate strategy ---
+  if (typeof strategy !== "string" || !BACKTEST_STRATEGIES.find((s) => s.name === strategy)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `strategy must be one of: ${BACKTEST_STRATEGIES.map((s) => s.name).join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  // --- validate baseline (optional) ---
+  if (baseline !== undefined) {
+    if (typeof baseline !== "string" || !BACKTEST_STRATEGIES.find((s) => s.name === baseline)) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: `baseline must be one of: ${BACKTEST_STRATEGIES.map((s) => s.name).join(", ")}`,
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- validate pair / pairs (multi-select supported — finding 5) ---
+  const resolvedPairs = ((): string[] | { error: string } => {
+    if (Array.isArray(pairs)) {
+      if (pairs.length === 0) return { error: "pairs must be a non-empty array" };
+      if (pairs.length > 10) return { error: "pairs cap is 10 per submission" };
+      for (const p of pairs) {
+        if (typeof p !== "string" || !(PAIRS as readonly string[]).includes(p)) {
+          return { error: `pairs entries must each be one of: ${PAIRS.join(", ")}` };
+        }
+      }
+      // De-dupe but preserve order so the response ordering is deterministic.
+      return Array.from(new Set(pairs as string[]));
+    }
+    if (typeof pair === "string") {
+      if (!(PAIRS as readonly string[]).includes(pair)) {
+        return { error: `pair must be one of: ${PAIRS.join(", ")}` };
+      }
+      return [pair];
+    }
+    return { error: "pair (string) or pairs (string[]) is required" };
+  })();
+  if (!Array.isArray(resolvedPairs)) {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: resolvedPairs.error } },
+      400,
+    );
+  }
+
+  // --- validate timeframe / timeframes (multi-select supported — finding 5) ---
+  const resolvedTfs = ((): string[] | { error: string } => {
+    if (Array.isArray(timeframes)) {
+      if (timeframes.length === 0) return { error: "timeframes must be a non-empty array" };
+      if (timeframes.length > VALID_BACKTEST_TIMEFRAMES.length) {
+        return { error: `timeframes cap is ${VALID_BACKTEST_TIMEFRAMES.length}` };
+      }
+      for (const t of timeframes) {
+        if (
+          typeof t !== "string" ||
+          !(VALID_BACKTEST_TIMEFRAMES as readonly string[]).includes(t)
+        ) {
+          return {
+            error: `timeframes entries must each be one of: ${VALID_BACKTEST_TIMEFRAMES.join(", ")}`,
+          };
+        }
+      }
+      return Array.from(new Set(timeframes as string[]));
+    }
+    if (typeof timeframe === "string") {
+      if (!(VALID_BACKTEST_TIMEFRAMES as readonly string[]).includes(timeframe)) {
+        return {
+          error: `timeframe must be one of: ${VALID_BACKTEST_TIMEFRAMES.join(", ")}`,
+        };
+      }
+      return [timeframe];
+    }
+    return { error: "timeframe (string) or timeframes (string[]) is required" };
+  })();
+  if (!Array.isArray(resolvedTfs)) {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: resolvedTfs.error } },
+      400,
+    );
+  }
+
+  // --- validate date range ---
+  if (typeof from !== "string" || isNaN(Date.parse(from))) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "from must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+  if (typeof to !== "string" || isNaN(Date.parse(to))) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "to must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+  if (new Date(from) >= new Date(to)) {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "from must be before to" } },
+      400,
+    );
+  }
+
+  // --- validate ratificationMode ---
+  if (
+    typeof ratificationMode !== "string" ||
+    !(VALID_RATIFICATION_MODES as readonly string[]).includes(ratificationMode)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `ratificationMode must be one of: ${VALID_RATIFICATION_MODES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  // --- validate model (optional) ---
+  if (model !== undefined) {
+    if (
+      typeof model !== "string" ||
+      !(VALID_BACKTEST_MODELS as readonly string[]).includes(model)
+    ) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: `model must be one of: ${VALID_BACKTEST_MODELS.join(", ")}`,
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- cost estimate (shared estimator — finding 2) ---
+  // Build leaves (pair × timeframe) and estimate each. The total drives the
+  // cost cap; per-leaf estimates ride along on the DDB row for accountability.
+  const modelKey = typeof model === "string" ? (model as "haiku" | "sonnet") : undefined;
+  const leafEstimates = await Promise.all(
+    resolvedPairs.flatMap((p) =>
+      resolvedTfs.map(async (tf) => {
+        const est = await estimateBacktestCost({
+          pair: p,
+          timeframe: tf,
+          from: from as string,
+          to: to as string,
+          ratificationMode: ratificationMode as EstimateBacktestInput["ratificationMode"],
+          ...(modelKey ? { model: modelKey } : {}),
+          ...(typeof strategy === "string" ? { strategy } : {}),
+        });
+        return { pair: p, timeframe: tf, estimatedCostUsd: est.estimatedCostUsd };
+      }),
+    ),
+  );
+
+  const totalEstimateUsd = leafEstimates.reduce((sum, e) => sum + e.estimatedCostUsd, 0);
+
+  // --- cost guard (finding 6): allow ≥cap submissions when confirmCostUsd
+  // matches the total. The UI exposes this as an "I accept this cost" checkbox.
+  const COST_CAP_USD = 1.0;
+  if (totalEstimateUsd > COST_CAP_USD) {
+    if (typeof confirmCostUsd !== "number" || Math.abs(confirmCostUsd - totalEstimateUsd) > 0.01) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "COST_CAP_EXCEEDED",
+            message:
+              `Total estimated cost $${totalEstimateUsd.toFixed(4)} exceeds $${COST_CAP_USD}. ` +
+              `Re-submit with confirmCostUsd: ${totalEstimateUsd.toFixed(4)} to proceed.`,
+          },
+          data: { totalEstimateUsd, leafEstimates },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- create and enqueue one run per leaf, emit backtest-queued (finding 3) ---
+  const baselineValue = typeof baseline === "string" ? baseline : undefined;
+  const runs: Array<{
+    runId: string;
+    pair: string;
+    timeframe: string;
+    estimateUsd: number;
+  }> = [];
+
+  for (const leaf of leafEstimates) {
+    const result = await putRun({
+      strategy: strategy as string,
+      ...(baselineValue ? { baseline: baselineValue } : {}),
+      pair: leaf.pair,
+      timeframe: leaf.timeframe,
+      from: from as string,
+      to: to as string,
+      ratificationMode: ratificationMode as string,
+      ...(modelKey ? { model: modelKey } : {}),
+      estimatedCostUsd: leaf.estimatedCostUsd,
+      userId: auth.userId,
+    });
+    runs.push({
+      runId: result.runId,
+      pair: leaf.pair,
+      timeframe: leaf.timeframe,
+      estimateUsd: result.estimateUsd,
+    });
+
+    emitPipelineEventSafe({
+      type: "backtest-queued",
+      runId: result.runId,
+      strategy: strategy as string,
+      pair: leaf.pair,
+      timeframe: leaf.timeframe,
+      estimatedCostUsd: leaf.estimatedCostUsd,
+      ts: new Date().toISOString(),
+    });
+  }
+
+  // Backward-compat shape for the single-leaf case: callers from v1
+  // continue to read { runId, estimateUsd }. New callers use { runs }.
+  if (runs.length === 1) {
+    return c.json({
+      success: true as const,
+      data: {
+        runId: runs[0]!.runId,
+        estimateUsd: runs[0]!.estimateUsd,
+        runs,
+        totalEstimateUsd,
+      },
+    });
+  }
+  return c.json({
+    success: true as const,
+    data: { runs, totalEstimateUsd },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/backtest
+// Phase 4 (issue #371): paginated list of backtest runs.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/backtest?limit=20&cursor=<base64>
+ *
+ * Returns paginated runs sorted by submittedAt desc.
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/backtest", async (c) => {
+  const limitRaw = c.req.query("limit");
+  const cursor = c.req.query("cursor");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 20;
+
+  if (Number.isNaN(limit) || limit < 1 || limit > 100) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "limit must be between 1 and 100" },
+      },
+      400,
+    );
+  }
+
+  const result = await listRuns({ limit, cursor });
+  return c.json({ success: true as const, data: result });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/backtest/:runId
+// Phase 4 (issue #371): single run detail with presigned URLs + inline metrics.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/backtest/:runId
+ *
+ * Returns the full backtest-runs row, presigned S3 URLs for all artifacts
+ * (valid 1h), and the parsed metrics.json inline (when status=done).
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/backtest/:runId", async (c) => {
+  const runId = c.req.param("runId");
+
+  if (!runId || runId.trim() === "") {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "runId path param is required" } },
+      400,
+    );
+  }
+
+  const detail = await getRunDetail(runId);
+  if (!detail) {
+    return c.json(
+      { success: false, error: { code: "NOT_FOUND", message: `backtest run ${runId} not found` } },
+      404,
+    );
+  }
+
+  return c.json({ success: true as const, data: detail });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/backtest/:runId/artifact/:name
+// Phase 4 follow-up (PR #376 review finding 4): proxy artifact downloads
+// through the backend. Presigned URLs are deferred to a follow-up PR.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/backtest/:runId/artifact/:name
+ *
+ * Streams an artifact (summary.md / metrics.json / *.csv) from the
+ * backtest-results S3 bucket back to the caller. Filename is allow-listed
+ * so an attacker can't probe arbitrary S3 keys.
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/backtest/:runId/artifact/:name", async (c) => {
+  const runId = c.req.param("runId");
+  const name = c.req.param("name");
+
+  if (!runId || runId.trim() === "") {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "runId path param is required" } },
+      400,
+    );
+  }
+  if (!name || !isAllowedArtifactName(name)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: "artifact name is not in the allow-list",
+        },
+      },
+      400,
+    );
+  }
+
+  // Verify the run exists first — gives a clean 404 before we touch S3.
+  const detail = await getRunDetail(runId);
+  if (!detail) {
+    return c.json(
+      { success: false, error: { code: "NOT_FOUND", message: `backtest run ${runId} not found` } },
+      404,
+    );
+  }
+
+  try {
+    const artifact = await streamBacktestArtifact(runId, name);
+    return new Response(artifact.body, {
+      status: 200,
+      headers: {
+        "Content-Type": artifact.contentType,
+        "Content-Length": String(artifact.contentLength),
+        "Content-Disposition": `attachment; filename="${name}"`,
+        "Cache-Control": "private, max-age=60",
+      },
+    });
+  } catch (err) {
+    if ((err as Error).name === "ArtifactNotFoundError") {
+      return c.json(
+        {
+          success: false,
+          error: { code: "NOT_FOUND", message: `artifact ${name} not found for run ${runId}` },
+        },
+        404,
+      );
+    }
+    throw err;
+  }
 });
 
 export { admin };
