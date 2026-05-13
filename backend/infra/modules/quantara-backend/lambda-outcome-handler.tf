@@ -36,12 +36,13 @@ resource "aws_iam_role_policy" "outcome_handler_dynamodb" {
     Version = "2012-10-17"
     Statement = [
       {
-        # Read expired signals (source data).
+        # Read expired signals (source data) AND mark them resolved.
         Effect = "Allow"
         Action = [
           "dynamodb:Query",
           "dynamodb:Scan",
           "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
         ]
         Resource = [
           aws_dynamodb_table.signals_v2.arn,
