@@ -17,6 +17,10 @@ import { Pnl } from "./pages/Pnl";
 import { Ratifications } from "./pages/Ratifications";
 import { Whitelist } from "./pages/Whitelist";
 import { Workstation } from "./pages/Workstation";
+import { Backtest } from "./pages/Backtest";
+import { BacktestNew } from "./pages/BacktestNew";
+import { BacktestRun } from "./pages/BacktestRun";
+import { BacktestCompare } from "./pages/BacktestCompare";
 
 interface PageProps {
   children: ReactNode;
@@ -137,6 +141,38 @@ export function App() {
           element={
             <Page>
               <Glossary />
+            </Page>
+          }
+        />
+        <Route
+          path="/backtest"
+          element={
+            <Page>
+              <Backtest />
+            </Page>
+          }
+        />
+        <Route
+          path="/backtest/new"
+          element={
+            <Page>
+              <BacktestNew />
+            </Page>
+          }
+        />
+        <Route
+          path="/backtest/compare"
+          element={
+            <Page>
+              <BacktestCompare />
+            </Page>
+          }
+        />
+        <Route
+          path="/backtest/:runId"
+          element={
+            <Page>
+              <BacktestRun />
             </Page>
           }
         />

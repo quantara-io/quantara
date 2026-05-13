@@ -55,3 +55,23 @@ resource "aws_sqs_queue" "enriched_news" {
     maxReceiveCount     = 3
   })
 }
+
+# --- Backtest jobs queue (admin POST → Fargate runner) ---
+# Visibility timeout 3600s: a single backtest job can run up to ~1h.
+# Retention 4 days. DLQ after 3 failed receive attempts.
+
+resource "aws_sqs_queue" "backtest_jobs_dlq" {
+  name                      = "${local.prefix}-backtest-jobs-dlq"
+  message_retention_seconds = 1209600 # 14 days
+}
+
+resource "aws_sqs_queue" "backtest_jobs" {
+  name                       = "${local.prefix}-backtest-jobs"
+  visibility_timeout_seconds = 3600 # backtest may run up to 1h
+  message_retention_seconds  = 345600 # 4 days
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.backtest_jobs_dlq.arn
+    maxReceiveCount     = 3
+  })
+}

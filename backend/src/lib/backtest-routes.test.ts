@@ -1,0 +1,341 @@
+/**
+ * Tests for backtest routes in admin.ts.
+ *
+ * Tests GET /backtest/strategies, POST /backtest, GET /backtest, GET /backtest/:runId.
+ * Uses vi.mock to stub the store helpers and avoid real DynamoDB/SQS calls.
+ *
+ * Issue #371.
+ */
+import { Hono } from "hono";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// ---------------------------------------------------------------------------
+// Mock store + strategies before any import of the route file
+// ---------------------------------------------------------------------------
+
+const putRunMock = vi.fn();
+const getRawRunMock = vi.fn();
+const listRunsMock = vi.fn();
+const getRunDetailMock = vi.fn();
+
+vi.mock("./backtest-runs-store.js", () => ({
+  putRun: putRunMock,
+  getRun: getRawRunMock,
+  listRuns: listRunsMock,
+  getRunDetail: getRunDetailMock,
+}));
+
+vi.mock("./backtest-strategies.js", () => ({
+  BACKTEST_STRATEGIES: [
+    { name: "production-default", description: "Prod default strategy" },
+    { name: "aggressive-1d-weighted", description: "Aggressive strategy" },
+  ],
+}));
+
+// Stub out all other admin service dependencies.
+vi.mock("../services/admin.service.js", () => ({
+  getStatus: vi.fn(),
+  getMarket: vi.fn(),
+  getNews: vi.fn(),
+  getNewsUsage: vi.fn(),
+  getWhitelist: vi.fn(),
+  setWhitelist: vi.fn(),
+  getSignals: vi.fn(),
+  getGenieMetrics: vi.fn(),
+  getRatifications: vi.fn(),
+  getPipelineHealth: vi.fn(),
+  getActivity: vi.fn(),
+  getShadowSignals: vi.fn(),
+}));
+vi.mock("../services/pipeline-state.service.js", () => ({ getPipelineState: vi.fn() }));
+vi.mock("../services/pnl-simulation.service.js", () => ({ getPnlSimulation: vi.fn() }));
+vi.mock("../services/genie-deepdive.service.js", () => ({ getGenieDeepDive: vi.fn() }));
+vi.mock("../services/admin-debug.service.js", () => ({
+  forceRatification: vi.fn(),
+  previewNewsEnrichment: vi.fn(),
+  reenrichNews: vi.fn(),
+  injectSentimentShock: vi.fn(),
+  forceIndicators: vi.fn(),
+  FORCE_INDICATORS_TIMEFRAMES: ["15m", "1h", "4h", "1d"],
+  FORCE_INDICATORS_EXCHANGES: ["binanceus", "coinbase", "kraken"],
+}));
+vi.mock("../services/rule-status.service.js", () => ({
+  listRuleStatuses: vi.fn(),
+  setManualOverride: vi.fn(),
+}));
+
+let currentAuth: Record<string, unknown> = {
+  userId: "user_admin",
+  email: "admin@example.com",
+  emailVerified: true,
+  authMethod: "password",
+  sessionId: "sess_admin",
+  role: "admin",
+};
+
+vi.mock("../middleware/require-auth.js", () => ({
+  requireAuth: async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
+    c.set("auth", currentAuth);
+    await next();
+  },
+}));
+
+beforeEach(() => {
+  vi.resetModules();
+  putRunMock.mockReset();
+  getRawRunMock.mockReset();
+  listRunsMock.mockReset();
+  getRunDetailMock.mockReset();
+  currentAuth = {
+    userId: "user_admin",
+    email: "admin@example.com",
+    emailVerified: true,
+    authMethod: "password",
+    sessionId: "sess_admin",
+    role: "admin",
+  };
+});
+
+async function loadApp(): Promise<Hono> {
+  const { admin } = await import("../routes/admin.js");
+  return admin;
+}
+
+// ---------------------------------------------------------------------------
+// GET /backtest/strategies
+// ---------------------------------------------------------------------------
+
+describe("GET /backtest/strategies", () => {
+  it("returns the in-repo strategy list", async () => {
+    const app = await loadApp();
+    const res = await app.request("/backtest/strategies");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { strategies: Array<{ name: string }> };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.strategies).toHaveLength(2);
+    expect(body.data.strategies[0].name).toBe("production-default");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /backtest
+// ---------------------------------------------------------------------------
+
+describe("POST /backtest", () => {
+  const validBody = {
+    strategy: "production-default",
+    pair: "BTC/USDT",
+    timeframe: "1d",
+    from: "2025-01-01T00:00:00Z",
+    to: "2025-07-01T00:00:00Z",
+    ratificationMode: "none",
+  };
+
+  it("returns 400 for unknown strategy", async () => {
+    const app = await loadApp();
+    const res = await app.request("/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...validBody, strategy: "not-a-strategy" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 for unknown pair", async () => {
+    const app = await loadApp();
+    const res = await app.request("/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...validBody, pair: "FAKE/USD" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 when from >= to", async () => {
+    const app = await loadApp();
+    const res = await app.request("/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...validBody,
+        from: "2025-07-01T00:00:00Z",
+        to: "2025-01-01T00:00:00Z",
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns 400 for unknown ratificationMode", async () => {
+    const app = await loadApp();
+    const res = await app.request("/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...validBody, ratificationMode: "live-foo" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("returns COST_CAP_EXCEEDED when replay-bedrock cost > $1 without confirmation", async () => {
+    const app = await loadApp();
+    // Very long date range with replay-bedrock → high cost
+    const res = await app.request("/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...validBody,
+        ratificationMode: "replay-bedrock",
+        from: "2020-01-01T00:00:00Z",
+        to: "2025-01-01T00:00:00Z",
+        model: "sonnet",
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { code: string };
+      data?: { estimatedCostUsd: number };
+    };
+    expect(body.error.code).toBe("COST_CAP_EXCEEDED");
+    expect(body.data?.estimatedCostUsd).toBeGreaterThan(1);
+  });
+
+  it("enqueues and returns runId + estimateUsd on valid submission", async () => {
+    putRunMock.mockResolvedValue({ runId: "20250101000000-abc-uuid", estimateUsd: 0 });
+    const app = await loadApp();
+    const res = await app.request("/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { runId: string; estimateUsd: number };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.runId).toBe("20250101000000-abc-uuid");
+    expect(body.data.estimateUsd).toBe(0);
+    expect(putRunMock).toHaveBeenCalledOnce();
+    const callArgs = putRunMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArgs.strategy).toBe("production-default");
+    expect(callArgs.userId).toBe("user_admin");
+  });
+
+  it("accepts baseline as optional field", async () => {
+    putRunMock.mockResolvedValue({ runId: "runid-2", estimateUsd: 0 });
+    const app = await loadApp();
+    const res = await app.request("/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...validBody, baseline: "aggressive-1d-weighted" }),
+    });
+    expect(res.status).toBe(200);
+    const callArgs = putRunMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArgs.baseline).toBe("aggressive-1d-weighted");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /backtest
+// ---------------------------------------------------------------------------
+
+describe("GET /backtest", () => {
+  it("returns paginated list from store", async () => {
+    const mockItems = [
+      {
+        runId: "runid-1",
+        status: "done",
+        strategy: "production-default",
+        pair: "BTC/USDT",
+        timeframe: "1d",
+        from: "2025-01-01T00:00:00Z",
+        to: "2025-07-01T00:00:00Z",
+        submittedAt: "2026-01-01T00:00:00Z",
+        estimatedCostUsd: 0,
+      },
+    ];
+    listRunsMock.mockResolvedValue({ items: mockItems, nextCursor: null });
+    const app = await loadApp();
+    const res = await app.request("/backtest");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { items: unknown[]; nextCursor: null };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.items).toHaveLength(1);
+    expect(body.data.nextCursor).toBeNull();
+  });
+
+  it("passes limit + cursor to the store", async () => {
+    listRunsMock.mockResolvedValue({ items: [], nextCursor: null });
+    const app = await loadApp();
+    const res = await app.request("/backtest?limit=5&cursor=abc123");
+    expect(res.status).toBe(200);
+    expect(listRunsMock).toHaveBeenCalledWith({ limit: 5, cursor: "abc123" });
+  });
+
+  it("returns 400 for invalid limit", async () => {
+    const app = await loadApp();
+    const res = await app.request("/backtest?limit=999");
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /backtest/:runId
+// ---------------------------------------------------------------------------
+
+describe("GET /backtest/:runId", () => {
+  it("returns 404 when run not found", async () => {
+    getRunDetailMock.mockResolvedValue(null);
+    const app = await loadApp();
+    const res = await app.request("/backtest/nonexistent-run");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("NOT_FOUND");
+  });
+
+  it("returns run detail on success", async () => {
+    const mockDetail = {
+      runId: "runid-1",
+      status: "done",
+      strategy: "production-default",
+      pair: "BTC/USDT",
+      timeframe: "1d",
+      from: "2025-01-01T00:00:00Z",
+      to: "2025-07-01T00:00:00Z",
+      submittedAt: "2026-01-01T00:00:00Z",
+      estimatedCostUsd: 0,
+      listPartition: "ALL",
+      userId: "user_admin",
+      ratificationMode: "none",
+      ttl: 1234567890,
+      artifactKeys: {
+        summaryMd: "runid-1/summary.md",
+        metricsJson: "runid-1/metrics.json",
+        tradesCsv: "runid-1/trades.csv",
+        equityCurveCsv: "runid-1/equity-curve.csv",
+        perRuleAttributionCsv: "runid-1/per-rule-attribution.csv",
+        calibrationByBinCsv: "runid-1/calibration-by-bin.csv",
+      },
+    };
+    getRunDetailMock.mockResolvedValue(mockDetail);
+    const app = await loadApp();
+    const res = await app.request("/backtest/runid-1");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { runId: string } };
+    expect(body.success).toBe(true);
+    expect(body.data.runId).toBe("runid-1");
+  });
+});

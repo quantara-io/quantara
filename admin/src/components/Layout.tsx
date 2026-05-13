@@ -25,6 +25,7 @@ const SECTION_LABELS: [string, string][] = [
   ["/activity", "Activity"],
   ["/ops", "Ops"],
   ["/admin/glossary", "Glossary"],
+  ["/backtest", "Backtest"],
 ];
 
 function useSectionLabel(): string {

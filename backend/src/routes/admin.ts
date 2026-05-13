@@ -30,6 +30,8 @@ import {
   FORCE_INDICATORS_EXCHANGES,
 } from "../services/admin-debug.service.js";
 import { listRuleStatuses, setManualOverride } from "../services/rule-status.service.js";
+import { putRun, listRuns, getRunDetail } from "../lib/backtest-runs-store.js";
+import { BACKTEST_STRATEGIES } from "../lib/backtest-strategies.js";
 
 const admin = new Hono();
 
@@ -1202,6 +1204,304 @@ admin.post("/positions/:id/close", async (c) => {
     success: true as const,
     data: { closed: true, positionId },
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/backtest/strategies
+// Phase 4 (issue #371): list in-repo strategies from backtest/strategies/*.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/backtest/strategies
+ *
+ * Returns the list of available strategies (Option B: in-repo, version-controlled).
+ * No user uploads. The dropdown in BacktestNew.tsx is populated from this endpoint.
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/backtest/strategies", (c) => {
+  return c.json({
+    success: true as const,
+    data: { strategies: BACKTEST_STRATEGIES },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/backtest
+// Phase 4 (issue #371): enqueue a new backtest run.
+// ---------------------------------------------------------------------------
+
+const VALID_RATIFICATION_MODES = ["none", "skip-bedrock", "replay-bedrock"] as const;
+
+const VALID_BACKTEST_TIMEFRAMES = ["15m", "1h", "4h", "1d"] as const;
+
+const VALID_BACKTEST_MODELS = ["haiku", "sonnet"] as const;
+
+/**
+ * POST /api/admin/backtest
+ *
+ * Body: { strategy, baseline?, pair, timeframe, from, to, ratificationMode, model?, confirmCostUsd? }
+ *
+ * Validates, estimates cost (rejects if > $1 unless confirmCostUsd matches),
+ * writes a backtest-runs DDB row with status=queued, enqueues an SQS job,
+ * returns { runId, estimateUsd }.
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.post("/backtest", async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "request body must be valid JSON" },
+      },
+      400,
+    );
+  }
+
+  const auth = c.get("auth");
+  const { strategy, baseline, pair, timeframe, from, to, ratificationMode, model, confirmCostUsd } =
+    body;
+
+  // --- validate strategy ---
+  if (typeof strategy !== "string" || !BACKTEST_STRATEGIES.find((s) => s.name === strategy)) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `strategy must be one of: ${BACKTEST_STRATEGIES.map((s) => s.name).join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  // --- validate baseline (optional) ---
+  if (baseline !== undefined) {
+    if (typeof baseline !== "string" || !BACKTEST_STRATEGIES.find((s) => s.name === baseline)) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: `baseline must be one of: ${BACKTEST_STRATEGIES.map((s) => s.name).join(", ")}`,
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- validate pair ---
+  if (typeof pair !== "string" || !(PAIRS as readonly string[]).includes(pair)) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: `pair must be one of: ${PAIRS.join(", ")}` },
+      },
+      400,
+    );
+  }
+
+  // --- validate timeframe ---
+  if (
+    typeof timeframe !== "string" ||
+    !(VALID_BACKTEST_TIMEFRAMES as readonly string[]).includes(timeframe)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `timeframe must be one of: ${VALID_BACKTEST_TIMEFRAMES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  // --- validate date range ---
+  if (typeof from !== "string" || isNaN(Date.parse(from))) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "from must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+  if (typeof to !== "string" || isNaN(Date.parse(to))) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "to must be a valid ISO 8601 date" },
+      },
+      400,
+    );
+  }
+  if (new Date(from) >= new Date(to)) {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "from must be before to" } },
+      400,
+    );
+  }
+
+  // --- validate ratificationMode ---
+  if (
+    typeof ratificationMode !== "string" ||
+    !(VALID_RATIFICATION_MODES as readonly string[]).includes(ratificationMode)
+  ) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "BAD_REQUEST",
+          message: `ratificationMode must be one of: ${VALID_RATIFICATION_MODES.join(", ")}`,
+        },
+      },
+      400,
+    );
+  }
+
+  // --- validate model (optional) ---
+  if (model !== undefined) {
+    if (
+      typeof model !== "string" ||
+      !(VALID_BACKTEST_MODELS as readonly string[]).includes(model)
+    ) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: `model must be one of: ${VALID_BACKTEST_MODELS.join(", ")}`,
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- cost estimate ---
+  // Rough estimate: (period in 15m bars) * DEFAULT_GATE_RATE * cost_per_call.
+  // For skip-bedrock / none modes, cost is $0.
+  let estimatedCostUsd = 0;
+  if (ratificationMode === "replay-bedrock") {
+    const periodMs = new Date(to as string).getTime() - new Date(from as string).getTime();
+    const bars = Math.floor(periodMs / 900_000); // 15m bars
+    const gatedRate = 0.004; // DEFAULT_GATE_RATE
+    const estimatedCalls = Math.ceil(bars * gatedRate);
+    const modelKey = (model as string | undefined) ?? "haiku";
+    const inputCostPerM = modelKey === "sonnet" ? 3.0 : 0.25;
+    const outputCostPerM = modelKey === "sonnet" ? 15.0 : 1.25;
+    estimatedCostUsd =
+      (estimatedCalls * 700 * inputCostPerM) / 1_000_000 +
+      (estimatedCalls * 150 * outputCostPerM) / 1_000_000;
+  }
+
+  // --- cost guard: reject if > $1 without explicit confirmation ---
+  const COST_CAP_USD = 1.0;
+  if (estimatedCostUsd > COST_CAP_USD) {
+    if (typeof confirmCostUsd !== "number" || Math.abs(confirmCostUsd - estimatedCostUsd) > 0.01) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "COST_CAP_EXCEEDED",
+            message:
+              `Estimated cost $${estimatedCostUsd.toFixed(4)} exceeds $${COST_CAP_USD}. ` +
+              `Re-submit with confirmCostUsd: ${estimatedCostUsd.toFixed(4)} to proceed.`,
+          },
+          data: { estimatedCostUsd },
+        },
+        400,
+      );
+    }
+  }
+
+  // --- create and enqueue the run ---
+  const result = await putRun({
+    strategy: strategy as string,
+    baseline: typeof baseline === "string" ? baseline : undefined,
+    pair: pair as string,
+    timeframe: timeframe as string,
+    from: from as string,
+    to: to as string,
+    ratificationMode: ratificationMode as string,
+    model: typeof model === "string" ? model : undefined,
+    estimatedCostUsd,
+    userId: auth.userId,
+  });
+
+  return c.json({ success: true as const, data: result });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/backtest
+// Phase 4 (issue #371): paginated list of backtest runs.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/backtest?limit=20&cursor=<base64>
+ *
+ * Returns paginated runs sorted by submittedAt desc.
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/backtest", async (c) => {
+  const limitRaw = c.req.query("limit");
+  const cursor = c.req.query("cursor");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 20;
+
+  if (Number.isNaN(limit) || limit < 1 || limit > 100) {
+    return c.json(
+      {
+        success: false,
+        error: { code: "BAD_REQUEST", message: "limit must be between 1 and 100" },
+      },
+      400,
+    );
+  }
+
+  const result = await listRuns({ limit, cursor });
+  return c.json({ success: true as const, data: result });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/backtest/:runId
+// Phase 4 (issue #371): single run detail with presigned URLs + inline metrics.
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/backtest/:runId
+ *
+ * Returns the full backtest-runs row, presigned S3 URLs for all artifacts
+ * (valid 1h), and the parsed metrics.json inline (when status=done).
+ *
+ * Auth: requireAuth + requireAdmin.
+ */
+admin.get("/backtest/:runId", async (c) => {
+  const runId = c.req.param("runId");
+
+  if (!runId || runId.trim() === "") {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "runId path param is required" } },
+      400,
+    );
+  }
+
+  const detail = await getRunDetail(runId);
+  if (!detail) {
+    return c.json(
+      { success: false, error: { code: "NOT_FOUND", message: `backtest run ${runId} not found` } },
+      404,
+    );
+  }
+
+  return c.json({ success: true as const, data: detail });
 });
 
 export { admin };
