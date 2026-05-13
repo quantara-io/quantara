@@ -153,7 +153,69 @@ resource "aws_iam_role_policy" "indicator_handler_dynamodb" {
           "${aws_dynamodb_table.news_events_by_pair.arn}/index/*",
         ]
       },
+      {
+        # Ratification path: ratifySignal writes a RatificationRecord on every
+        # emit (ratify.ts:208 — PutCommand), and gating.ts:147 queries by
+        # (pair, sk begins_with today) to enforce the daily-budget gate.
+        # No GSIs on this table — bare table ARN only.
+        # NOTE: dynamodb:UpdateItem is intentionally omitted — runtime uses only
+        # Get/Put/Query (least privilege).
+        Sid    = "ReadWriteRatifications"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+        ]
+        Resource = [
+          aws_dynamodb_table.ratifications.arn,
+        ]
+      },
+      {
+        # Ratification path: cache.ts:67 reads before invoking Bedrock;
+        # cache.ts:89 writes the LLM result back. Keyed on a hash of
+        # (model, pair, signal-fingerprint). No GSIs.
+        # NOTE: dynamodb:UpdateItem is intentionally omitted (least privilege).
+        Sid    = "ReadWriteRatificationCache"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.ratification_cache.arn,
+        ]
+      },
     ]
+  })
+}
+
+resource "aws_iam_role_policy" "indicator_handler_bedrock" {
+  name = "${local.prefix}-indicator-handler-bedrock"
+  role = aws_iam_role.indicator_handler_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      # Ratification path: ratifySignal calls Claude via BedrockRuntimeClient
+      # (InvokeModelCommand). Mirrors the bedrock grant from lambda.tf —
+      # includes cross-region inference profiles for Sonnet 4.6+ which require
+      # an inference-profile id (ValidationException otherwise).
+      Sid    = "InvokeBedrockForRatification"
+      Effect = "Allow"
+      Action = [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+      ]
+      Resource = [
+        "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-sonnet-*",
+        "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-haiku-*",
+        "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.claude-sonnet-*",
+        "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.claude-haiku-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-*",
+      ]
+    }]
   })
 }
 
@@ -187,7 +249,12 @@ resource "aws_lambda_function" "indicator_handler" {
       # back to the TABLE_PREFIX-derived guess (mirrors #335 / TABLE_RULE_STATUS
       # and #333 / TABLE_CALIBRATION_PARAMS patterns).
       TABLE_NEWS_EVENTS_BY_PAIR = aws_dynamodb_table.news_events_by_pair.name
-      REQUIRED_EXCHANGE_COUNT   = local.required_exchange_count
+      # Ratification path: set explicitly so cache.ts and gating.ts don't fall
+      # back to TABLE_PREFIX-derived guesses (#349 — same class of bug as #335 /
+      # #340 / #347).
+      TABLE_RATIFICATIONS      = aws_dynamodb_table.ratifications.name
+      TABLE_RATIFICATION_CACHE = aws_dynamodb_table.ratification_cache.name
+      REQUIRED_EXCHANGE_COUNT  = local.required_exchange_count
       ENVIRONMENT               = var.environment
     }
   }
