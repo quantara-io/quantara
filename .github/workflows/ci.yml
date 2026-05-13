@@ -464,6 +464,90 @@ jobs:
             --zip-file fileb://ingestion/dist/enrichment.zip \
             --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
 
+      - name: Deploy indicator-handler Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-indicator-handler \
+            --zip-file fileb://ingestion/dist/indicator-handler.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy indicator-handler-shadow Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-indicator-handler-shadow \
+            --zip-file fileb://ingestion/dist/indicator-handler-shadow.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy aggregator Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-aggregator \
+            --zip-file fileb://ingestion/dist/aggregator-handler.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy outcome-handler Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-outcome-handler \
+            --zip-file fileb://ingestion/dist/outcome-handler.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy calibration-job Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-calibration-job \
+            --zip-file fileb://ingestion/dist/calibration-job.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy rule-prune Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-rule-prune \
+            --zip-file fileb://ingestion/dist/rule-prune.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy close-quorum-monitor Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-close-quorum-monitor \
+            --zip-file fileb://ingestion/dist/close-quorum-monitor.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy higher-tf-poller Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-higher-tf-poller \
+            --zip-file fileb://ingestion/dist/higher-tf-poller-handler.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy ws-connect Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-ws-connect \
+            --zip-file fileb://ingestion/dist/ws-connect-handler.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy ws-disconnect Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-ws-disconnect \
+            --zip-file fileb://ingestion/dist/ws-disconnect-handler.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy signals-fanout Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-signals-fanout \
+            --zip-file fileb://ingestion/dist/signals-fanout.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
+      - name: Deploy events-fanout Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name quantara-dev-events-fanout \
+            --zip-file fileb://ingestion/dist/events-fanout.zip \
+            --region ${{ env.AWS_REGION }} || echo "Lambda not yet created — skipping"
+
       # --- Fargate ingestion service ---
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
