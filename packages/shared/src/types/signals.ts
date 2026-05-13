@@ -164,4 +164,39 @@ export interface BlendedSignal {
     confidence: number;
     reasoning: string;
   } | null;
+
+  // Phase 8 — outcome measurement fields. Required by outcome-handler and resolver.
+  // Absent on pre-Phase-8 rows; resolver falls back to sensible defaults when missing.
+
+  /**
+   * Canonical median-of-exchanges close price at signal emission.
+   * Used by the outcome resolver to compute priceMovePct = (priceAtResolution − priceAtSignal) / priceAtSignal.
+   * Absent on rows written before Phase 8 (#356).
+   */
+  priceAtSignal?: number;
+
+  /**
+   * ISO timestamp after which the outcome resolver considers this signal expired and eligible for resolution.
+   * Policy: 4 bars of the emitting timeframe (15m→1h, 1h→4h, 4h→16h, 1d→4d).
+   * The outcome-handler scan filter requires this field as a string — rows missing it are skipped.
+   * Absent on rows written before Phase 8 (#356).
+   */
+  expiresAt?: string;
+
+  /**
+   * ATR-14 expressed as a fraction of priceAtSignal at emission time.
+   * Used by the resolver to compute the volatility-aware outcome threshold (§10.3): threshold = 0.5 * atrPctAtSignal.
+   * Set to 0 when ATR is unavailable (indicator warm-up period).
+   * Absent on rows written before Phase 8 (#356).
+   */
+  atrPctAtSignal?: number;
+
+  /**
+   * Lifecycle status for Phase 8 outcome tracking.
+   * "pending"  — freshly emitted; not yet resolved by the outcome-handler.
+   * "resolved" — outcome-handler has written a signal_outcomes record.
+   * "neutral-invalidated" — signal was invalidated before expiry; outcome is neutral by definition.
+   * Absent on rows written before Phase 8 (#356); the outcome-handler scan also accepts undefined.
+   */
+  outcomeStatus?: "pending" | "resolved" | "neutral-invalidated";
 }

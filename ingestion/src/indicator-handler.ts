@@ -94,6 +94,25 @@ type SignalTimeframe = "15m" | "1h" | "4h" | "1d";
 const SIGNAL_TIMEFRAMES: SignalTimeframe[] = ["15m", "1h", "4h", "1d"];
 
 // ---------------------------------------------------------------------------
+// Phase 8: outcome expiry policy
+// ---------------------------------------------------------------------------
+
+/** Number of emitting-timeframe bars after which a signal is considered expired for outcome resolution. */
+const EXPIRY_BARS = 4;
+
+/**
+ * Milliseconds per bar for each signal-eligible timeframe.
+ * Used to compute expiresAt = closeTime + EXPIRY_BARS * TF_MS[emittingTimeframe].
+ * Mapping: 15m→1h, 1h→4h, 4h→16h, 1d→4d.
+ */
+const TF_MS: Record<SignalTimeframe, number> = {
+  "15m": 15 * 60 * 1000,
+  "1h": 60 * 60 * 1000,
+  "4h": 4 * 60 * 60 * 1000,
+  "1d": 24 * 60 * 60 * 1000,
+};
+
+// ---------------------------------------------------------------------------
 // Candle shape from DDB stream record (after unmarshalling)
 // ---------------------------------------------------------------------------
 
@@ -237,13 +256,14 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
   }
 
   // Step 4 — Compute indicators + blend → two-stage write (Phase B1).
-  const blended = await computeBlendedSignal(pair, timeframe, closeTime);
-  if (!blended) {
+  const blendResult = await computeBlendedSignal(pair, timeframe, closeTime);
+  if (!blendResult) {
     console.log(
       `[IndicatorHandler] ${pair}/${timeframe}: no blended signal produced (all TF votes null or insufficient candles).`,
     );
     return;
   }
+  const { signal: blended, priceAtSignal, atr14 } = blendResult;
 
   // Phase 8 Platt calibration (§10.6): read coefficients for the emitting
   // (pair, TF) slice and apply when present. The raw confidence is persisted
@@ -394,6 +414,15 @@ async function processCandleClose(candle: StreamCandle): Promise<void> {
           ratificationStatus: stage1Signal.ratificationStatus ?? null,
           ratificationVerdict: stage1Signal.ratificationVerdict ?? null,
           algoVerdict: stage1Signal.algoVerdict ?? null,
+          // Phase 8 (#356): outcome measurement fields required by outcome-handler and resolver.
+          // priceAtSignal: canonical median-of-exchanges close at emission (§8.1).
+          priceAtSignal,
+          // expiresAt: 4 bars of the emitting TF after closeTime (§8.2 policy).
+          expiresAt: new Date(closeTime + EXPIRY_BARS * TF_MS[timeframe]).toISOString(),
+          // atrPctAtSignal: ATR-14 / priceAtSignal. 0 during warm-up (atr14 null).
+          atrPctAtSignal: atr14 !== null && priceAtSignal > 0 ? atr14 / priceAtSignal : 0,
+          // outcomeStatus: initial state; updated to "resolved" by the outcome-handler.
+          outcomeStatus: "pending" as const,
           // 90-day TTL
           ttl: Math.floor(Date.now() / 1000) + 86_400 * 90,
         },
@@ -618,6 +647,15 @@ async function getDisabledRuleKeysCached(): Promise<ReadonlySet<string>> {
   }
 }
 
+/** Return shape of computeBlendedSignal — carries the extra fields needed for Phase 8 outcome tracking. */
+interface BlendedSignalResult {
+  signal: import("@quantara/shared").BlendedSignal;
+  /** Canonical median-of-exchanges close price at the emitting bar (Phase 8 §8.1). */
+  priceAtSignal: number;
+  /** ATR-14 from the emitting-TF IndicatorState; null during warm-up. */
+  atr14: number | null;
+}
+
 /**
  * Full indicator computation for a single (pair, timeframe, closeTime) tuple.
  * Pulls 250 bars per exchange, canonicalizes, builds IndicatorState, scores,
@@ -627,12 +665,15 @@ async function getDisabledRuleKeysCached(): Promise<ReadonlySet<string>> {
  * data). Phase B1 (#132): ratification runs in `processCandleClose` AFTER
  * the stage-1 Put commits, so callers should treat this as the algo-only
  * candidate and not assume LLM has touched it.
+ *
+ * Phase 8 (#356): also returns priceAtSignal (canonical close) and atr14 so
+ * processCandleClose can persist them on the signals-v2 Put without re-deriving them.
  */
 async function computeBlendedSignal(
   pair: string,
   tf: SignalTimeframe,
   closeTime: number,
-): Promise<import("@quantara/shared").BlendedSignal | null> {
+): Promise<BlendedSignalResult | null> {
   // Memoized per invocation — see getFearGreedCached above. With batch_size=10
   // on the DDB Streams ESM, a non-cached read would multiply DDB GetItem calls
   // ~10× per invocation for a value that changes daily.
@@ -797,7 +838,7 @@ async function computeBlendedSignal(
     );
   }
 
-  return blended;
+  return { signal: blended, priceAtSignal: canon.consensus.close, atr14: state.atr14 };
 }
 
 /**

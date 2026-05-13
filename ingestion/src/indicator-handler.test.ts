@@ -637,6 +637,58 @@ describe("Step 4 — Conditional Put dedup", () => {
     expect(signalsV2Put![0].input.ConditionExpression).toBe("attribute_not_exists(pair)");
   });
 
+  // Phase 8 (#356): outcome measurement fields must be present on every signals-v2 Put.
+  // Without these fields the outcome-handler scan filter excludes every row and
+  // signal_outcomes stays empty indefinitely.
+  it("includes all four Phase 8 outcome fields on the signals-v2 Put Item", async () => {
+    // buildIndicatorStateMock returns makeIndicatorState() which has atr14=400, price=60500.
+    // Expected atrPctAtSignal = 400 / 60500 ≈ 0.006612
+    // Expected expiresAt = new Date(TEST_CLOSE_TIME + 4 * 15 * 60 * 1000).toISOString()
+    //                    = new Date(TEST_CLOSE_TIME + 3_600_000).toISOString()
+    const expectedExpiresAt = new Date(TEST_CLOSE_TIME + 4 * 15 * 60 * 1000).toISOString();
+    const expectedPriceAtSignal = 60500; // consensus close from makeCandle()
+    const expectedAtr14 = 400; // from makeIndicatorState()
+    const expectedAtrPctAtSignal = expectedAtr14 / expectedPriceAtSignal;
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const signalsV2Put = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Put).toBeDefined();
+    const item = signalsV2Put![0].input.Item;
+
+    // priceAtSignal: canonical close from canonicalizeCandle (consensus.close)
+    expect(item.priceAtSignal).toBe(expectedPriceAtSignal);
+    // expiresAt: closeTime + 4 bars × 15m = closeTime + 1h, ISO string
+    expect(item.expiresAt).toBe(expectedExpiresAt);
+    // atrPctAtSignal: atr14 / priceAtSignal
+    expect(item.atrPctAtSignal).toBeCloseTo(expectedAtrPctAtSignal, 8);
+    // outcomeStatus: freshly emitted signals start as "pending"
+    expect(item.outcomeStatus).toBe("pending");
+  });
+
+  it("sets atrPctAtSignal to 0 when atr14 is null (ATR warm-up period)", async () => {
+    buildIndicatorStateMock.mockReturnValue({
+      ...makeIndicatorState(),
+      atr14: null, // warm-up — not enough bars yet
+    });
+
+    const { handler } = await import("./indicator-handler.js");
+    await handler(makeStreamEvent(), {} as any, () => {});
+
+    const signalsV2Put = send.mock.calls.find(
+      (c) => c[0]?.__cmd === "Put" && c[0].input.TableName === "test-signals-v2",
+    );
+    expect(signalsV2Put).toBeDefined();
+    expect(signalsV2Put![0].input.Item.atrPctAtSignal).toBe(0);
+    // Other Phase 8 fields still present
+    expect(signalsV2Put![0].input.Item.priceAtSignal).toBe(60500);
+    expect(typeof signalsV2Put![0].input.Item.expiresAt).toBe("string");
+    expect(signalsV2Put![0].input.Item.outcomeStatus).toBe("pending");
+  });
+
   it("swallows ConditionalCheckFailedException (concurrent handler already wrote)", async () => {
     send.mockImplementation((cmd) => {
       if (cmd.__cmd === "Update") return Promise.resolve({});

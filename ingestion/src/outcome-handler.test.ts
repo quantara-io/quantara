@@ -260,3 +260,123 @@ describe("handler: early exit when no expired signals", () => {
     expect(putRuleAttributionMock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8 (#356): resolvable-path regression test
+//
+// Before #356, signals-v2 rows were missing expiresAt, priceAtSignal,
+// atrPctAtSignal, and outcomeStatus. The scan filter
+// `typeof item["expiresAt"] === "string"` excluded every row, so
+// resolveOutcome was never called and signal_outcomes stayed empty.
+//
+// This test exercises the now-resolvable path: a row WITH all four fields
+// present, where expiresAt is in the past and outcomeStatus is "pending".
+// ---------------------------------------------------------------------------
+
+describe("Phase 8 resolvable path (#356 regression)", () => {
+  it("resolves a non-invalidated signal with all four Phase 8 fields via the full path", async () => {
+    // The resolved outcome returned by the (mocked) resolver.
+    const mockOutcome = {
+      signalId: "sig-phase8",
+      pair: "BTC/USDT",
+      type: "buy",
+      confidence: 0.72,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T01:00:00.000Z",
+      resolvedAt: new Date().toISOString(),
+      priceAtSignal: 60500,
+      priceAtResolution: 61200,
+      priceMovePct: 0.012,
+      atrPctAtSignal: 0.0066,
+      thresholdUsed: 0.0033,
+      outcome: "correct" as const,
+      rulesFired: ["ema-cross-bull"],
+      gateReason: null,
+      emittingTimeframe: "15m",
+      invalidatedExcluded: false,
+      ttl: Math.floor(Date.now() / 1000) + 86400 * 30,
+    };
+
+    // Item has all four Phase 8 fields; expiresAt is past, invalidatedAt is null.
+    const phase8Item = makeExpiredSignalItem({
+      signalId: "sig-phase8",
+      type: "buy",
+      expiresAt: "2026-01-01T01:00:00.000Z", // past
+      invalidatedAt: null,
+      priceAtSignal: 60500,
+      atrPctAtSignal: 0.0066,
+      outcomeStatus: "pending",
+      emittingTimeframe: "15m",
+      rulesFired: ["ema-cross-bull"],
+    });
+
+    // The resolveOutcome mock is at the module level — reset it for this test.
+    const { resolveOutcome } = await import("./outcomes/resolver.js");
+    (resolveOutcome as ReturnType<typeof vi.fn>).mockReturnValue(mockOutcome);
+    (resolveOutcome as ReturnType<typeof vi.fn>).mockReset();
+    (resolveOutcome as ReturnType<typeof vi.fn>).mockReturnValue(mockOutcome);
+
+    // ScanCommand returns the Phase-8 row; Put (markSignalOutcomeResolved) succeeds.
+    send.mockImplementation((cmd: { __cmd: string; input?: Record<string, unknown> }) => {
+      if (cmd.__cmd === "Scan") {
+        return Promise.resolve({ Items: [phase8Item], LastEvaluatedKey: undefined });
+      }
+      if (cmd.__cmd === "Put") return Promise.resolve({});
+      return Promise.resolve({});
+    });
+
+    // getCandles returns a minimal candle for the canonical price lookup.
+    const { getCandles: getCandles_ } = await import("./lib/candle-store.js");
+    (getCandles_ as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        exchange: "binance",
+        pair: "BTC/USDT",
+        timeframe: "1h",
+        closeTime: new Date("2026-01-01T01:00:00.000Z").getTime(),
+        openTime: new Date("2026-01-01T00:00:00.000Z").getTime(),
+        open: 60900,
+        high: 61500,
+        low: 60800,
+        close: 61200,
+        volume: 150,
+        isClosed: true,
+        source: "live",
+        symbol: "BTC/USDT",
+      },
+    ]);
+    const { canonicalizeCandle } = await import("./lib/canonicalize.js");
+    (canonicalizeCandle as ReturnType<typeof vi.fn>).mockReturnValue({
+      consensus: { close: 61200 },
+      dispersion: 0.001,
+    });
+
+    const handler = await loadHandler();
+    await handler({});
+
+    // The row must have been picked up and resolved.
+    expect(resolveOutcome).toHaveBeenCalledTimes(1);
+    // putOutcome must have been called with the resolved outcome.
+    expect(putOutcomeMock).toHaveBeenCalledTimes(1);
+    expect(putOutcomeMock.mock.calls[0]![0]).toMatchObject({
+      signalId: "sig-phase8",
+      outcome: "correct",
+    });
+    // Rule fanout fires for non-excluded outcomes.
+    expect(fanOutMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips a signal where expiresAt is missing — scan filter excludes it (pre-#356 shape)", async () => {
+    const prephase8Item = makeExpiredSignalItem({
+      // No expiresAt — the scan filter `typeof item["expiresAt"] === "string"` is false.
+    });
+    delete (prephase8Item as Record<string, unknown>)["expiresAt"];
+
+    send.mockResolvedValue({ Items: [prephase8Item] });
+
+    const handler = await loadHandler();
+    await handler({});
+
+    // Without expiresAt the row is invisible to the handler — zero resolutions.
+    expect(putOutcomeMock).not.toHaveBeenCalled();
+  });
+});
