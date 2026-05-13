@@ -65,4 +65,29 @@ describe("backfill-handler", () => {
     await handler({ exchange: "kraken", pair: "BTC/USDT", timeframe: "1h", days: 7 }, fakeContext);
     expect(backfillCandlesMock).toHaveBeenCalledWith(expect.objectContaining({ force: false }));
   });
+
+  it("forwards targetTable to backfillCandles when provided", async () => {
+    const { handler } = await import("./backfill-handler.js");
+    await handler(
+      {
+        exchange: "kraken",
+        pair: "BTC/USDT",
+        timeframe: "1h",
+        days: 365,
+        force: true,
+        targetTable: "quantara-dev-candles-archive",
+      },
+      fakeContext,
+    );
+    expect(backfillCandlesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ targetTable: "quantara-dev-candles-archive" }),
+    );
+  });
+
+  it("omits targetTable from backfillCandles call when not provided", async () => {
+    const { handler } = await import("./backfill-handler.js");
+    await handler({ exchange: "kraken", pair: "BTC/USDT", timeframe: "1h", days: 7 }, fakeContext);
+    const callArg = backfillCandlesMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg).not.toHaveProperty("targetTable");
+  });
 });

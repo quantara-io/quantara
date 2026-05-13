@@ -1,4 +1,6 @@
 import ccxt from "ccxt";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, BatchWriteCommand } from "@aws-sdk/lib-dynamodb";
 import type { Candle, Timeframe } from "@quantara/shared";
 
 import { storeCandlesConditional } from "../lib/candle-store.js";
@@ -16,10 +18,67 @@ interface BackfillOptions {
   days: number;
   force?: boolean;
   archiveToS3?: boolean;
+  /**
+   * When set, writes candles to this DynamoDB table name instead of the
+   * default production candles table. Writes use plain BatchWrite (no
+   * conditional expression, no TTL) — the archive table has no TTL.
+   */
+  targetTable?: string;
+}
+
+function buildSortKey(exchange: string, timeframe: string, timestamp: string): string {
+  return `${exchange}#${timeframe}#${timestamp}`;
+}
+
+async function storeCandlesToTable(candles: Candle[], tableName: string): Promise<void> {
+  const archiveClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const batches: Candle[][] = [];
+  for (let i = 0; i < candles.length; i += 25) {
+    batches.push(candles.slice(i, i + 25));
+  }
+  for (const batch of batches) {
+    await archiveClient.send(
+      new BatchWriteCommand({
+        RequestItems: {
+          [tableName]: batch.map((c) => ({
+            PutRequest: {
+              Item: {
+                pair: c.pair,
+                sk: buildSortKey(c.exchange, c.timeframe, new Date(c.openTime).toISOString()),
+                exchange: c.exchange,
+                symbol: c.symbol,
+                timeframe: c.timeframe,
+                openTime: c.openTime,
+                closeTime: c.closeTime,
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+                volume: c.volume,
+                isClosed: c.isClosed,
+                source: c.source,
+                ...(c.aggregatedFrom !== undefined && { aggregatedFrom: c.aggregatedFrom }),
+                // No TTL — archive table retains data indefinitely.
+              },
+            },
+          })),
+        },
+      }),
+    );
+  }
+  console.log(`[Backfill] Wrote ${candles.length} candles to archive table ${tableName}`);
 }
 
 export async function backfillCandles(options: BackfillOptions): Promise<number> {
-  const { exchangeId, pair, timeframe, days, force = false, archiveToS3 = true } = options;
+  const {
+    exchangeId,
+    pair,
+    timeframe,
+    days,
+    force = false,
+    archiveToS3 = true,
+    targetTable,
+  } = options;
 
   const metaKey = `backfill:${exchangeId}:${pair}:${timeframe}`;
   const cursor = await getCursor(metaKey);
@@ -77,7 +136,11 @@ export async function backfillCandles(options: BackfillOptions): Promise<number>
         source: "backfill" as const,
       }));
 
-    await storeCandlesConditional(candles);
+    if (targetTable) {
+      await storeCandlesToTable(candles, targetTable);
+    } else {
+      await storeCandlesConditional(candles);
+    }
     totalFetched += candles.length;
 
     if (archiveToS3) {
