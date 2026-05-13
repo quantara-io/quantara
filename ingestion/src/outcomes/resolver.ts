@@ -24,6 +24,8 @@ export type OutcomeValue = "correct" | "incorrect" | "neutral";
 /** Subset of the signals-v2 record needed by the resolver. */
 export interface BlendedSignalRecord {
   signalId: string;
+  /** Sort key of the signals-v2 row — required for UpdateItem on outcome resolution. */
+  sk: string;
   pair: string;
   type: SignalType;
   confidence: number;

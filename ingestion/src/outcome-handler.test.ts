@@ -126,6 +126,7 @@ async function loadHandler() {
 function makeExpiredSignalItem(overrides: Record<string, unknown> = {}) {
   return {
     signalId: "sig-001",
+    sk: "2026-01-01T00:00:00.000Z#sig-001",
     pair: "BTC/USDT",
     type: "LONG",
     confidence: 0.8,
@@ -300,6 +301,7 @@ describe("Phase 8 resolvable path (#356 regression)", () => {
     // Item has all four Phase 8 fields; expiresAt is past, invalidatedAt is null.
     const phase8Item = makeExpiredSignalItem({
       signalId: "sig-phase8",
+      sk: "2026-01-01T00:00:00.000Z#sig-phase8",
       type: "buy",
       expiresAt: "2026-01-01T01:00:00.000Z", // past
       invalidatedAt: null,
@@ -316,12 +318,12 @@ describe("Phase 8 resolvable path (#356 regression)", () => {
     (resolveOutcome as ReturnType<typeof vi.fn>).mockReset();
     (resolveOutcome as ReturnType<typeof vi.fn>).mockReturnValue(mockOutcome);
 
-    // ScanCommand returns the Phase-8 row; Put (markSignalOutcomeResolved) succeeds.
+    // ScanCommand returns the Phase-8 row; UpdateCommand (markSignalOutcomeResolved) succeeds.
     send.mockImplementation((cmd: { __cmd: string; input?: Record<string, unknown> }) => {
       if (cmd.__cmd === "Scan") {
         return Promise.resolve({ Items: [phase8Item], LastEvaluatedKey: undefined });
       }
-      if (cmd.__cmd === "Put") return Promise.resolve({});
+      if (cmd.__cmd === "Update") return Promise.resolve({});
       return Promise.resolve({});
     });
 
@@ -363,6 +365,26 @@ describe("Phase 8 resolvable path (#356 regression)", () => {
     });
     // Rule fanout fires for non-excluded outcomes.
     expect(fanOutMock).toHaveBeenCalledTimes(1);
+
+    // AC: markSignalOutcomeResolved must issue an UpdateCommand on signals-v2 (not PutCommand on
+    // ingestion-metadata). Assert that an Update was issued with outcomeStatus = "resolved".
+    const updateCalls = send.mock.calls.filter(
+      (c) => (c[0] as { __cmd: string }).__cmd === "Update",
+    );
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+    const updateInput = (updateCalls[0]![0] as { input: Record<string, unknown> }).input;
+    expect(updateInput["Key"]).toEqual({
+      pair: "BTC/USDT",
+      sk: "2026-01-01T00:00:00.000Z#sig-phase8",
+    });
+    expect(updateInput["UpdateExpression"]).toContain("outcomeStatus");
+    expect((updateInput["ExpressionAttributeValues"] as Record<string, unknown>)[":resolved"]).toBe(
+      "resolved",
+    );
+
+    // AC: No PutCommand should have been issued (old metadata-marker approach is gone).
+    const putCalls = send.mock.calls.filter((c) => (c[0] as { __cmd: string }).__cmd === "Put");
+    expect(putCalls).toHaveLength(0);
   });
 
   it("skips a signal where expiresAt is missing — scan filter excludes it (pre-#356 shape)", async () => {
@@ -378,5 +400,80 @@ describe("Phase 8 resolvable path (#356 regression)", () => {
 
     // Without expiresAt the row is invisible to the handler — zero resolutions.
     expect(putOutcomeMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression (#360): outcomeStatus flip prevents re-resolution on subsequent cycles
+//
+// Before the fix, markSignalOutcomeResolved wrote to ingestion-metadata — not to
+// signals-v2. The scan filter keys off signals-v2.outcomeStatus, so the row was
+// never excluded, and every subsequent invocation re-resolved the same signal.
+//
+// After the fix, UpdateCommand flips outcomeStatus to "resolved" on the signals-v2
+// row itself, so the in-process scan filter (`outcomeStatus !== "pending"`) correctly
+// excludes it on all subsequent invocations.
+// ---------------------------------------------------------------------------
+
+describe("Regression #360: resolved signals are excluded from subsequent scans", () => {
+  it("does not process a signal whose outcomeStatus is already 'resolved'", async () => {
+    // Simulate a row that was resolved on a previous invocation (outcomeStatus = "resolved").
+    const alreadyResolved = makeExpiredSignalItem({
+      expiresAt: "2026-01-01T01:00:00.000Z",
+      outcomeStatus: "resolved",
+    });
+
+    send.mockResolvedValue({ Items: [alreadyResolved] });
+
+    const handler = await loadHandler();
+    await handler({});
+
+    // Scan filter must exclude this row — no resolution work should happen.
+    expect(putOutcomeMock).not.toHaveBeenCalled();
+    expect(fanOutMock).not.toHaveBeenCalled();
+
+    // No UpdateCommand should be issued (nothing to mark as resolved).
+    const updateCalls = send.mock.calls.filter(
+      (c) => (c[0] as { __cmd: string }).__cmd === "Update",
+    );
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("excludes resolved signals even when mixed with pending ones", async () => {
+    const resolvedRow = makeExpiredSignalItem({
+      signalId: "sig-resolved",
+      sk: "2026-01-01T00:00:00.000Z#sig-resolved",
+      expiresAt: "2026-01-01T01:00:00.000Z",
+      outcomeStatus: "resolved",
+      invalidatedAt: null,
+    });
+    const pendingRow = makeExpiredSignalItem({
+      signalId: "sig-pending",
+      sk: "2026-01-01T00:00:00.000Z#sig-pending",
+      expiresAt: "2026-01-01T01:00:00.000Z",
+      outcomeStatus: "pending",
+      invalidatedAt: "2026-01-01T00:30:00.000Z", // invalidated → simpler path, no price lookup
+    });
+
+    send.mockImplementation((cmd: { __cmd: string }) => {
+      if (cmd.__cmd === "Scan") {
+        return Promise.resolve({
+          Items: [resolvedRow, pendingRow],
+          LastEvaluatedKey: undefined,
+        });
+      }
+      // Accept Update (markSignalOutcomeResolved for the pending row).
+      return Promise.resolve({});
+    });
+
+    const handler = await loadHandler();
+    await handler({});
+
+    // Only the pending row should be processed — exactly one putOutcome call.
+    expect(putOutcomeMock).toHaveBeenCalledTimes(1);
+
+    // Verify the resolved row was not included in the call.
+    const processedSignalId = (putOutcomeMock.mock.calls[0]![0] as { signalId: string }).signalId;
+    expect(processedSignalId).not.toBe("sig-resolved");
   });
 });

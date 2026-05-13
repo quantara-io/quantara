@@ -19,6 +19,7 @@ const NOW_ISO = "2026-01-01T12:00:00.000Z";
 function makeSignal(overrides: Partial<BlendedSignalRecord> = {}): BlendedSignalRecord {
   return {
     signalId: "sig-001",
+    sk: "2026-01-01T11:00:00.000Z#sig-001",
     pair: "BTC",
     type: "buy",
     confidence: 0.75,
