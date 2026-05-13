@@ -54,6 +54,10 @@ export { buildInterpretation } from "./signals/interpretation.js";
 // Read-path re-blend helper — applies user BlendProfile to persisted per-TF votes (#302)
 export { reblendWithProfile } from "./signals/blend.js";
 
+// Core weighted-vote → type/confidence blend math — shared by write-time and read-time paths (#322)
+export { coreBlendVotes } from "./signals/blend-core.js";
+export type { CoreBlendResult } from "./signals/blend-core.js";
+
 // Signal explanation templater — v2 Phase 2 (#253)
 export { explainRules } from "./signals/explain.js";
 

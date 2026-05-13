@@ -6,10 +6,10 @@
  * blend logic against the persisted per-TF votes stored on BlendedSignal.perTimeframe,
  * using the user's active BlendProfile's weights and threshold.
  *
- * This is intentionally a simplified re-implementation of the ingestion-side
- * blendTimeframeVotes() — it operates on shared types only and does not require
- * importing from the ingestion workspace. The two must stay in sync with respect
- * to the core blending math (steps 1–7 of §5.3 + §5.6).
+ * The core weighted-vote → type/confidence math (steps 3–7 of §5.3 + §5.6)
+ * is extracted into `blend-core.ts:coreBlendVotes` and shared with
+ * `ingestion/src/signals/blend.ts:blendTimeframeVotes` so the two cannot drift.
+ * This function handles the gate cascade (steps 1–2), then delegates to coreBlendVotes.
  *
  * KEY INVARIANT: Gates (vol/dispersion/stale) always force hold regardless of
  * profile — profiles only tune T and weights, never override safety gates.
@@ -21,6 +21,8 @@ import type { Timeframe } from "../types/ingestion.js";
 import type { BlendProfile } from "../types/blend.js";
 import { TIMEFRAMES } from "../types/ingestion.js";
 import { BLEND_PROFILES } from "../types/blend.js";
+
+import { coreBlendVotes } from "./blend-core.js";
 
 /** Priority order for gate reasons: vol > dispersion > stale. */
 const GATE_PRIORITY: Record<"vol" | "dispersion" | "stale", number> = {
@@ -146,59 +148,10 @@ export function reblendWithProfile(
     };
   }
 
-  // Step 3: Collect non-null, non-gated votes and renormalize weights.
-  const votingTfs: Timeframe[] = TIMEFRAMES.filter((tf) => perTimeframeVotes[tf] !== null);
-  const rawWeightSum = votingTfs.reduce((sum, tf) => sum + weights[tf], 0);
-
-  const renormalized: Record<Timeframe, number> = {} as Record<Timeframe, number>;
-  for (const tf of TIMEFRAMES) {
-    if (perTimeframeVotes[tf] !== null) {
-      renormalized[tf] = rawWeightSum > 0 ? weights[tf] / rawWeightSum : 0;
-    } else {
-      renormalized[tf] = 0;
-    }
-  }
-
-  // Steps 4 + 5: Compute blended scalar.
-  let blended = 0;
-  for (const tf of votingTfs) {
-    const vote = perTimeframeVotes[tf]!;
-    let scalar: number;
-    if (vote.type === "buy" || vote.type === "strong-buy") {
-      scalar = +vote.confidence;
-    } else if (vote.type === "sell" || vote.type === "strong-sell") {
-      scalar = -vote.confidence;
-    } else {
-      scalar = 0; // hold
-    }
-    blended += renormalized[tf] * scalar;
-  }
-
-  // Step 6: Single-source confidence damping.
-  const isSingleSource = votingTfs.length === 1;
-  const dampingFactor = isSingleSource ? 0.7 : 1.0;
-
-  // Collect union of rulesFired from voting TFs.
-  const rulesFiredSet = new Set<string>();
-  for (const tf of votingTfs) {
-    const vote = perTimeframeVotes[tf]!;
-    for (const r of vote.rulesFired) rulesFiredSet.add(r);
-  }
-
-  // Step 7: Map blended scalar → headline signal type + confidence.
-  let type: "buy" | "sell" | "hold";
-  let confidence: number;
-
-  if (blended > threshold) {
-    type = "buy";
-    confidence = Math.min(1, blended * 1.2 * dampingFactor);
-  } else if (blended < -threshold) {
-    type = "sell";
-    confidence = Math.min(1, Math.abs(blended) * 1.2 * dampingFactor);
-  } else {
-    type = "hold";
-    confidence = Math.min(1, 0.5 + 0.1 * Math.abs(blended));
-  }
+  // Steps 3-7: Delegate to shared coreBlendVotes to keep write-time and
+  // read-time blend math in sync (extracted by #322).
+  const core = coreBlendVotes(perTimeframeVotes, weights, threshold);
+  const { type, confidence } = core;
 
   // When the re-derived headline type differs from the stored strict type, the
   // LLM's strict-era ratification narrative is no longer valid for the flipped
@@ -220,8 +173,8 @@ export function reblendWithProfile(
     // return — without explicit clearing, the spread above would propagate the
     // stored signal's gateContext alongside the now-null gateReason.
     gateContext: null,
-    rulesFired: Array.from(rulesFiredSet),
-    weightsUsed: renormalized,
+    rulesFired: core.rulesFired,
+    weightsUsed: core.weightsUsed,
     // Clear risk — caller (enrichWithRisk) will re-populate for non-hold signals.
     risk: null,
     ...(typeFlipped

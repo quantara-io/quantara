@@ -1,5 +1,6 @@
 /**
  * Tests for BlendProfile types + reblendWithProfile (#302).
+ * Strict-profile parity tests for coreBlendVotes extraction (#322).
  *
  * Covers:
  *   - BLEND_PROFILES constants: correct T and weights for each profile
@@ -13,6 +14,7 @@
  *   - reblendWithProfile: single-source 0.7 damping is applied correctly
  *   - reblendWithProfile: sell path works under all profiles
  *   - blendTimeframeVotes: threshold parameter overrides BLEND_THRESHOLD_T
+ *   - coreBlendVotes parity: reblendWithProfile(strict, strict) == blendTimeframeVotes (#322)
  */
 
 import { describe, it, expect } from "vitest";
@@ -598,5 +600,146 @@ describe("blendTimeframeVotes — threshold parameter", () => {
     const result = blendTimeframeVotes("BTC/USDT", votes, "1h");
     expect(result!.type).toBe("buy");
     expect(result!.confidence).toBeCloseTo(0.4224, 4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// coreBlendVotes parity — reblendWithProfile(strict) == blendTimeframeVotes (#322)
+//
+// Verifies that extracting the shared blend math into coreBlendVotes did not
+// introduce divergence. For a strict signal produced by blendTimeframeVotes,
+// reblendWithProfile(signal, "strict") must reproduce identical type,
+// confidence, and weightsUsed — regardless of vote pattern.
+// ---------------------------------------------------------------------------
+
+describe("coreBlendVotes parity — reblendWithProfile(strict) == blendTimeframeVotes", () => {
+  /**
+   * Build a stored BlendedSignal by running blendTimeframeVotes (write-time path),
+   * then re-blend it with the strict profile (read-time path).  The two results
+   * must agree on type, confidence (within floating-point), and weightsUsed.
+   */
+  function assertStrictParity(
+    votes: Record<"1m" | "5m" | "15m" | "1h" | "4h" | "1d", TimeframeVote | null>,
+    label: string,
+  ) {
+    const stored = blendTimeframeVotes("BTC/USDT", votes, "1h");
+    if (stored === null) {
+      // All-null warm-up — no parity to check.
+      return;
+    }
+
+    // Build a minimal signal wrapper around the stored result so reblendWithProfile
+    // has the same perTimeframe data the write path used.
+    const signal: BlendedSignal = { ...stored };
+    const reblendt = reblendWithProfile(signal, "strict");
+
+    expect(reblendt.type, `${label}: type`).toBe(stored.type);
+    expect(reblendt.confidence, `${label}: confidence`).toBeCloseTo(stored.confidence, 10);
+
+    // weightsUsed must agree for each TF.
+    for (const tf of ["1m", "5m", "15m", "1h", "4h", "1d"] as const) {
+      expect(reblendt.weightsUsed[tf], `${label}: weightsUsed[${tf}]`).toBeCloseTo(
+        stored.weightsUsed[tf],
+        10,
+      );
+    }
+  }
+
+  it("§5 golden example: 1h=buy 0.68, 4h=buy 0.72 → buy (both paths agree)", () => {
+    assertStrictParity(
+      {
+        "1m": null,
+        "5m": null,
+        "15m": makeVote({ type: "hold", confidence: 0.55 }),
+        "1h": makeVote({ type: "buy", confidence: 0.68 }),
+        "4h": makeVote({ type: "buy", confidence: 0.72 }),
+        "1d": makeVote({ type: "hold", confidence: 0.5 }),
+      },
+      "§5 golden buy",
+    );
+  });
+
+  it("all hold: both paths produce type=hold, confidence=0.5", () => {
+    assertStrictParity(
+      {
+        "1m": null,
+        "5m": null,
+        "15m": makeVote({ type: "hold" }),
+        "1h": makeVote({ type: "hold" }),
+        "4h": makeVote({ type: "hold" }),
+        "1d": makeVote({ type: "hold" }),
+      },
+      "all hold",
+    );
+  });
+
+  it("sell path: 1h=sell 0.68, 4h=sell 0.72 → sell (both paths agree)", () => {
+    assertStrictParity(
+      {
+        "1m": null,
+        "5m": null,
+        "15m": makeVote({ type: "hold" }),
+        "1h": makeVote({ type: "sell", confidence: 0.68 }),
+        "4h": makeVote({ type: "sell", confidence: 0.72 }),
+        "1d": makeVote({ type: "hold" }),
+      },
+      "sell path",
+    );
+  });
+
+  it("single-source 0.7 damping: 4h=buy 0.8 only → both paths apply damping equally", () => {
+    assertStrictParity(
+      {
+        "1m": null,
+        "5m": null,
+        "15m": null,
+        "1h": null,
+        "4h": makeVote({ type: "buy", confidence: 0.8 }),
+        "1d": null,
+      },
+      "single-source 4h buy",
+    );
+  });
+
+  it("partial TF coverage (1h+4h only): renormalization identical in both paths", () => {
+    assertStrictParity(
+      {
+        "1m": null,
+        "5m": null,
+        "15m": null,
+        "1h": makeVote({ type: "buy", confidence: 0.7 }),
+        "4h": makeVote({ type: "buy", confidence: 0.7 }),
+        "1d": null,
+      },
+      "partial 1h+4h",
+    );
+  });
+
+  it("mixed buy/sell: opposing votes reduce blended scalar, both paths hold", () => {
+    assertStrictParity(
+      {
+        "1m": null,
+        "5m": null,
+        "15m": null,
+        "1h": makeVote({ type: "buy", confidence: 0.7 }),
+        "4h": makeVote({ type: "sell", confidence: 0.7 }),
+        "1d": null,
+      },
+      "opposing buy/sell",
+    );
+  });
+
+  it("strong-buy maps to +confidence same as buy: both paths agree", () => {
+    assertStrictParity(
+      {
+        "1m": null,
+        "5m": null,
+        "15m": null,
+        "1h": null,
+        "4h": makeVote({ type: "strong-buy", confidence: 0.9 }),
+        "1d": makeVote({ type: "strong-buy", confidence: 0.9 }),
+      },
+      "strong-buy path",
+    );
   });
 });
