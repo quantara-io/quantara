@@ -83,7 +83,7 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
         const excluded = resolveOutcome(signal, signal.priceAtSignal, signal.atrPctAtSignal, now);
         await putOutcome(excluded);
         resolvedOutcomes.push(excluded);
-        await markSignalOutcomeResolved(signal.signalId, signal.pair, "neutral");
+        await markSignalOutcomeResolved(signal.pair, signal.sk, "neutral");
         console.log(`[OutcomeHandler] ${signal.signalId}: invalidated — excluded from counts.`);
         continue;
       }
@@ -100,7 +100,7 @@ export async function handler(_event: EventBridgeEvent): Promise<void> {
       const resolved = resolveOutcome(signal, priceAtResolution, signal.atrPctAtSignal, now);
       await putOutcome(resolved);
       await fanOutToRuleAttributionGSI(resolved);
-      await markSignalOutcomeResolved(signal.signalId, signal.pair, resolved.outcome);
+      await markSignalOutcomeResolved(signal.pair, signal.sk, resolved.outcome);
       resolvedOutcomes.push(resolved);
       console.log(
         `[OutcomeHandler] ${signal.signalId}: ${signal.type} → ${resolved.outcome} (move=${(resolved.priceMovePct * 100).toFixed(2)}%, threshold=${(resolved.thresholdUsed * 100).toFixed(2)}%)`,
@@ -205,6 +205,7 @@ async function queryExpiredSignals(now: string): Promise<BlendedSignalRecord[]> 
 function itemToSignalRecord(item: Record<string, unknown>): BlendedSignalRecord {
   return {
     signalId: item["signalId"] as string,
+    sk: item["sk"] as string,
     pair: item["pair"] as string,
     type: item["type"] as BlendedSignalRecord["type"],
     confidence: item["confidence"] as number,
@@ -224,32 +225,20 @@ function itemToSignalRecord(item: Record<string, unknown>): BlendedSignalRecord 
 // ---------------------------------------------------------------------------
 
 async function markSignalOutcomeResolved(
-  signalId: string,
   pair: string,
-  outcome: string,
+  sk: string,
+  _outcome: string,
 ): Promise<void> {
-  // Retrieve the emittedAtSignalId SK from the record if needed.
-  // We update the outcome status on the signals-v2 record using the signalId.
-  // Since SK = emittedAtSignalId, we need to scan to find the SK.
-  // To avoid a full scan here, we write to a metadata key instead.
-  // (Production improvement: store outcomeStatus on the signal record directly via UpdateItem + GSI.)
-  const metadataKey = `outcome-resolved#${pair}#${signalId}`;
-
-  const { DynamoDBDocumentClient: DDC, PutCommand: PC } = await import("@aws-sdk/lib-dynamodb");
-  const metaClient = DDC.from(new DynamoDBClient({}));
-  const METADATA_TABLE = process.env.TABLE_METADATA ?? `${TABLE_PREFIX}ingestion-metadata`;
-
-  await metaClient.send(
-    new PC({
-      TableName: METADATA_TABLE,
-      Item: {
-        metaKey: metadataKey,
-        outcome,
-        resolvedAt: new Date().toISOString(),
-        // 30 day TTL — just a dedup marker
-        ttl: Math.floor(Date.now() / 1000) + 86400 * 30,
+  await client.send(
+    new UpdateCommand({
+      TableName: SIGNALS_V2_TABLE,
+      Key: { pair, sk },
+      UpdateExpression: "SET outcomeStatus = :resolved, outcomeAt = :now",
+      ExpressionAttributeValues: {
+        ":resolved": "resolved",
+        ":now": new Date().toISOString(),
       },
-      ConditionExpression: "attribute_not_exists(metaKey)",
+      // No ConditionExpression — idempotent: setting an already-resolved row to resolved is safe.
     }),
   );
 }
@@ -341,6 +330,3 @@ async function recomputeRuleAttribution(
   const attr = buildRuleAttribution(rule, pair, timeframe, window, filtered, now);
   await putRuleAttribution(attr);
 }
-
-// Keep UpdateCommand import alive for future use (currently using metadata marker pattern).
-void UpdateCommand;
