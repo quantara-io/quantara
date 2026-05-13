@@ -1,13 +1,21 @@
 /**
- * Markdown report generator — Phase 2.
+ * Markdown report generator — Phase 3.
  *
- * Generates a `summary.md` comparing two BacktestResult runs
+ * Phase 3 additions on top of Phase 2:
+ *   - Equity curve summary (peak, max drawdown, final, Sharpe)
+ *   - Drawdown periods (top 3 worst with dates)
+ *   - Calibration bins table + ASCII bar chart
+ *   - Per-rule attribution table (top 10 best/worst)
+ *   - Side-by-side equity curve ASCII sparklines (test vs baseline)
+ *
+ * Phase 2: Generates a `summary.md` comparing two BacktestResult runs
  * (test strategy vs baseline strategy) side-by-side.
- *
- * Design: Phase 2 issue #369 §7.
  */
 
 import type { BacktestResult, BacktestSignal } from "../engine.js";
+import type { EquityCurve, DrawdownPeriod } from "../equity/types.js";
+import type { RuleAttribution } from "../attribution/types.js";
+import type { CalibrationBin } from "../calibration/bins.js";
 
 // ---------------------------------------------------------------------------
 // Report input / output types
@@ -24,6 +32,25 @@ export interface ReportOptions {
   tradesCsvPath?: string;
   /** Path to the metrics JSON (relative or absolute, for the pointer). */
   metricsJsonPath?: string;
+
+  // Phase 3 additions:
+
+  /** Equity curve for the test strategy (Phase 3). */
+  testEquityCurve?: EquityCurve;
+  /** Equity curve for the baseline strategy (Phase 3). */
+  baselineEquityCurve?: EquityCurve;
+  /** Top-3 drawdown periods for the test strategy (Phase 3). */
+  testDrawdownPeriods?: DrawdownPeriod[];
+  /** Per-rule attribution for the test strategy (Phase 3). */
+  testRuleAttribution?: RuleAttribution[];
+  /** Calibration bins for the test strategy (Phase 3). */
+  testCalibrationBins?: CalibrationBin[];
+  /** Path to equity-curve.csv output file. */
+  equityCurveCsvPath?: string;
+  /** Path to per-rule-attribution.csv output file. */
+  ruleAttributionCsvPath?: string;
+  /** Path to calibration-by-bin.csv output file. */
+  calibrationBinsCsvPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +119,7 @@ function outcomeBar(result: BacktestResult): string {
 }
 
 // ---------------------------------------------------------------------------
-// Top-5 winning / losing rules
+// Top-5 winning / losing rules (Phase 2 helper, kept for Phase 3 compat)
 // ---------------------------------------------------------------------------
 
 interface RuleStats {
@@ -143,6 +170,153 @@ function topRules(signals: BacktestSignal[], n: number, direction: "winning" | "
 }
 
 // ---------------------------------------------------------------------------
+// Phase 3: ASCII sparkline for equity curves
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a one-line ASCII sparkline from a sequence of equity values.
+ * Uses ▁▂▃▄▅▆▇█ (8 levels).
+ */
+function sparkline(points: { equity: number }[], width = 40): string {
+  if (points.length === 0) return "(no data)";
+  const CHARS = "▁▂▃▄▅▆▇█";
+  const N = CHARS.length;
+
+  // Downsample to `width` buckets.
+  const step = Math.max(1, Math.floor(points.length / width));
+  const sampled: number[] = [];
+  for (let i = 0; i < points.length; i += step) {
+    sampled.push(points[i]!.equity);
+  }
+
+  const min = Math.min(...sampled);
+  const max = Math.max(...sampled);
+  const range = max - min;
+
+  return sampled
+    .map((v) => {
+      if (range === 0) return CHARS[N - 1]!;
+      const idx = Math.min(N - 1, Math.floor(((v - min) / range) * N));
+      return CHARS[idx]!;
+    })
+    .join("");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Calibration bins ASCII chart
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a two-row ASCII bar chart comparing stated confidence vs realized win rate per bin.
+ */
+function calibrationChart(bins: CalibrationBin[]): string {
+  if (bins.length === 0) return "  (no bins — insufficient data)\n";
+
+  const lines: string[] = [];
+  lines.push("  Bin         Count  ConfMean  WinRate  Calibration");
+  lines.push("  " + "─".repeat(52));
+
+  for (const b of bins) {
+    const label = `${(b.binMin * 100).toFixed(0)}-${(b.binMax * 100).toFixed(0)}%`;
+    const confBar = asciiBar(b.meanConfidence, 10, "·", " ");
+    const winBar = asciiBar(b.realizedWinRate, 10, "█", "░");
+    const drift = b.realizedWinRate - b.meanConfidence;
+    const driftLabel =
+      drift >= 0 ? `+${(drift * 100).toFixed(1)}pp` : `${(drift * 100).toFixed(1)}pp`;
+    lines.push(
+      `  ${label.padEnd(8)} ${String(b.count).padStart(5)}  ${confBar}  ${winBar}  ${driftLabel}`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Per-rule attribution table
+// ---------------------------------------------------------------------------
+
+function ruleAttributionTable(
+  attributions: RuleAttribution[],
+  direction: "best" | "worst",
+  n = 10,
+): string {
+  if (attributions.length === 0) return "  (insufficient data — no rules fired ≥30 times)\n";
+
+  const sorted = [...attributions].sort((a, b) => {
+    const ac = a.contributionToEquity ?? 0;
+    const bc = b.contributionToEquity ?? 0;
+    return direction === "best" ? bc - ac : ac - bc;
+  });
+
+  const top = sorted.slice(0, n);
+
+  const lines: string[] = [];
+  lines.push("  Rule                           Fires  WinRate  MeanRet  ContribEquity");
+  lines.push("  " + "─".repeat(70));
+
+  for (const r of top) {
+    const wr = r.winRate !== null ? `${(r.winRate * 100).toFixed(1)}%` : " n/a ";
+    const mr = r.meanReturnPct !== null ? `${(r.meanReturnPct * 100).toFixed(2)}%` : "  n/a ";
+    const ce =
+      r.contributionToEquity !== null
+        ? `${r.contributionToEquity >= 0 ? "+" : ""}${(r.contributionToEquity * 100).toFixed(2)}%`
+        : "  n/a ";
+    lines.push(
+      `  ${r.rule.padEnd(32)} ${String(r.fireCount).padStart(5)}  ${wr.padStart(7)}  ${mr.padStart(7)}  ${ce.padStart(12)}`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Equity curve summary
+// ---------------------------------------------------------------------------
+
+function equityCurveSummary(curve: EquityCurve, label: string): string[] {
+  const lines: string[] = [];
+  lines.push(`### Equity Curve — ${label}`);
+  lines.push(``);
+  lines.push(`| Metric | Value |`);
+  lines.push(`|--------|-------|`);
+  lines.push(`| Final equity | ${curve.finalEquity.toFixed(4)}× |`);
+  lines.push(`| Peak equity | ${curve.peakEquity.toFixed(4)}× |`);
+  lines.push(`| Max drawdown | ${fmtPct(curve.maxDrawdownPct)} |`);
+  lines.push(
+    `| Trough | ${curve.trough.equity.toFixed(4)}× @ ${curve.trough.ts.substring(0, 10)} |`,
+  );
+  lines.push(
+    `| Sharpe (annualized) | ${curve.sharpeAnnualized !== null ? curve.sharpeAnnualized.toFixed(3) : "n/a (< 30 signals)"} |`,
+  );
+  lines.push(``);
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Drawdown periods table
+// ---------------------------------------------------------------------------
+
+function drawdownPeriodsTable(periods: DrawdownPeriod[]): string[] {
+  const lines: string[] = [];
+  if (periods.length === 0) {
+    lines.push("*(no drawdown periods detected)*");
+    lines.push(``);
+    return lines;
+  }
+
+  lines.push(`| # | Start | Trough | Recovery | Drawdown |`);
+  lines.push(`|---|-------|--------|----------|----------|`);
+  for (let i = 0; i < periods.length; i++) {
+    const p = periods[i]!;
+    lines.push(
+      `| ${i + 1} | ${p.startTs.substring(0, 10)} | ${p.troughTs.substring(0, 10)} | ${p.recoveryTs?.substring(0, 10) ?? "ongoing"} | ${fmtPct(p.drawdownPct)} |`,
+    );
+  }
+  lines.push(``);
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
 // Main report generator
 // ---------------------------------------------------------------------------
 
@@ -172,6 +346,44 @@ export function generateMarkdownReport(opts: ReportOptions): string {
   lines.push(`| Started at | ${test.meta.startedAt} |`);
   lines.push(``);
 
+  // ---------------------------------------------------------------------------
+  // Phase 3: Equity curve summaries
+  // ---------------------------------------------------------------------------
+
+  if (opts.testEquityCurve || opts.baselineEquityCurve) {
+    lines.push(`## Equity Curves`);
+    lines.push(``);
+
+    if (opts.testEquityCurve && opts.baselineEquityCurve) {
+      // Side-by-side sparklines.
+      lines.push(`### Side-by-Side Sparklines`);
+      lines.push(``);
+      lines.push("```");
+      lines.push(`${testName.padEnd(20)} ${sparkline(opts.testEquityCurve.points, 40)}`);
+      lines.push(`${baseName.padEnd(20)} ${sparkline(opts.baselineEquityCurve.points, 40)}`);
+      lines.push("```");
+      lines.push(``);
+    }
+
+    if (opts.testEquityCurve) {
+      lines.push(...equityCurveSummary(opts.testEquityCurve, testName));
+    }
+
+    if (opts.baselineEquityCurve) {
+      lines.push(...equityCurveSummary(opts.baselineEquityCurve, baseName));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 3: Drawdown periods
+  // ---------------------------------------------------------------------------
+
+  if (opts.testDrawdownPeriods) {
+    lines.push(`## Top Drawdown Periods — ${testName}`);
+    lines.push(``);
+    lines.push(...drawdownPeriodsTable(opts.testDrawdownPeriods));
+  }
+
   // Strategy comparison header
   lines.push(`## Strategy Comparison`);
   lines.push(``);
@@ -193,6 +405,22 @@ export function generateMarkdownReport(opts: ReportOptions): string {
   lines.push(
     `| Mean return % | ${fmtPct(tm.meanReturnPct)} | ${fmtPct(bm.meanReturnPct)} | ${fmtPctDelta(tm.meanReturnPct, bm.meanReturnPct)} |`,
   );
+
+  // Phase 3: equity curve metrics if available.
+  if (opts.testEquityCurve && opts.baselineEquityCurve) {
+    const te = opts.testEquityCurve;
+    const be = opts.baselineEquityCurve;
+    lines.push(
+      `| Final equity | ${te.finalEquity.toFixed(4)}× | ${be.finalEquity.toFixed(4)}× | ${fmtDelta(te.finalEquity, be.finalEquity)} |`,
+    );
+    lines.push(
+      `| Max drawdown | ${fmtPct(te.maxDrawdownPct)} | ${fmtPct(be.maxDrawdownPct)} | ${fmtPctDelta(te.maxDrawdownPct, be.maxDrawdownPct, false)} |`,
+    );
+    lines.push(
+      `| Sharpe | ${fmtNum(te.sharpeAnnualized, 3)} | ${fmtNum(be.sharpeAnnualized, 3)} | ${fmtDelta(te.sharpeAnnualized, be.sharpeAnnualized)} |`,
+    );
+  }
+
   lines.push(
     `| Correct | ${tm.byOutcome.correct} | ${bm.byOutcome.correct} | ${tm.byOutcome.correct - bm.byOutcome.correct >= 0 ? "+" : ""}${tm.byOutcome.correct - bm.byOutcome.correct} |`,
   );
@@ -240,7 +468,7 @@ export function generateMarkdownReport(opts: ReportOptions): string {
   lines.push("```");
   lines.push(``);
 
-  // Top winning / losing rules (test strategy)
+  // Top winning / losing rules (Phase 2)
   lines.push(`## Top 5 Winning Rules — ${testName}`);
   lines.push(``);
   lines.push("```");
@@ -255,12 +483,66 @@ export function generateMarkdownReport(opts: ReportOptions): string {
   lines.push("```");
   lines.push(``);
 
+  // ---------------------------------------------------------------------------
+  // Phase 3: Calibration bins
+  // ---------------------------------------------------------------------------
+
+  if (opts.testCalibrationBins) {
+    lines.push(`## Calibration by Confidence Bin — ${testName}`);
+    lines.push(``);
+    lines.push("```");
+    lines.push(calibrationChart(opts.testCalibrationBins));
+    lines.push("```");
+    lines.push(``);
+
+    // Calibration bins markdown table
+    if (opts.testCalibrationBins.length > 0) {
+      lines.push(`| Bin | Count | Mean Conf | Win Rate |`);
+      lines.push(`|-----|-------|-----------|----------|`);
+      for (const b of opts.testCalibrationBins) {
+        lines.push(
+          `| ${(b.binMin * 100).toFixed(0)}–${(b.binMax * 100).toFixed(0)}% | ${b.count} | ${fmtPct(b.meanConfidence)} | ${fmtPct(b.realizedWinRate)} |`,
+        );
+      }
+      lines.push(``);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 3: Per-rule attribution tables
+  // ---------------------------------------------------------------------------
+
+  if (opts.testRuleAttribution && opts.testRuleAttribution.length > 0) {
+    lines.push(`## Per-Rule Attribution — Top 10 Best Contributors (${testName})`);
+    lines.push(``);
+    lines.push("```");
+    lines.push(ruleAttributionTable(opts.testRuleAttribution, "best", 10));
+    lines.push("```");
+    lines.push(``);
+
+    lines.push(`## Per-Rule Attribution — Top 10 Worst Contributors (${testName})`);
+    lines.push(``);
+    lines.push("```");
+    lines.push(ruleAttributionTable(opts.testRuleAttribution, "worst", 10));
+    lines.push("```");
+    lines.push(``);
+  }
+
   // File pointers
-  if (opts.tradesCsvPath ?? opts.metricsJsonPath) {
+  const csvPaths = [
+    opts.tradesCsvPath && `- Trades CSV: \`${opts.tradesCsvPath}\``,
+    opts.metricsJsonPath && `- Metrics JSON: \`${opts.metricsJsonPath}\``,
+    opts.equityCurveCsvPath && `- Equity curve CSV: \`${opts.equityCurveCsvPath}\``,
+    opts.ruleAttributionCsvPath && `- Per-rule attribution CSV: \`${opts.ruleAttributionCsvPath}\``,
+    opts.calibrationBinsCsvPath && `- Calibration bins CSV: \`${opts.calibrationBinsCsvPath}\``,
+  ].filter(Boolean);
+
+  if (csvPaths.length > 0) {
     lines.push(`## Output Files`);
     lines.push(``);
-    if (opts.tradesCsvPath) lines.push(`- Trades CSV: \`${opts.tradesCsvPath}\``);
-    if (opts.metricsJsonPath) lines.push(`- Metrics JSON: \`${opts.metricsJsonPath}\``);
+    for (const p of csvPaths) {
+      lines.push(p as string);
+    }
     lines.push(``);
   }
 

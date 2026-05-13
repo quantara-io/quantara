@@ -1,5 +1,13 @@
 /**
- * Backtest CLI — Phase 2.
+ * Backtest CLI — Phase 3.
+ *
+ * Phase 3 additions:
+ *   - Equity curve simulation (fixed-pct sizing, 15 bps round-trip cost)
+ *   - Per-rule attribution breakdown with counterfactual reruns (top-20 cap)
+ *   - Calibration-by-bin CSV + ASCII chart
+ *   - Walk-forward / frozen calibration guard warnings
+ *   - Three additional CSV outputs: equity-curve.csv, per-rule-attribution.csv,
+ *     calibration-by-bin.csv
  *
  * Usage:
  *   bun run backtest [flags]
@@ -21,6 +29,14 @@ import { loadStrategy } from "./strategy/types.js";
 import { estimateRatificationCost, DdbRatificationsStore } from "./cost/estimator.js";
 import { generateMarkdownReport } from "./report/markdown.js";
 import { BedrockInvokerImpl, DdbRatificationsLookup } from "./ratification/ratifier.js";
+import { simulateEquityCurve, extractDrawdownPeriods } from "./equity/simulator.js";
+import { computeRuleAttribution } from "./attribution/compute.js";
+import { computeCalibrationBins } from "./calibration/bins.js";
+import {
+  checkFrozenCalibrationGuard,
+  applyWalkForwardCalibration,
+} from "./calibration/walk-forward.js";
+import { equityCurveToCsv, ruleAttributionToCsv, calibrationBinsToCsv } from "./output/csv.js";
 import type { BacktestResult } from "./engine.js";
 import type { RatificationModel } from "./cost/estimator.js";
 
@@ -451,6 +467,61 @@ async function main(): Promise<void> {
     baselineResult = await engine.run(baselineInput);
   }
 
+  // ---------------------------------------------------------------------------
+  // Phase 3: Calibration guard checks
+  // ---------------------------------------------------------------------------
+  if (testStrategy?.calibration?.kind === "frozen") {
+    const warning = checkFrozenCalibrationGuard(
+      testStrategy.calibration as { kind: "frozen"; paramsAt: string },
+      testResult.signals,
+    );
+    if (warning) console.warn(warning);
+  }
+
+  // Phase 3: Apply walk-forward calibration if configured.
+  let testSignalsCalibrated = testResult.signals;
+  if (testStrategy?.calibration?.kind === "walk-forward") {
+    testSignalsCalibrated = applyWalkForwardCalibration(
+      testResult.signals,
+      testStrategy.calibration as { kind: "walk-forward"; refitDays: number },
+      from.getTime(),
+      to.getTime(),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 3: Equity curve, attribution, calibration bins
+  // ---------------------------------------------------------------------------
+  const sizing = testStrategy?.sizing ?? { kind: "fixed-pct" as const, pct: 0.02 };
+  const testEquityCurve = simulateEquityCurve(testSignalsCalibrated, sizing);
+  const testDrawdownPeriods = extractDrawdownPeriods(testEquityCurve.points, 3);
+  const testRuleAttribution = computeRuleAttribution(
+    testSignalsCalibrated,
+    sizing,
+    testEquityCurve.finalEquity,
+  );
+  const testCalibrationBins = computeCalibrationBins(testSignalsCalibrated);
+
+  // Write Phase 3 CSVs.
+  const equityCurvePath = resolve(outputDir, "equity-curve.csv");
+  const ruleAttributionPath = resolve(outputDir, "per-rule-attribution.csv");
+  const calibrationBinsPath = resolve(outputDir, "calibration-by-bin.csv");
+
+  await fs.writeFile(equityCurvePath, equityCurveToCsv(testEquityCurve.points));
+  await fs.writeFile(ruleAttributionPath, ruleAttributionToCsv(testRuleAttribution));
+  await fs.writeFile(calibrationBinsPath, calibrationBinsToCsv(testCalibrationBins));
+
+  console.log(`Equity curve CSV: ${equityCurvePath}`);
+  console.log(`Rule attribution CSV: ${ruleAttributionPath}`);
+  console.log(`Calibration bins CSV: ${calibrationBinsPath}`);
+
+  // Phase 3: baseline equity curve (for side-by-side sparklines).
+  let baselineEquityCurve = undefined;
+  if (baselineResult !== undefined) {
+    const baseSizing = baselineStrategy?.sizing ?? { kind: "fixed-pct" as const, pct: 0.02 };
+    baselineEquityCurve = simulateEquityCurve(baselineResult.signals, baseSizing);
+  }
+
   // Generate markdown report.
   if (baselineResult !== undefined) {
     const report = generateMarkdownReport({
@@ -459,6 +530,14 @@ async function main(): Promise<void> {
       period: `${flags.from.substring(0, 10)} → ${flags.to.substring(0, 10)} (${periodDays} days)`,
       tradesCsvPath: resolve(outputDir, "trades.csv"),
       metricsJsonPath: testMetricsPath,
+      testEquityCurve,
+      baselineEquityCurve,
+      testDrawdownPeriods,
+      testRuleAttribution,
+      testCalibrationBins,
+      equityCurveCsvPath: equityCurvePath,
+      ruleAttributionCsvPath: ruleAttributionPath,
+      calibrationBinsCsvPath: calibrationBinsPath,
     });
 
     const summaryPath = resolve(outputDir, "summary.md");
@@ -472,6 +551,13 @@ async function main(): Promise<void> {
   console.log(
     `  Win rate: ${metrics.winRate !== null ? (metrics.winRate * 100).toFixed(1) + "%" : "n/a"}` +
       `  Brier: ${metrics.brierScore !== null ? metrics.brierScore.toFixed(4) : "n/a"}`,
+  );
+  console.log(
+    `  Final equity: ${testEquityCurve.finalEquity.toFixed(4)}×` +
+      `  Max drawdown: ${(testEquityCurve.maxDrawdownPct * 100).toFixed(1)}%` +
+      (testEquityCurve.sharpeAnnualized !== null
+        ? `  Sharpe: ${testEquityCurve.sharpeAnnualized.toFixed(3)}`
+        : ""),
   );
   console.log(`Output: ${outputDir}`);
 }
