@@ -14,7 +14,7 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
 import { resolveOutcome } from "./outcomes/resolver.js";
 import type { BlendedSignalRecord } from "./outcomes/resolver.js";
@@ -176,16 +176,10 @@ async function queryExpiredSignals(now: string): Promise<BlendedSignalRecord[]> 
 
   do {
     const result = await client.send(
-      new QueryCommand({
-        // Use a sparse scan with a filter. In production, add an expiresAt GSI.
-        // For now, rely on FilterExpression — acceptable for small signal volumes.
+      new ScanCommand({
+        // Use a full table scan with in-process filter (no expiresAt GSI in Phase 4a).
+        // Acceptable for small signal volumes; a dedicated GSI is tracked as a Phase 8 follow-up.
         TableName: SIGNALS_V2_TABLE,
-        // We need a KeyCondition — since pair is PK, we'd need to scan all pairs.
-        // Use a Scan instead of Query for cross-pair expiry detection.
-        // Recast below as Scan call.
-        KeyConditionExpression: "attribute_exists(#pair)",
-        ExpressionAttributeNames: { "#pair": "pair" },
-        ExpressionAttributeValues: {},
         Limit: MAX_BATCH,
         ExclusiveStartKey: lastKey,
       }),
