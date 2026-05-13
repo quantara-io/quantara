@@ -747,6 +747,33 @@ If the suppressed cohort shows meaningful edge, revisit one of:
 
 Do not change `BLEND_THRESHOLD_T` or the weights without empirical data. See also `ingestion/src/signals/blend.ts` comments near `DEFAULT_TIMEFRAME_WEIGHTS` and `BLEND_THRESHOLD_T`.
 
+#### Blend profiles — `aggressive` is less suppressive, not fully permissive
+
+**Status: known gap, accepted for v1. Surfaced by PR #318 reviewer.**
+
+Named blend profiles (`strict` / `balanced` / `aggressive`) adjust T and per-TF weights at the API read path (see `packages/shared/src/types/blend.ts`). The `aggressive` profile sets T = 0.18 and raises the 1h weight to 0.25, which appears to unblock 1h-alone signals — but the **§5.8 single-source confidence damping factor (0.7)** closes the gap:
+
+```
+damped contribution = weight × conf_max × damping
+                    = 0.25   × 1.0     × 0.7
+                    = 0.175
+```
+
+`0.175 < T = 0.18`, so a 1h-alone signal at maximum confidence **still cannot cross the threshold** under `aggressive`. The profile reduces suppression for multi-TF combinations (where damping does not apply) but does not make single-timeframe surfacing possible at any confidence level. The same analysis applies to 15m (weight 0.15 × 1.0 × 0.7 = 0.105 ≪ T).
+
+**What `aggressive` actually changes:**
+
+| Scenario                                                                                | strict   | balanced | aggressive |
+| --------------------------------------------------------------------------------------- | -------- | -------- | ---------- |
+| 1h alone, conf = 1.0 (damped to 0.175)                                                  | hold     | hold     | hold       |
+| 1h + 4h agree, each conf = 0.55                                                         | hold     | hold     | buy/sell   |
+| 1h + 1d agree, each conf = 0.50                                                         | hold     | hold     | buy/sell   |
+| 4h alone, conf = 0.85 (no damping — not applicable; 4h can cross strict T=0.25 unaided) | buy/sell | buy/sell | buy/sell   |
+
+**Why the gap exists:** damping (§5.8 row 3) was designed for the `strict` profile where the concern was single-exchange candle noise. It was not revisited when `aggressive` was added. Removing damping under `aggressive` would be a behavior change requiring calibration data and product sign-off — tracked as option 2 in issue #323.
+
+**Implications for paid-tier docs:** do not describe `aggressive` as "surfaces short-TF signals independently." The accurate framing is: _"aggressive lowers the bar for multi-timeframe agreement, allowing 1h and 4h co-votes to produce directional signals that `strict` and `balanced` suppress."_
+
 ---
 
 ## 6. Sentiment integration
