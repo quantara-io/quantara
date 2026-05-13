@@ -103,6 +103,9 @@ jobs:
       - name: Typecheck ingestion
         run: npm run typecheck --workspace=quantara-ingestion
 
+      - name: Typecheck backtest
+        run: npm run typecheck --workspace=quantara-backtest
+
       - name: Build backend
         run: npm run build --workspace=quantara-backend
 
