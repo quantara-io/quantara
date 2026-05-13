@@ -18,6 +18,18 @@ import { DdbCandleStore } from "./store/ddb-candle-store.js";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 async function main(): Promise<void> {
+  // Phase 1 disclosure (per PR #372 reviewer finding 3, Path B):
+  // fearGreed is hardcoded to null and the per-bar historical FNG is not fetched.
+  // Dispersion comes from canonicalizeCandle so dispersion-based gates work,
+  // but the persisted dispersion-history that production uses is built up
+  // in-memory per run rather than reading the metadata table. The two FNG
+  // rules (`fng-extreme-greed`, `fng-extreme-fear`) will not fire in this
+  // Phase 1 run.
+  console.warn(
+    "[smoke] Phase 1: FNG is null and dispersion-history is replayed in-memory. " +
+      "Rules `fng-extreme-greed` and `fng-extreme-fear` will not fire.",
+  );
+
   const store = new DdbCandleStore({ tableName: "quantara-dev-candles" });
   const engine = new BacktestEngine(store);
 
@@ -30,7 +42,6 @@ async function main(): Promise<void> {
 
   const result = await engine.run({
     pair: "BTC/USDT",
-    exchange: "binance",
     timeframe: "1h",
     from,
     to,
@@ -44,7 +55,14 @@ async function main(): Promise<void> {
 
   const { metrics } = result;
   console.log(`[smoke] Done: ${result.signals.length} signals emitted`);
-  console.log(`[smoke] Candles fetched: ${result.meta.candleCount}`);
+  console.log(
+    `[smoke] Candles fetched (all exchanges combined): ${result.meta.candleCount}; bars skipped (no consensus): ${result.meta.skippedNoConsensus}`,
+  );
+  const gateCounts = result.signals.reduce<Record<string, number>>((acc, s) => {
+    if (s.gateReason !== null) acc[s.gateReason] = (acc[s.gateReason] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(`[smoke] Gate-fired counts: ${JSON.stringify(gateCounts)}`);
   console.log(
     `[smoke] By outcome: correct=${metrics.byOutcome.correct} incorrect=${metrics.byOutcome.incorrect} neutral=${metrics.byOutcome.neutral} unresolved=${metrics.byOutcome.unresolved}`,
   );

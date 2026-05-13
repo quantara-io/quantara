@@ -4,6 +4,13 @@ import type { Candle, Timeframe } from "@quantara/shared";
 
 import type { HistoricalCandleStore } from "./candle-store.js";
 
+/**
+ * Production exchange list — mirrors ingestion/src/exchanges/config.ts. Kept
+ * inlined here so the backtest workspace doesn't import a non-public ingestion
+ * config module (and so the list is explicit in the harness).
+ */
+const PRODUCTION_EXCHANGES = ["binanceus", "coinbase", "kraken"] as const;
+
 export interface DdbCandleStoreOptions {
   /**
    * Explicit table name. When omitted, reads TABLE_CANDLES or falls back to
@@ -76,5 +83,28 @@ export class DdbCandleStore implements HistoricalCandleStore {
     } while (lastKey !== undefined);
 
     return items;
+  }
+
+  /**
+   * Fan-out per-exchange Query over the three production exchanges. Returns a
+   * map with one entry per production exchange (empty array when no rows in
+   * window). The engine uses this to build the consensus candle per closeTime.
+   */
+  async getCandlesForAllExchanges(
+    pair: string,
+    timeframe: Timeframe,
+    from: Date,
+    to: Date,
+  ): Promise<Record<string, Candle[]>> {
+    const entries = await Promise.all(
+      PRODUCTION_EXCHANGES.map(
+        async (ex) => [ex, await this.getCandles(pair, ex, timeframe, from, to)] as const,
+      ),
+    );
+    const result: Record<string, Candle[]> = {};
+    for (const [ex, candles] of entries) {
+      result[ex] = candles;
+    }
+    return result;
   }
 }

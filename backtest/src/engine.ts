@@ -1,19 +1,31 @@
 /**
  * BacktestEngine — Phase 1.
  *
- * Replays historical candles through the production algorithm (buildIndicatorState →
- * scoreTimeframe → resolveOutcome) without touching production code paths.
+ * Replays historical candles through the production algorithm
+ * (canonicalizeCandle → buildIndicatorState → evaluateGates → scoreTimeframe
+ * → resolveOutcome) without touching production code paths.
  *
- * Phase 1 constraints:
+ * Phase 1 constraints (faithful-reproduction commitments — see PR #372 reviewer
+ * findings 1-4):
  *   - Single timeframe (emitting TF only — multi-TF blend is Phase 2)
  *   - Algo-only (no Bedrock ratification — that is Phase 2)
  *   - Source = production candles table (archive backfill is a separate prereq)
+ *   - priceAtSignal / priceAtResolution use canonical median-of-exchanges close
+ *     (mirrors `indicator-handler.ts:706`).
+ *   - IndicatorState built from the longest exchange history with the head bar
+ *     substituted by the canonical consensus candle (mirrors
+ *     `indicator-handler.ts:727-728`).
+ *   - Gates evaluated via `evaluateGates` and passed into `scoreTimeframe`.
+ *   - fearGreed and (per-bar historical) dispersion are stubbed to null —
+ *     rules that depend on them will not fire. See PR description (Path B).
  */
 
 import { RULES } from "@quantara/shared";
 import type { Candle, Timeframe } from "@quantara/shared";
 import { buildIndicatorState } from "quantara-ingestion/src/indicators/index.js";
+import { canonicalizeCandle } from "quantara-ingestion/src/lib/canonicalize.js";
 import { scoreTimeframe } from "quantara-ingestion/src/signals/score.js";
+import { evaluateGates, narrowPair } from "quantara-ingestion/src/signals/gates.js";
 import { resolveOutcome } from "quantara-ingestion/src/outcomes/resolver.js";
 import type { BlendedSignalRecord } from "quantara-ingestion/src/outcomes/resolver.js";
 
@@ -28,7 +40,12 @@ export type SignalType = "strong-buy" | "buy" | "hold" | "sell" | "strong-sell";
 
 export interface BacktestInput {
   pair: string;
-  /** Exchange to query candles from. Defaults to "binance". */
+  /**
+   * Deprecated in Phase 1 §canonicalize: candles are now fetched for all
+   * production exchanges and combined via `canonicalizeCandle`. The field is
+   * preserved so existing callers don't break; it is ignored by `run()` when
+   * canonicalization is in effect (i.e. always, in this phase).
+   */
   exchange?: string;
   /** The emitting timeframe. Phase 1: single-TF only. */
   timeframe: Timeframe;
@@ -47,6 +64,8 @@ export interface BacktestResult {
     timeframe: Timeframe;
     from: string;
     to: string;
+    /** Number of evaluation bars skipped because canonicalizeCandle returned null. */
+    skippedNoConsensus: number;
   };
 }
 
@@ -58,11 +77,15 @@ export interface BacktestSignal {
   type: SignalType;
   confidence: number;
   rulesFired: string[];
-  /** null if signal hasn't expired by `to` */
+  /** Gate decision from evaluateGates — null when no gate fired. */
+  gateReason: "vol" | "dispersion" | "stale" | null;
+  /** null if signal hasn't expired by `to`, or if resolution candle has no consensus. */
   resolvedAt: string | null;
   outcome: "correct" | "incorrect" | "neutral" | null;
   priceMovePct: number | null;
+  /** Canonical (median-of-exchanges) close at emission. */
   priceAtSignal: number;
+  /** Canonical (median-of-exchanges) close at expiresAt — null when no consensus. */
   priceAtResolution: number | null;
   expiresAt: string;
 }
@@ -109,6 +132,12 @@ const EXPIRY_BARS = 4;
  */
 const WARMUP_BARS = 205;
 
+/** Mirrors DISPERSION_HISTORY_SIZE in `indicator-handler.ts:500`. */
+const DISPERSION_HISTORY_SIZE = 5;
+
+/** Tolerance (ms) for matching the same closeTime across exchanges. */
+const CLOSE_TIME_MATCH_TOLERANCE_MS = 1;
+
 // ---------------------------------------------------------------------------
 // BacktestEngine
 // ---------------------------------------------------------------------------
@@ -120,73 +149,166 @@ export class BacktestEngine {
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
 
-    const exchange = input.exchange ?? "binance";
     const { pair, timeframe, from, to } = input;
     const tfMs = TF_MS[timeframe];
 
     // Extend fetch window back by warmup bars to ensure indicators are seeded.
     const fetchFrom = new Date(from.getTime() - WARMUP_BARS * tfMs);
 
-    const allCandles = await this.candleStore.getCandles(pair, exchange, timeframe, fetchFrom, to);
+    // §canonicalize: pull all three production exchanges and combine per bar.
+    const perExchangeHistoryRaw = await this.candleStore.getCandlesForAllExchanges(
+      pair,
+      timeframe,
+      fetchFrom,
+      to,
+    );
 
-    if (allCandles.length === 0) {
-      return {
-        signals: [],
-        metrics: emptyMetrics(),
-        meta: {
-          startedAt,
-          durationMs: Date.now() - t0,
-          candleCount: 0,
-          pair,
-          timeframe,
-          from: from.toISOString(),
-          to: to.toISOString(),
-        },
-      };
+    const exchanges = Object.keys(perExchangeHistoryRaw).sort();
+    if (exchanges.length === 0) {
+      return emptyResult(startedAt, t0, pair, timeframe, from, to, 0);
     }
 
-    // Sort candles chronologically (oldest first).
-    allCandles.sort((a, b) => a.openTime - b.openTime);
-
-    // Build index from closeTime → candle for O(1) resolution lookups.
-    const candleByCloseTime = new Map<number, Candle>();
-    for (const c of allCandles) {
-      candleByCloseTime.set(c.closeTime, c);
+    // Sort each exchange's candles chronologically (oldest first) and build a
+    // closeTime→Candle Map per exchange for O(1) lookups in the hot loop.
+    // The Map also doubles as the "exchange has a candle at this closeTime"
+    // staleness signal (consistent with how indicator-handler.ts treats a
+    // missing candle at a closeTime as stale, see lines 690-703).
+    const perExchangeSorted: Record<string, Candle[]> = {};
+    const perExchangeByCloseTime: Record<string, Map<number, Candle>> = {};
+    let totalCandles = 0;
+    for (const ex of exchanges) {
+      const sorted = [...perExchangeHistoryRaw[ex]!].sort((a, b) => a.openTime - b.openTime);
+      perExchangeSorted[ex] = sorted;
+      const byClose = new Map<number, Candle>();
+      for (const c of sorted) {
+        byClose.set(c.closeTime, c);
+      }
+      perExchangeByCloseTime[ex] = byClose;
+      totalCandles += sorted.length;
     }
 
-    // Identify candles in the [from, to] window (the "evaluation" window).
-    const evalCandles = allCandles.filter(
+    // Pick the exchange with the longest history — used as the "base" candle
+    // series for buildIndicatorState (head bar substituted by consensus).
+    // Mirrors indicator-handler.ts:715-719.
+    const longestExchange = exchanges.reduce((best, ex) => {
+      return (perExchangeSorted[ex]?.length ?? 0) > (perExchangeSorted[best]?.length ?? 0)
+        ? ex
+        : best;
+    }, exchanges[0]!);
+    const baseSeries = perExchangeSorted[longestExchange]!;
+
+    if (baseSeries.length === 0) {
+      return emptyResult(startedAt, t0, pair, timeframe, from, to, 0);
+    }
+
+    // Iterate the longest exchange's series as the candidate emission timeline.
+    // Evaluation candles are those whose closeTime is in [from, to]. Production
+    // indicator-handler.ts:223 treats expiresAt <= now as resolvable (inclusive),
+    // so we use closeTime <= to.getTime() for emission too — keeping the
+    // resolution-boundary semantic consistent with production.
+    const evalCandles = baseSeries.filter(
       (c) => c.closeTime >= from.getTime() && c.closeTime <= to.getTime(),
     );
+
+    // Build a closeTime → index map on baseSeries so the per-eval-bar lookback
+    // slice is O(1) (replaces the O(n²) Array.indexOf in the previous impl,
+    // see PR #372 reviewer finding 5).
+    const baseIndexByCloseTime = new Map<number, number>();
+    for (let i = 0; i < baseSeries.length; i++) {
+      baseIndexByCloseTime.set(baseSeries[i]!.closeTime, i);
+    }
 
     const signals: BacktestSignal[] = [];
     // Cooldown tracking: ruleName → bars since last fire.
     const lastFireBars: Record<string, number> = {};
+    // Rolling dispersion history (most-recent first, length ≤ DISPERSION_HISTORY_SIZE).
+    let dispersionHistory: number[] = [];
+    let skippedNoConsensus = 0;
+
+    // For finding canonical close at resolution time, we union all candle
+    // closeTimes across exchanges so resolution-bar lookups can find candles
+    // that exist on exchanges other than the base series.
+    const allCloseTimes = new Set<number>();
+    for (const ex of exchanges) {
+      for (const c of perExchangeSorted[ex]!) {
+        allCloseTimes.add(c.closeTime);
+      }
+    }
+    const sortedCloseTimes = [...allCloseTimes].sort((a, b) => a - b);
 
     for (let i = 0; i < evalCandles.length; i++) {
-      const candle = evalCandles[i];
+      const candle = evalCandles[i]!;
+      const closeTime = candle.closeTime;
 
-      // Find this candle's position in allCandles to slice the lookback window.
-      const allIdx = allCandles.indexOf(candle);
-      if (allIdx === -1) continue;
+      // §canonicalize: gather per-exchange candle at this closeTime + staleness.
+      const { perExchange, staleness } = collectPerExchange(
+        exchanges,
+        perExchangeByCloseTime,
+        closeTime,
+      );
 
-      // Build indicator state from all candles up to and including this close.
-      const windowCandles = allCandles.slice(0, allIdx + 1);
+      const canon = canonicalizeCandle(perExchange, staleness);
+      if (canon === null) {
+        // <2 eligible exchanges → no consensus. Treat as ungatable: skip and
+        // record for meta. Documented in PR description.
+        skippedNoConsensus += 1;
+        continue;
+      }
 
-      const state = buildIndicatorState(windowCandles, {
+      // §indicator-state: substitute consensus candle for the head bar of the
+      // longest-history exchange's series, then build state on
+      // chronologically-ordered slice up to and including this close.
+      const baseIdx = baseIndexByCloseTime.get(closeTime);
+      if (baseIdx === undefined) {
+        // The base series doesn't have a bar at this closeTime (shouldn't
+        // happen because evalCandles iterates baseSeries) — skip defensively.
+        continue;
+      }
+      // Slice baseSeries up through the current bar, then replace the head
+      // (most-recent) candle with the canonical consensus candle. Production
+      // does this by building [canon.consensus, ...baseCandles.slice(1)] in
+      // newest-first order, then reversing — we replicate that exactly.
+      const baseUpToHere = baseSeries.slice(0, baseIdx + 1);
+      const baseNewestFirst = [...baseUpToHere].reverse();
+      const candlesNewestFirst: Candle[] = [canon.consensus, ...baseNewestFirst.slice(1)];
+      const candlesOldestFirst = [...candlesNewestFirst].reverse();
+
+      // §3 Path B: fearGreed stays null in Phase 1. Logged once at the smoke
+      // entry point — see smoke.ts.
+      const state = buildIndicatorState(candlesOldestFirst, {
         pair,
-        exchange,
+        exchange: "consensus",
         timeframe,
         fearGreed: null,
-        dispersion: null,
+        dispersion: canon.dispersion,
       });
+
+      // Update dispersion history (most-recent first), then evaluate gates.
+      dispersionHistory = [canon.dispersion, ...dispersionHistory].slice(
+        0,
+        DISPERSION_HISTORY_SIZE,
+      );
 
       // Increment all cooldown counters before scoring.
       for (const key of Object.keys(lastFireBars)) {
         lastFireBars[key] = (lastFireBars[key] ?? 0) + 1;
       }
 
-      const vote = scoreTimeframe(state, RULES, lastFireBars);
+      // §4 evaluateGates: requires staleness to have exactly 3 keys (asserted
+      // in gates.ts:111). We pass the full per-exchange staleness map (one
+      // entry per production exchange, present even when empty), matching
+      // indicator-handler.ts:755.
+      let gateResult: ReturnType<typeof evaluateGates>;
+      try {
+        gateResult = evaluateGates(state, narrowPair(pair), dispersionHistory, staleness);
+      } catch {
+        // narrowPair throws for non-production pairs (test fixtures, e.g.).
+        // Without a recognised pair we can't run the vol gate; pass a no-fire
+        // result so the backtest still produces signals — Phase 1 acceptable.
+        gateResult = { fired: false, reason: null };
+      }
+
+      const vote = scoreTimeframe(state, RULES, lastFireBars, { gateResult });
 
       if (vote === null) {
         // No eligible rules yet (still warming up) — skip.
@@ -198,19 +320,22 @@ export class BacktestEngine {
         lastFireBars[ruleName] = 0;
       }
 
-      const priceAtSignal = candle.close;
-      const atrPct = state.atr14 !== null ? state.atr14 / priceAtSignal : 0;
-      const expiresAtMs = candle.closeTime + EXPIRY_BARS * tfMs;
+      const priceAtSignal = canon.consensus.close;
+      // §5 atr-pct guard: only divide when priceAtSignal > 0 (matches
+      // indicator-handler.ts production guard).
+      const atrPct = state.atr14 !== null && priceAtSignal > 0 ? state.atr14 / priceAtSignal : 0;
+      const expiresAtMs = closeTime + EXPIRY_BARS * tfMs;
       const expiresAt = new Date(expiresAtMs).toISOString();
 
       const signal: BacktestSignal = {
-        emittedAt: new Date(candle.closeTime).toISOString(),
-        closeTime: candle.closeTime,
+        emittedAt: new Date(closeTime).toISOString(),
+        closeTime,
         pair,
         timeframe,
         type: vote.type,
         confidence: vote.confidence,
         rulesFired: vote.rulesFired,
+        gateReason: vote.gateReason ?? null,
         resolvedAt: null,
         outcome: null,
         priceMovePct: null,
@@ -219,44 +344,52 @@ export class BacktestEngine {
         expiresAt,
       };
 
-      // Resolve outcome if expiresAt is before `to`.
+      // §9 boundary: production resolves when expiresAt <= now (inclusive).
+      // We mirror that with <= to.getTime() so a bar that expires exactly at
+      // the window edge still resolves.
       if (expiresAtMs <= to.getTime()) {
-        // Find the candle at expiry (closest candle whose closeTime >= expiresAtMs).
-        const resolutionCandle = findNearestCandle(allCandles, expiresAtMs);
+        const resolutionCloseTime = findNearestCloseTime(sortedCloseTimes, expiresAtMs);
 
-        if (resolutionCandle !== null) {
-          const priceAtResolution = resolutionCandle.close;
+        if (resolutionCloseTime !== null) {
+          // §canonicalize: priceAtResolution is canonical, same as priceAtSignal.
+          const { perExchange: perExResolution, staleness: stalenessResolution } =
+            collectPerExchange(exchanges, perExchangeByCloseTime, resolutionCloseTime);
+          const canonResolution = canonicalizeCandle(perExResolution, stalenessResolution);
 
-          // Build a synthetic BlendedSignalRecord for resolveOutcome.
-          // sk mirrors the signals-v2 composite key format: tf#closeTime.
-          const signalId = `backtest-${pair}-${timeframe}-${candle.closeTime}`;
-          const signalRecord: BlendedSignalRecord = {
-            signalId,
-            sk: `${timeframe}#${candle.closeTime}`,
-            pair,
-            type: toResolverType(vote.type),
-            confidence: vote.confidence,
-            createdAt: signal.emittedAt,
-            expiresAt,
-            priceAtSignal,
-            atrPctAtSignal: atrPct,
-            gateReason: vote.gateReason,
-            rulesFired: vote.rulesFired,
-            emittingTimeframe: timeframe,
-            invalidatedAt: null,
-          };
+          if (canonResolution !== null) {
+            const priceAtResolution = canonResolution.consensus.close;
+            const signalId = `backtest-${pair}-${timeframe}-${closeTime}`;
+            const signalRecord: BlendedSignalRecord = {
+              signalId,
+              sk: `${timeframe}#${closeTime}`,
+              pair,
+              type: toResolverType(vote.type),
+              confidence: vote.confidence,
+              createdAt: signal.emittedAt,
+              expiresAt,
+              priceAtSignal,
+              atrPctAtSignal: atrPct,
+              gateReason: vote.gateReason,
+              rulesFired: vote.rulesFired,
+              emittingTimeframe: timeframe,
+              invalidatedAt: null,
+            };
 
-          const outcomeRecord = resolveOutcome(
-            signalRecord,
-            priceAtResolution,
-            atrPct,
-            new Date(expiresAtMs).toISOString(),
-          );
+            const outcomeRecord = resolveOutcome(
+              signalRecord,
+              priceAtResolution,
+              atrPct,
+              new Date(expiresAtMs).toISOString(),
+            );
 
-          signal.resolvedAt = outcomeRecord.resolvedAt;
-          signal.outcome = outcomeRecord.outcome;
-          signal.priceMovePct = outcomeRecord.priceMovePct;
-          signal.priceAtResolution = priceAtResolution;
+            signal.resolvedAt = outcomeRecord.resolvedAt;
+            signal.outcome = outcomeRecord.outcome;
+            signal.priceMovePct = outcomeRecord.priceMovePct;
+            signal.priceAtResolution = priceAtResolution;
+          }
+          // If canonResolution is null we leave the signal unresolved — the
+          // resolution bar lacks cross-exchange consensus, which we cannot
+          // fabricate without diverging from production semantics.
         }
       }
 
@@ -271,11 +404,12 @@ export class BacktestEngine {
       meta: {
         startedAt,
         durationMs: Date.now() - t0,
-        candleCount: allCandles.length,
+        candleCount: totalCandles,
         pair,
         timeframe,
         from: from.toISOString(),
         to: to.toISOString(),
+        skippedNoConsensus,
       },
     };
   }
@@ -284,6 +418,36 @@ export class BacktestEngine {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Build the per-exchange Candle map + staleness map at a given closeTime.
+ * staleness[ex] = true when the exchange has no candle at this closeTime
+ * (within tolerance) — matches the "missing candle ⇒ stale" rule in
+ * indicator-handler.ts:703.
+ */
+function collectPerExchange(
+  exchanges: string[],
+  perExchangeByCloseTime: Record<string, Map<number, Candle>>,
+  closeTime: number,
+): { perExchange: Record<string, Candle | null>; staleness: Record<string, boolean> } {
+  const perExchange: Record<string, Candle | null> = {};
+  const staleness: Record<string, boolean> = {};
+  for (const ex of exchanges) {
+    const byClose = perExchangeByCloseTime[ex]!;
+    // Exact-match O(1) lookup first; fall back to a small tolerance window
+    // (some exchanges report closeTime off by 1ms — same as indicator-handler).
+    let match = byClose.get(closeTime) ?? null;
+    if (match === null && CLOSE_TIME_MATCH_TOLERANCE_MS > 0) {
+      for (let delta = 1; delta <= CLOSE_TIME_MATCH_TOLERANCE_MS; delta++) {
+        match = byClose.get(closeTime + delta) ?? byClose.get(closeTime - delta) ?? null;
+        if (match !== null) break;
+      }
+    }
+    perExchange[ex] = match;
+    staleness[ex] = match === null;
+  }
+  return { perExchange, staleness };
+}
 
 /**
  * Map the 5-tier SignalType to the resolver's 3-type SignalType.
@@ -296,15 +460,22 @@ function toResolverType(type: SignalType): "buy" | "sell" | "hold" {
 }
 
 /**
- * Find the candle whose closeTime is nearest to and >= targetMs.
- * Returns null if no such candle exists in the list.
+ * Binary search for the first closeTime >= targetMs.
+ * Returns null if no such entry exists.
+ *
+ * Replaces the previous O(n) linear scan; the eval loop calls this once per
+ * resolved signal, so on a 30-day 1h backtest (~700 signals × 925 candles)
+ * the speed-up is meaningful.
  */
-function findNearestCandle(candles: Candle[], targetMs: number): Candle | null {
-  // candles is sorted by openTime ascending; closeTime follows the same order.
-  for (const c of candles) {
-    if (c.closeTime >= targetMs) return c;
+function findNearestCloseTime(sortedCloseTimes: number[], targetMs: number): number | null {
+  let lo = 0;
+  let hi = sortedCloseTimes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sortedCloseTimes[mid]! < targetMs) lo = mid + 1;
+    else hi = mid;
   }
-  return null;
+  return lo < sortedCloseTimes.length ? sortedCloseTimes[lo]! : null;
 }
 
 function emptyMetrics(): AggregateMetrics {
@@ -315,6 +486,31 @@ function emptyMetrics(): AggregateMetrics {
     brierScore: null,
     winRate: null,
     meanReturnPct: null,
+  };
+}
+
+function emptyResult(
+  startedAt: string,
+  t0: number,
+  pair: string,
+  timeframe: Timeframe,
+  from: Date,
+  to: Date,
+  candleCount: number,
+): BacktestResult {
+  return {
+    signals: [],
+    metrics: emptyMetrics(),
+    meta: {
+      startedAt,
+      durationMs: Date.now() - t0,
+      candleCount,
+      pair,
+      timeframe,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      skippedNoConsensus: 0,
+    },
   };
 }
 
