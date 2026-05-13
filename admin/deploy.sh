@@ -16,16 +16,21 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="$SCRIPT_DIR/../backend/infra/$ENV"
 
-echo "→ Building Vite bundle…"
-cd "$SCRIPT_DIR"
-npm run build
-
+# Pull outputs FIRST so VITE_API_BASE can be baked into the build.
+# Without this, the production bundle ships with API_BASE="" and every fetch
+# hits the admin CloudFront origin instead of the API origin — SPA-fallback
+# returns index.html as a 200 (non-JSON body) and every API call breaks.
 echo "→ Reading terraform outputs from ${TF_DIR}…"
 cd "$TF_DIR"
-BUCKET=$(terraform output -raw admin_bucket_name)
-DIST_ID=$(terraform output -raw admin_distribution_id)
-URL=$(terraform output -raw admin_cloudfront_url)
-echo "  bucket=$BUCKET  distribution=$DIST_ID"
+BUCKET=$(AWS_PROFILE="$PROFILE" terraform output -raw admin_bucket_name)
+DIST_ID=$(AWS_PROFILE="$PROFILE" terraform output -raw admin_distribution_id)
+URL=$(AWS_PROFILE="$PROFILE" terraform output -raw admin_cloudfront_url)
+API_URL=$(AWS_PROFILE="$PROFILE" terraform output -raw cloudfront_url)
+echo "  bucket=$BUCKET  distribution=$DIST_ID  api=$API_URL"
+
+echo "→ Building Vite bundle (VITE_API_BASE=$API_URL)…"
+cd "$SCRIPT_DIR"
+VITE_API_BASE="$API_URL" npm run build
 
 echo "→ Syncing dist/ to s3://${BUCKET} …"
 cd "$SCRIPT_DIR"
