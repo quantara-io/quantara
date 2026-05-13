@@ -12,6 +12,7 @@
     "backtest:estimate": "tsx src/cli.ts estimate"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.750.0",
     "@aws-sdk/client-dynamodb": "^3.750.0",
     "@aws-sdk/lib-dynamodb": "^3.750.0",
     "@quantara/shared": "*",

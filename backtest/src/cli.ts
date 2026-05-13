@@ -20,6 +20,7 @@ import { DdbCandleStore } from "./store/ddb-candle-store.js";
 import { loadStrategy } from "./strategy/types.js";
 import { estimateRatificationCost, DdbRatificationsStore } from "./cost/estimator.js";
 import { generateMarkdownReport } from "./report/markdown.js";
+import { BedrockInvokerImpl, DdbRatificationsLookup } from "./ratification/ratifier.js";
 import type { BacktestResult } from "./engine.js";
 import type { RatificationModel } from "./cost/estimator.js";
 
@@ -309,12 +310,23 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------------------
   // Cost estimation + pre-run plan
   // ---------------------------------------------------------------------------
+  // Wire ratification helpers — only constructed when actually needed so a
+  // `--ratification=skip` run never instantiates Bedrock credentials.
+  const ratificationsLookup =
+    flags.ratification === "cache-only" ? new DdbRatificationsLookup() : undefined;
+  const bedrockInvoker =
+    flags.ratification === "replay-bedrock" ? new BedrockInvokerImpl() : undefined;
+
   const testInput = {
     pair: flags.pair,
     timeframe: flags.tf as import("@quantara/shared").Timeframe,
     from,
     to,
     strategy: testStrategy,
+    ratification: flags.ratification,
+    model: flags.model,
+    ratificationsLookup,
+    bedrockInvoker,
   };
 
   renderPlanTable(flags, periodDays);
@@ -381,24 +393,25 @@ async function main(): Promise<void> {
   await fs.mkdir(outputDir, { recursive: true });
 
   console.log(`Running test backtest for ${flags.pair}...`);
-  let testResult: BacktestResult = await engine.run(testInput);
+  const testResult: BacktestResult = await engine.run({
+    ...testInput,
+    maxCostUsd: maxCostCeiling,
+  });
 
-  // Hard runtime cost ceiling (Phase 2 — wire-up when replay-bedrock lands).
-  if (maxCostCeiling !== undefined) {
-    const runningCost = 0; // Placeholder: actual cost tracking lands with replay-bedrock
-    if (runningCost > maxCostCeiling) {
-      testResult = {
-        ...testResult,
-        meta: {
-          ...testResult.meta,
-          aborted: true,
-          abortReason: "cost-ceiling",
-        },
-      };
-      console.warn(
-        `[backtest] Run aborted: actual cost exceeded max-cost ceiling $${maxCostCeiling.toFixed(4)}`,
-      );
-    }
+  // Hard runtime cost ceiling — the engine threads `actualCostUsd` per
+  // Bedrock call and sets `meta.aborted` + `meta.abortReason = "cost-ceiling"`
+  // mid-run when the ceiling is exceeded. The CLI just surfaces it.
+  if (testResult.meta.aborted) {
+    console.warn(
+      `[backtest] Run aborted: ${testResult.meta.abortReason ?? "unknown"}` +
+        (testResult.meta.actualCostUsd !== undefined
+          ? ` (actual cost: $${testResult.meta.actualCostUsd.toFixed(4)})`
+          : ""),
+    );
+  } else if (testResult.meta.actualCostUsd !== undefined && testResult.meta.actualCostUsd > 0) {
+    console.log(
+      `[backtest] Actual ratification cost: $${testResult.meta.actualCostUsd.toFixed(4)}`,
+    );
   }
 
   // Write test result JSON.
@@ -416,6 +429,11 @@ async function main(): Promise<void> {
       from,
       to,
       strategy: baselineStrategy,
+      ratification: flags.ratification,
+      model: flags.model,
+      maxCostUsd: maxCostCeiling,
+      ratificationsLookup,
+      bedrockInvoker,
     };
     baselineResult = await engine.run(baselineInput);
 

@@ -39,6 +39,22 @@ function makeInput(days: number): BacktestInput {
   return { pair: "BTC/USDT", timeframe: "1h", from, to };
 }
 
+/** Multi-TF input — same period but with a Strategy attached so the
+ * estimator picks the multi-TF "× 4 signal TFs" branch. */
+function makeMultiTfInput(days: number): BacktestInput {
+  const base = makeInput(days);
+  return {
+    ...base,
+    timeframe: "15m",
+    strategy: {
+      name: "test-multi-tf",
+      description: "Test strategy that triggers the multi-TF estimator branch.",
+      exitPolicy: { kind: "n-bars", nBars: 4 },
+      sizing: { kind: "fixed-pct", pct: 0.01 },
+    },
+  };
+}
+
 /** Stub candleStore — estimator doesn't actually call it in current impl. */
 const stubCandleStore: HistoricalCandleStore = {
   getCandles: vi.fn().mockResolvedValue([]),
@@ -98,7 +114,8 @@ describe("estimateRatificationCost", () => {
   it("1-year × BTC/USDT × all TFs × prod gate rate × Haiku — cost is ~$0.20", async () => {
     const { estimateRatificationCost, DEFAULT_GATE_RATE } = await import("./estimator.js");
     // Use the default gate rate (0.4%) as it's representative of production.
-    const input = makeInput(365);
+    // Multi-TF blend (strategy attached) → 15m bars × 4 signal TFs.
+    const input = makeMultiTfInput(365);
     const result = await estimateRatificationCost(
       input,
       "haiku",
@@ -119,6 +136,52 @@ describe("estimateRatificationCost", () => {
     expect(result.estimatedCostUsd).toBeLessThan(1.0);
     expect(result.model).toBe("haiku");
     expect(result.pricingSource).toBe("code-comment-as-of-2026-Q1");
+  });
+
+  it("single-TF 1h 182-day run matches issue #369 worked example (no ×4 inflation)", async () => {
+    const { estimateRatificationCost, DEFAULT_GATE_RATE } = await import("./estimator.js");
+    // Issue #369 §5 example: 182 days × 1h TF × 1 pair → 17,472 closes-equivalent.
+    // 182 days × 24 bars/day = 4,368 bars at 1h, NOT 17,472 × 4.
+    // Issue's "17,472 closes" is actually 182 × 24 × 4 TF (multi-TF), but with
+    // a single-TF 1h input we should display 1h-bar count (4,368), not multiply
+    // by SIGNAL_TF_COUNT.
+    const input = makeInput(182);
+    const result = await estimateRatificationCost(
+      input,
+      "sonnet",
+      stubCandleStore,
+      emptyRatStore(),
+    );
+
+    // 182 days × 24 1h bars/day = 4,368 closes — no ×4 inflation.
+    expect(result.closes).toBe(4368);
+    expect(result.gatedRate).toBe(DEFAULT_GATE_RATE);
+    // ~17 calls (4,368 × 0.4% ≈ 17), ~$0.04 Sonnet — matches issue's worked example.
+    expect(result.estimatedCalls).toBeLessThan(25);
+    expect(result.estimatedCostUsd).toBeLessThan(0.1);
+  });
+
+  it("multi-TF run multiplies single-TF estimate by 4 (one per signal TF)", async () => {
+    const { estimateRatificationCost } = await import("./estimator.js");
+    const singleTf = makeInput(30);
+    singleTf.timeframe = "15m";
+    const multiTf = makeMultiTfInput(30);
+
+    const singleResult = await estimateRatificationCost(
+      singleTf,
+      "haiku",
+      stubCandleStore,
+      emptyRatStore(),
+    );
+    const multiResult = await estimateRatificationCost(
+      multiTf,
+      "haiku",
+      stubCandleStore,
+      emptyRatStore(),
+    );
+
+    // Multi-TF closes count is exactly 4× the single-TF (both at 15m emitting cadence).
+    expect(multiResult.closes).toBe(singleResult.closes * 4);
   });
 
   it("falls back to 0.4% gate rate when ratifications table is empty", async () => {

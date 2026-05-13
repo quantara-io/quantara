@@ -32,6 +32,16 @@ import {
 
 import type { HistoricalCandleStore } from "./store/candle-store.js";
 import type { Strategy } from "./strategy/types.js";
+import {
+  createRatifier,
+  type RatificationMode,
+  type Ratifier,
+  type RatificationStatus,
+  type RatificationsLookup,
+  type BedrockInvoker,
+  type VerdictKind,
+} from "./ratification/ratifier.js";
+import type { RatificationModel } from "./cost/estimator.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,6 +65,37 @@ export interface BacktestInput {
   to: Date;
   /** Phase 2: optional strategy to apply (overrides TF weights and rule enablement). */
   strategy?: Strategy;
+  /**
+   * Phase 2 (PR #373 follow-up): ratification mode.
+   *
+   *   "skip"           — no LLM, every signal carries `ratificationStatus: "not-required"`
+   *   "cache-only"     — read existing rows from the production ratifications table
+   *   "replay-bedrock" — invoke Bedrock per gated signal; accumulate USD cost,
+   *                      abort mid-run when `maxCostUsd` is exceeded.
+   *
+   * Default `undefined` is treated as `"skip"` so Phase 1 callers see no
+   * behaviour change.
+   */
+  ratification?: RatificationMode;
+  /** Phase 2: LLM model — only consulted when ratification === "replay-bedrock". */
+  model?: RatificationModel;
+  /**
+   * Phase 2: hard cost ceiling in USD. When `actualCostUsd > maxCostUsd`,
+   * the engine writes the partial result with `meta.aborted: true` and
+   * `meta.abortReason: "cost-ceiling"` and returns early.
+   */
+  maxCostUsd?: number;
+  /**
+   * Test/CLI hook — receives the running actual cost after every Bedrock
+   * invocation. Returning `false` instructs the engine to abort the same
+   * way `maxCostUsd` does. Independent of `maxCostUsd` so callers can
+   * observe progress without setting a ceiling.
+   */
+  onCostUpdate?: (runningCostUsd: number) => boolean | void;
+  /** Cache lookup (cache-only mode) — required when mode is "cache-only". */
+  ratificationsLookup?: RatificationsLookup;
+  /** Bedrock invoker (replay-bedrock mode) — required when mode is "replay-bedrock". */
+  bedrockInvoker?: BedrockInvoker;
 }
 
 export interface BacktestResult {
@@ -78,6 +119,12 @@ export interface BacktestResult {
     aborted?: boolean;
     /** Phase 2: reason for abort if aborted is true. */
     abortReason?: string;
+    /** Phase 2: cumulative actual Bedrock cost in USD (0 in skip/cache-only modes). */
+    actualCostUsd?: number;
+    /** Phase 2: cumulative input/output tokens spent on Bedrock ratification. */
+    actualTokens?: { input: number; output: number };
+    /** Phase 2: ratification mode actually used (echoes input.ratification). */
+    ratificationMode?: RatificationMode;
   };
 }
 
@@ -104,7 +151,13 @@ export interface BacktestSignal {
    * Phase 2: ratification status for this signal.
    * "not-required" in algo-only mode (ratification=skip, which is the default).
    */
-  ratificationStatus: "not-required" | "ratified" | "downgraded" | "pending";
+  ratificationStatus: RatificationStatus;
+  /** Phase 2: LLM-ratified type (replay-bedrock / cache-only success). */
+  ratifiedType?: string;
+  /** Phase 2: LLM-ratified confidence (replay-bedrock / cache-only success). */
+  ratifiedConfidence?: number;
+  /** Phase 2: LLM verdict kind ("ratify" / "downgrade" / "reject" / "fallback"). */
+  verdictKind?: VerdictKind;
 }
 
 export interface AggregateMetrics {
@@ -174,6 +227,89 @@ interface TfState {
 // BacktestEngine
 // ---------------------------------------------------------------------------
 
+/**
+ * Mutable counter for tracking actual Bedrock cost mid-run + driving the
+ * mid-run abort path. Created once per `run()` call and threaded through
+ * the per-bar loop so a cost-ceiling exceed terminates the loop cleanly
+ * (instead of yielding a half-built signal).
+ */
+interface RatificationRuntime {
+  ratifier: Ratifier;
+  mode: RatificationMode;
+  maxCostUsd: number | undefined;
+  onCostUpdate: ((c: number) => boolean | void) | undefined;
+  actualCostUsd: number;
+  actualInputTokens: number;
+  actualOutputTokens: number;
+  aborted: boolean;
+  abortReason: string | undefined;
+}
+
+function buildRatificationRuntime(input: BacktestInput): RatificationRuntime {
+  const mode: RatificationMode = input.ratification ?? "skip";
+  const ratifier = createRatifier({
+    mode,
+    model: input.model ?? "haiku",
+    ratificationThreshold: input.strategy?.ratificationThreshold,
+    cacheLookup: input.ratificationsLookup,
+    bedrockInvoker: input.bedrockInvoker,
+  });
+  return {
+    ratifier,
+    mode,
+    maxCostUsd: input.maxCostUsd,
+    onCostUpdate: input.onCostUpdate,
+    actualCostUsd: 0,
+    actualInputTokens: 0,
+    actualOutputTokens: 0,
+    aborted: false,
+    abortReason: undefined,
+  };
+}
+
+/**
+ * Run the ratifier against a candidate, fold the result back onto the
+ * signal, and update the runtime cost. Returns true if the run should
+ * continue, false if a cost-ceiling abort just fired.
+ */
+async function applyRatification(
+  rt: RatificationRuntime,
+  signal: BacktestSignal,
+): Promise<boolean> {
+  const verdict = await rt.ratifier.ratify({
+    pair: signal.pair,
+    timeframe: signal.timeframe,
+    closeTime: signal.closeTime,
+    type: signal.type,
+    confidence: signal.confidence,
+    rulesFired: signal.rulesFired,
+  });
+  signal.ratificationStatus = verdict.status;
+  if (verdict.ratifiedType !== undefined) signal.ratifiedType = verdict.ratifiedType;
+  if (verdict.ratifiedConfidence !== undefined)
+    signal.ratifiedConfidence = verdict.ratifiedConfidence;
+  if (verdict.verdictKind !== undefined) signal.verdictKind = verdict.verdictKind;
+
+  if (verdict.costUsd > 0 || verdict.inputTokens > 0 || verdict.outputTokens > 0) {
+    rt.actualCostUsd += verdict.costUsd;
+    rt.actualInputTokens += verdict.inputTokens;
+    rt.actualOutputTokens += verdict.outputTokens;
+
+    const userVeto = rt.onCostUpdate?.(rt.actualCostUsd);
+    if (userVeto === false) {
+      rt.aborted = true;
+      rt.abortReason = "cost-ceiling";
+      return false;
+    }
+    if (rt.maxCostUsd !== undefined && rt.actualCostUsd > rt.maxCostUsd) {
+      rt.aborted = true;
+      rt.abortReason = "cost-ceiling";
+      return false;
+    }
+  }
+  return true;
+}
+
 export class BacktestEngine {
   constructor(private readonly candleStore: HistoricalCandleStore) {}
 
@@ -199,6 +335,7 @@ export class BacktestEngine {
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
     const { pair, from, to, strategy } = input;
+    const rt = buildRatificationRuntime(input);
 
     // Build effective TF weight map: start from DEFAULT_TIMEFRAME_WEIGHTS,
     // apply strategy overrides, then renormalize the signal TFs so their sum = 1.
@@ -498,7 +635,12 @@ export class BacktestEngine {
         }
       }
 
+      // Ratify (skip / cache-only / replay-bedrock) before pushing so the
+      // signal carries the verdict if one exists, and so a cost-ceiling
+      // exceed terminates the loop here rather than after another bar.
+      const keepGoing = await applyRatification(rt, signal);
       signals.push(signal);
+      if (!keepGoing) break;
     }
 
     const metrics = computeMetrics(signals);
@@ -517,6 +659,11 @@ export class BacktestEngine {
         skippedNoConsensus,
         strategyName: strategy?.name,
         multiTfBlend: true,
+        aborted: rt.aborted || undefined,
+        abortReason: rt.abortReason,
+        actualCostUsd: rt.actualCostUsd,
+        actualTokens: { input: rt.actualInputTokens, output: rt.actualOutputTokens },
+        ratificationMode: rt.mode,
       },
     };
   }
@@ -528,6 +675,7 @@ export class BacktestEngine {
   private async runSingleTf(input: BacktestInput): Promise<BacktestResult> {
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
+    const rt = buildRatificationRuntime(input);
 
     const { pair, timeframe, from, to } = input;
     const tfMs = TF_MS[timeframe];
@@ -722,7 +870,9 @@ export class BacktestEngine {
         }
       }
 
+      const keepGoing = await applyRatification(rt, signal);
       signals.push(signal);
+      if (!keepGoing) break;
     }
 
     const metrics = computeMetrics(signals);
@@ -739,6 +889,11 @@ export class BacktestEngine {
         from: from.toISOString(),
         to: to.toISOString(),
         skippedNoConsensus,
+        aborted: rt.aborted || undefined,
+        abortReason: rt.abortReason,
+        actualCostUsd: rt.actualCostUsd,
+        actualTokens: { input: rt.actualInputTokens, output: rt.actualOutputTokens },
+        ratificationMode: rt.mode,
       },
     };
   }

@@ -49,8 +49,16 @@ const TF_MS: Record<string, number> = {
   "1d": 86_400_000,
 };
 
-// Number of signal TFs run in multi-TF blend mode.
-const SIGNAL_TF_COUNT = 4;
+/**
+ * Number of signal TFs that get re-scored at every emitting-TF boundary in
+ * multi-TF blend mode (`strategy` provided). For single-TF runs the engine
+ * only emits one signal per emitting-TF close, so the multiplier is 1.
+ *
+ * The original estimator unconditionally multiplied by 4, which contradicted
+ * the issue's worked example for a single-TF 182-day BTC/USDT run
+ * (17,472 closes, not ~70k). See PR #373 review finding 3.
+ */
+const SIGNAL_TF_COUNT_MULTI_TF = 4;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -159,8 +167,13 @@ export class DdbRatificationsStore implements RatificationsStore {
  *   3. Fallback to DEFAULT_GATE_RATE (0.4%) if the table is empty.
  *   4. Clamp to [GATE_RATE_FLOOR, GATE_RATE_CEILING] for sanity.
  *
- * Estimated closes = barCount(period, "15m") × SIGNAL_TF_COUNT
- * (because multi-TF blend runs all 4 TFs for every 15m boundary).
+ * Estimated closes:
+ *   - Multi-TF blend (`input.strategy` provided): barCount(period, "15m") × 4
+ *     (all 4 signal TFs re-scored at every emitting-TF boundary).
+ *   - Single-TF (no strategy): barCount(period, input.timeframe) × 1.
+ *
+ * This makes the displayed "Closes" number match the issue's worked
+ * example for a single-TF 182-day run (17,472 closes, not ~70k).
  */
 export async function estimateRatificationCost(
   input: BacktestInput,
@@ -175,16 +188,20 @@ export async function estimateRatificationCost(
     return zeroEstimate(model);
   }
 
-  // Count 15m bars in the period (emitting TF is always 15m in multi-TF mode).
-  const tfMs15m = TF_MS["15m"] ?? 900_000;
-  const bars15m = Math.floor(periodMs / tfMs15m);
+  // Single-TF mode (no strategy on the input): bars at `input.timeframe`.
+  // Multi-TF mode (strategy provided): emitting TF is 15m and every bar
+  // re-scores all 4 signal TFs.
+  const multiTf = input.strategy !== undefined;
+  const emittingTfMs = multiTf
+    ? (TF_MS["15m"] ?? 900_000)
+    : (TF_MS[input.timeframe] ?? TF_MS["15m"] ?? 900_000);
+  const bars = Math.floor(periodMs / emittingTfMs);
 
-  // Total signal evaluations = 15m bars × 4 signal TFs.
-  const closes = bars15m * SIGNAL_TF_COUNT;
+  const closes = bars * (multiTf ? SIGNAL_TF_COUNT_MULTI_TF : 1);
 
   // Query gate rate from production ratifications table.
   let gatedRate = DEFAULT_GATE_RATE;
-  let usedFallback = false;
+  let fallbackReason: "empty" | "unreachable" | null = null;
 
   try {
     const records = await ratificationsStore.queryRecent(input.pair, 30);
@@ -194,19 +211,16 @@ export async function estimateRatificationCost(
       // Clamp to sanity bounds.
       gatedRate = Math.max(GATE_RATE_FLOOR, Math.min(GATE_RATE_CEILING, rawRate));
     } else {
-      usedFallback = true;
+      fallbackReason = "empty";
     }
   } catch {
-    usedFallback = true;
-    console.warn(
-      "[backtest/estimator] Ratifications table unreachable — using default gate rate of " +
-        `${(DEFAULT_GATE_RATE * 100).toFixed(2)}%`,
-    );
+    fallbackReason = "unreachable";
   }
 
-  if (usedFallback) {
+  if (fallbackReason !== null) {
+    const why = fallbackReason === "unreachable" ? "table unreachable" : "no history found";
     console.warn(
-      "[backtest/estimator] No ratification history found — using default gate rate of " +
+      `[backtest/estimator] Ratifications ${why} — using default gate rate of ` +
         `${(DEFAULT_GATE_RATE * 100).toFixed(2)}%`,
     );
   }
