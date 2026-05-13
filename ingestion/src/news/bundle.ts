@@ -44,9 +44,13 @@ export interface SentimentBundle {
  * can read directly from the sentiment-aggregates table instead.
  */
 export async function buildSentimentBundle(pair: string): Promise<SentimentBundle> {
+  // sentiment data is keyed by base asset (e.g., "BTC"), not trading pair
+  // ("BTC/USDT") — news mentions coins, not pairs. The aggregator-handler's
+  // canonical ALL_PAIRS list is bare-coin tickers.
+  const baseCoin = pair.split("/")[0];
   const [result4h, result24h, fg] = await Promise.all([
-    recomputeSentimentAggregate(pair, "4h"),
-    recomputeSentimentAggregate(pair, "24h"),
+    recomputeSentimentAggregate(baseCoin, "4h"),
+    recomputeSentimentAggregate(baseCoin, "24h"),
     getFearGreed(),
   ]);
 

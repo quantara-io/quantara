@@ -45,6 +45,7 @@ resource "aws_iam_role_policy" "aggregator_dynamodb" {
     {
       Effect = "Allow"
       Action = [
+        "dynamodb:GetItem",
         "dynamodb:PutItem",
       ]
       Resource = [
