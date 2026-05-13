@@ -94,7 +94,7 @@ function CalibrationSection({ bins }: { bins: CalibrationBin[] }) {
     return (
       <SectionCard title="Confidence Calibration">
         <p className="text-sm text-muted2 text-center py-4">
-          Not enough data — bins require at least 10 resolved signals each.
+          Not enough data — each confidence bin needs at least a handful of resolved signals.
         </p>
       </SectionCard>
     );
