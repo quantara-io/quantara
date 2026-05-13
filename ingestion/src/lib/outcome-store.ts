@@ -102,6 +102,10 @@ export async function fanOutToRuleAttributionGSI(outcome: OutcomeRecord): Promis
                 outcome: outcome.outcome,
                 confidence: outcome.confidence,
                 emittingTimeframe: outcome.emittingTimeframe,
+                // Required by buildRuleAttribution's filter (attribution.ts:70-72):
+                rulesFired: outcome.rulesFired, // full array — filter checks .includes(rule)
+                resolvedAt: outcome.resolvedAt, // o.resolvedAt >= windowStart guard
+                invalidatedExcluded: outcome.invalidatedExcluded, // !o.invalidatedExcluded guard
                 ttl: outcome.ttl,
               },
             },
