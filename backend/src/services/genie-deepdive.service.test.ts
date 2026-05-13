@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // vi.mock is hoisted above variable declarations, so we declare the send spy
 // using vi.fn() directly referenced through a module-level const that vitest
@@ -32,6 +32,7 @@ beforeEach(() => {
 
 import {
   computeCalibration,
+  MIN_BIN_SAMPLES,
   computePerRule,
   computeCoOccurrence,
   computeByVolatility,
@@ -55,9 +56,13 @@ function sig(
 // ---------------------------------------------------------------------------
 
 describe("computeCalibration", () => {
-  it("suppresses bins with fewer than 10 signals", () => {
-    // 9 signals in the 0.5-0.6 bin — should be suppressed.
-    const signals = Array.from({ length: 9 }, (_, i) => sig(`s${i}`, 0.55, [], 0));
+  // These tests use the static import whose MIN_BIN_SAMPLES is resolved at
+  // module load time. In dev (ENVIRONMENT !== "prod") that value is 3.
+
+  it("suppresses bins below MIN_BIN_SAMPLES (uses MIN_BIN_SAMPLES - 1 signals)", () => {
+    // Build a bin with one fewer signal than the current threshold.
+    const count = MIN_BIN_SAMPLES - 1;
+    const signals = Array.from({ length: count }, (_, i) => sig(`s${i}`, 0.55, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s) => [s.signalId, "correct"]),
     );
@@ -65,8 +70,8 @@ describe("computeCalibration", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("includes bins with exactly 10 signals", () => {
-    const signals = Array.from({ length: 10 }, (_, i) => sig(`s${i}`, 0.65, [], 0));
+  it("includes bins with exactly MIN_BIN_SAMPLES signals", () => {
+    const signals = Array.from({ length: MIN_BIN_SAMPLES }, (_, i) => sig(`s${i}`, 0.65, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s) => [s.signalId, "correct"]),
     );
@@ -74,11 +79,12 @@ describe("computeCalibration", () => {
     expect(result).toHaveLength(1);
     expect(result[0].binMin).toBeCloseTo(0.6);
     expect(result[0].binMax).toBeCloseTo(0.7);
-    expect(result[0].signalCount).toBe(10);
+    expect(result[0].signalCount).toBe(MIN_BIN_SAMPLES);
     expect(result[0].winRate).toBe(1);
   });
 
   it("computes win rate correctly (6 wins out of 10)", () => {
+    // 10 signals is always above the threshold in any env mode.
     const signals = Array.from({ length: 10 }, (_, i) => sig(`s${i}`, 0.75, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s, i) => [s.signalId, i < 6 ? "correct" : "incorrect"]),
@@ -88,21 +94,21 @@ describe("computeCalibration", () => {
     expect(result[0].winRate).toBeCloseTo(0.6);
   });
 
-  it("excludes neutral outcomes from win-rate calculation", () => {
-    // 10 signals: 5 correct, 5 neutral → winRate = 5/5 = 1 (neutral excluded)
-    const signals = Array.from({ length: 10 }, (_, i) => sig(`s${i}`, 0.25, [], 0));
+  it("excludes neutral outcomes from win-rate calculation (directional count below threshold)", () => {
+    // MIN_BIN_SAMPLES signals where only MIN_BIN_SAMPLES-1 are directional →
+    // bin.count falls below the threshold and should be suppressed.
+    const total = MIN_BIN_SAMPLES;
+    const signals = Array.from({ length: total }, (_, i) => sig(`s${i}`, 0.25, [], 0));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
-      signals.map((s, i) => [s.signalId, i < 5 ? "correct" : "neutral"]),
+      // All neutral except the last one — directional count = 1, below threshold.
+      signals.map((s, i) => [s.signalId, i === total - 1 ? "correct" : "neutral"]),
     );
-    // Only 5 directional → bin has 10 signalCount but winRate based on 5
-    // Wait — computeCalibration counts only directional towards bin.count.
-    // Check: bin count should be 5 (only directional), below threshold → suppressed.
     const result = computeCalibration(signals, outcomes);
-    expect(result).toHaveLength(0); // 5 directional < 10 minimum
+    expect(result).toHaveLength(0); // 1 directional < MIN_BIN_SAMPLES
   });
 
   it("produces separate bins for signals at different confidence levels", () => {
-    // 10 signals in 0.2-0.3, 10 signals in 0.7-0.8
+    // 10 signals per bin — always above threshold in both env modes.
     const low = Array.from({ length: 10 }, (_, i) => sig(`lo${i}`, 0.25, []));
     const high = Array.from({ length: 10 }, (_, i) => sig(`hi${i}`, 0.75, []));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">([
@@ -118,6 +124,7 @@ describe("computeCalibration", () => {
   });
 
   it("places confidence = 1.0 in the last bin (index 9)", () => {
+    // 10 signals — above threshold in both env modes.
     const signals = Array.from({ length: 10 }, (_, i) => sig(`s${i}`, 1.0, []));
     const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
       signals.map((s) => [s.signalId, "correct"]),
@@ -138,6 +145,73 @@ describe("computeCalibration", () => {
     expect(result).toHaveLength(1);
     const expected = confidences.reduce((a, b) => a + b) / confidences.length;
     expect(result[0].avgConfidence).toBeCloseTo(expected, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeCalibration — env-aware MIN_BIN_SAMPLES behaviour
+//
+// These tests use vi.resetModules + dynamic import to load the math module
+// under different ENVIRONMENT values, exercising both the dev (3) and prod
+// (10) thresholds.
+// ---------------------------------------------------------------------------
+
+describe("computeCalibration — env-aware MIN_BIN_SAMPLES", () => {
+  afterEach(() => {
+    delete process.env.ENVIRONMENT;
+    vi.resetModules();
+  });
+
+  it("returns a 3-sample bin in dev (ENVIRONMENT !== 'prod')", async () => {
+    delete process.env.ENVIRONMENT; // not "prod" → MIN_BIN_SAMPLES = 3
+    vi.resetModules();
+    const { computeCalibration: calc } = await import("./genie-deepdive.math.js");
+
+    const signals = Array.from({ length: 3 }, (_, i) => sig(`d${i}`, 0.55, [], 0));
+    const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
+      signals.map((s) => [s.signalId, "correct"]),
+    );
+    const result = calc(signals, outcomes);
+    expect(result).toHaveLength(1);
+    expect(result[0].signalCount).toBe(3);
+  });
+
+  it("suppresses a 3-sample bin in prod (ENVIRONMENT === 'prod')", async () => {
+    process.env.ENVIRONMENT = "prod"; // MIN_BIN_SAMPLES = 10
+    vi.resetModules();
+    const { computeCalibration: calc } = await import("./genie-deepdive.math.js");
+
+    const signals = Array.from({ length: 3 }, (_, i) => sig(`p${i}`, 0.55, [], 0));
+    const outcomes = new Map<string, "correct" | "incorrect" | "neutral">(
+      signals.map((s) => [s.signalId, "correct"]),
+    );
+    const result = calc(signals, outcomes);
+    expect(result).toHaveLength(0); // 3 < 10 → suppressed
+  });
+
+  it("includes a 5-sample bin in dev and suppresses it in prod", async () => {
+    const makeSignals = () =>
+      Array.from({ length: 5 }, (_, i) => sig(`e${i}`, 0.65, [], 0)).map((s) => ({
+        ...s,
+      }));
+    const makeOutcomes = (signals: ReturnType<typeof makeSignals>) =>
+      new Map<string, "correct" | "incorrect" | "neutral">(
+        signals.map((s) => [s.signalId, "correct"]),
+      );
+
+    // Dev
+    delete process.env.ENVIRONMENT;
+    vi.resetModules();
+    const { computeCalibration: calcDev } = await import("./genie-deepdive.math.js");
+    const devSignals = makeSignals();
+    expect(calcDev(devSignals, makeOutcomes(devSignals))).toHaveLength(1);
+
+    // Prod
+    process.env.ENVIRONMENT = "prod";
+    vi.resetModules();
+    const { computeCalibration: calcProd } = await import("./genie-deepdive.math.js");
+    const prodSignals = makeSignals();
+    expect(calcProd(prodSignals, makeOutcomes(prodSignals))).toHaveLength(0);
   });
 });
 

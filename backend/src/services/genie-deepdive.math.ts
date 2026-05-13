@@ -4,6 +4,18 @@
  */
 
 // ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum number of directional signals required in a calibration bin before
+ * it is included in the output. Prod uses 10 for statistical soundness; dev
+ * uses 3 so the calibration panel is usable long before 10 outcomes accumulate
+ * in each confidence bucket.
+ */
+export const MIN_BIN_SAMPLES = process.env.ENVIRONMENT === "prod" ? 10 : 3;
+
+// ---------------------------------------------------------------------------
 // Types (re-exported so callers import from one place)
 // ---------------------------------------------------------------------------
 
@@ -56,7 +68,7 @@ export interface SignalRecord {
 
 /**
  * Build 10 bins of width 10% (0-10, 10-20, ..., 90-100).
- * Suppress bins with fewer than 10 directional signals (per spec).
+ * Suppress bins with fewer than MIN_BIN_SAMPLES directional signals.
  */
 export function computeCalibration(
   signals: SignalRecord[],
@@ -82,7 +94,7 @@ export function computeCalibration(
   const result: CalibrationBin[] = [];
   for (let i = 0; i < 10; i++) {
     const b = bins[i];
-    if (b.count < 10) continue; // suppress sparse bins
+    if (b.count < MIN_BIN_SAMPLES) continue; // suppress sparse bins
     result.push({
       binMin: i * 0.1,
       binMax: (i + 1) * 0.1,
