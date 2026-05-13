@@ -34,6 +34,7 @@ output "table_names" {
     connection_registry  = aws_dynamodb_table.connection_registry.name
     signals_collection   = aws_dynamodb_table.signals_collection.name
     rule_status          = aws_dynamodb_table.rule_status.name
+    candles_archive      = aws_dynamodb_table.candles_archive.name
   }
 }
 
