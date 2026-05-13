@@ -57,6 +57,8 @@ resource "aws_iam_role_policy" "ingestion_dynamodb" {
         "${aws_dynamodb_table.prices.arn}/index/*",
         aws_dynamodb_table.candles.arn,
         "${aws_dynamodb_table.candles.arn}/index/*",
+        aws_dynamodb_table.candles_archive.arn,
+        "${aws_dynamodb_table.candles_archive.arn}/index/*",
         aws_dynamodb_table.news_events.arn,
         "${aws_dynamodb_table.news_events.arn}/index/*",
         aws_dynamodb_table.ingestion_metadata.arn,

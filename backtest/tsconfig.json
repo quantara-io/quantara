@@ -4,6 +4,6 @@
     "outDir": "dist",
     "declaration": false
   },
-  "include": ["src/**/*.ts", "strategies/**/*.ts"],
+  "include": ["src/**/*.ts", "strategies/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
