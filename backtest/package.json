@@ -7,13 +7,16 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --passWithNoTests --coverage",
-    "smoke": "tsx src/smoke.ts"
+    "smoke": "tsx src/smoke.ts",
+    "backtest": "tsx src/cli.ts",
+    "backtest:estimate": "tsx src/cli.ts estimate"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.750.0",
     "@aws-sdk/lib-dynamodb": "^3.750.0",
     "@quantara/shared": "*",
-    "quantara-ingestion": "*"
+    "quantara-ingestion": "*",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
