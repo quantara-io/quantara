@@ -10,7 +10,7 @@
  */
 
 import type { TimeframeVote, BlendedSignal, Timeframe, GateContext } from "@quantara/shared";
-import { TIMEFRAMES } from "@quantara/shared";
+import { TIMEFRAMES, coreBlendVotes } from "@quantara/shared";
 
 /**
  * Default per-timeframe weights. Single vector for v1 across all pairs (§5.7).
@@ -181,64 +181,9 @@ export function blendTimeframeVotes(
     };
   }
 
-  // Step 3: Collect non-null, non-gated votes and renormalize weights.
-  const votingTfs: Timeframe[] = TIMEFRAMES.filter((tf) => perTimeframeVotes[tf] !== null);
-
-  const rawWeightSum = votingTfs.reduce((sum, tf) => sum + weights[tf], 0);
-
-  // Build renormalized weight map (all non-null TFs).
-  const renormalized: Record<Timeframe, number> = {} as Record<Timeframe, number>;
-  for (const tf of TIMEFRAMES) {
-    if (perTimeframeVotes[tf] !== null) {
-      renormalized[tf] = rawWeightSum > 0 ? weights[tf] / rawWeightSum : 0;
-    } else {
-      renormalized[tf] = 0;
-    }
-  }
-
-  // Step 4 + 5: Compute blended scalar.
-  // strong-buy / strong-sell carry the same sign as buy / sell — they map to
-  // the same scalar direction, so the blend remains a linear combination.
-  // The 5-tier distinction is preserved on TimeframeVote.type for per-TF transparency.
-  let blended = 0;
-  for (const tf of votingTfs) {
-    const vote = perTimeframeVotes[tf]!;
-    let scalar: number;
-    if (vote.type === "buy" || vote.type === "strong-buy") {
-      scalar = +vote.confidence;
-    } else if (vote.type === "sell" || vote.type === "strong-sell") {
-      scalar = -vote.confidence;
-    } else {
-      scalar = 0; // hold
-    }
-    blended += renormalized[tf] * scalar;
-  }
-
-  // Step 6: Single-source damping — if only 1 TF has a non-null vote.
-  const isSingleSource = votingTfs.length === 1;
-  const dampingFactor = isSingleSource ? 0.7 : 1.0;
-
-  // Collect union of rules fired from contributing TFs.
-  const rulesFiredSet = new Set<string>();
-  for (const tf of votingTfs) {
-    const vote = perTimeframeVotes[tf]!;
-    for (const r of vote.rulesFired) rulesFiredSet.add(r);
-  }
-
-  // Step 7: Map blended scalar → headline signal type + confidence.
-  let type: "buy" | "sell" | "hold";
-  let confidence: number;
-
-  if (blended > threshold) {
-    type = "buy";
-    confidence = Math.min(1, blended * 1.2 * dampingFactor);
-  } else if (blended < -threshold) {
-    type = "sell";
-    confidence = Math.min(1, Math.abs(blended) * 1.2 * dampingFactor);
-  } else {
-    type = "hold";
-    confidence = Math.min(1, 0.5 + 0.1 * Math.abs(blended));
-  }
+  // Steps 3-7: Delegate to shared coreBlendVotes to keep write-time and
+  // read-time blend math in sync (extracted by #322).
+  const core = coreBlendVotes(perTimeframeVotes, weights, threshold);
 
   // Shallow-copy the top-level map so caller mutation cannot corrupt the returned signal.
   const perTimeframe: Record<Timeframe, TimeframeVote | null> = {
@@ -252,13 +197,13 @@ export function blendTimeframeVotes(
 
   return {
     pair,
-    type,
-    confidence,
+    type: core.type,
+    confidence: core.confidence,
     volatilityFlag: false,
     gateReason: null,
-    rulesFired: Array.from(rulesFiredSet),
+    rulesFired: core.rulesFired,
     perTimeframe,
-    weightsUsed: renormalized,
+    weightsUsed: core.weightsUsed,
     asOf,
     emittingTimeframe,
     // TODO(Phase 4b): attachRiskRecommendation is invoked by the indicator-handler
