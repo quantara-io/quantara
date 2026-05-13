@@ -346,24 +346,77 @@ export class DdbRatificationsLookup implements RatificationsLookup {
       const validation = item["validation"] as { ok?: boolean } | undefined;
       if (!validation || validation.ok !== true) continue;
 
-      const ratifiedType = item["ratifiedType"];
-      const ratifiedConfidence = item["ratifiedConfidence"];
-      const verdictKind = item["verdictKind"];
-
-      if (typeof ratifiedType !== "string") continue;
-      if (typeof ratifiedConfidence !== "number") continue;
-      const verdict: VerdictKind =
-        verdictKind === "ratify" ||
-        verdictKind === "downgrade" ||
-        verdictKind === "reject" ||
-        verdictKind === "fallback"
-          ? verdictKind
-          : "ratify";
-
-      return { ratifiedType, ratifiedConfidence, verdictKind: verdict };
+      const extracted = extractCachedRatification(item);
+      if (extracted !== null) {
+        return extracted;
+      }
     }
     return null;
   }
+}
+
+/**
+ * Extract a `CachedRatification` from a ratifications-table row, supporting
+ * the two write paths that exist in production:
+ *
+ *   1. Canonical bulk path (`ingestion/src/lib/ratification-store.ts:putRatificationRecord`)
+ *      stores the verdict NESTED under `ratified: BlendedSignal | null`. This
+ *      is the shape used for ~99% of rows (every per-bar LLM ratification).
+ *
+ *   2. Admin-debug path (`backend/src/services/admin-debug.service.ts:forceRatification`)
+ *      ALSO stores `ratified` nested, but additionally writes flat top-level
+ *      `ratifiedType` / `ratifiedConfidence` / `verdictKind` fields for
+ *      legacy/downstream consumers.
+ *
+ * We prefer the nested shape (production canonical) and fall back to the flat
+ * shape so both write paths read correctly. Skip rows where `ratified` is
+ * explicitly null (fallback rows where Bedrock failed) AND no flat fields
+ * exist — those rows carry no verdict.
+ *
+ * Exported for unit testing both shapes against a single function.
+ */
+export function extractCachedRatification(
+  item: Record<string, unknown>,
+): CachedRatification | null {
+  // 1. Prefer the nested canonical shape (BlendedSignal under `ratified`).
+  //    `ratified === null` is a valid sentinel for fallback rows — we treat
+  //    that as "no verdict" and fall through to the flat shape (which the
+  //    admin-debug path writes alongside the null `ratified`).
+  const ratifiedRaw = item["ratified"];
+  if (ratifiedRaw !== null && ratifiedRaw !== undefined && typeof ratifiedRaw === "object") {
+    const ratified = ratifiedRaw as {
+      type?: unknown;
+      confidence?: unknown;
+      verdictKind?: unknown;
+    };
+    if (typeof ratified.type === "string" && typeof ratified.confidence === "number") {
+      return {
+        ratifiedType: ratified.type,
+        ratifiedConfidence: ratified.confidence,
+        verdictKind: normaliseVerdictKind(ratified.verdictKind),
+      };
+    }
+  }
+
+  // 2. Fall back to the flat top-level fields written by admin-debug rows.
+  const flatType = item["ratifiedType"];
+  const flatConfidence = item["ratifiedConfidence"];
+  if (typeof flatType === "string" && typeof flatConfidence === "number") {
+    return {
+      ratifiedType: flatType,
+      ratifiedConfidence: flatConfidence,
+      verdictKind: normaliseVerdictKind(item["verdictKind"]),
+    };
+  }
+
+  return null;
+}
+
+function normaliseVerdictKind(raw: unknown): VerdictKind {
+  if (raw === "ratify" || raw === "downgrade" || raw === "reject" || raw === "fallback") {
+    return raw;
+  }
+  return "ratify";
 }
 
 // ---------------------------------------------------------------------------

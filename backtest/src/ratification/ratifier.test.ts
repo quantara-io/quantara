@@ -12,6 +12,7 @@ import {
   createRatifier,
   DEFAULT_RATIFICATION_THRESHOLD,
   bedrockCallCostUsd,
+  extractCachedRatification,
   type RatificationCandidate,
   type RatificationsLookup,
   type BedrockInvoker,
@@ -322,5 +323,144 @@ describe("DEFAULT_RATIFICATION_THRESHOLD", () => {
   it("is in (0, 1)", () => {
     expect(DEFAULT_RATIFICATION_THRESHOLD).toBeGreaterThan(0);
     expect(DEFAULT_RATIFICATION_THRESHOLD).toBeLessThan(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractCachedRatification — dual shape (canonical nested + admin-debug flat)
+// ---------------------------------------------------------------------------
+//
+// Background: rows in the production `ratifications` table are written by two
+// paths with DIFFERENT field layouts. The reviewer flagged that `DdbRatificationsLookup`
+// was only reading the FLAT shape (admin-debug rows, ~1% of rows), silently
+// missing the canonical nested shape used by the bulk path.
+//
+//   - Canonical bulk path (`ingestion/src/lib/ratification-store.ts:putRatificationRecord`):
+//     Writes the verdict NESTED under `ratified: BlendedSignal | null`. Used for
+//     every per-bar LLM ratification — the dominant production write path.
+//
+//   - Admin-debug path (`backend/src/services/admin-debug.service.ts:forceRatification`):
+//     Writes `ratified` nested AND additionally writes flat top-level fields
+//     (`ratifiedType`, `ratifiedConfidence`, `verdictKind`). Manual debug only,
+//     ~1% of rows.
+//
+// These tests exercise BOTH shapes and confirm cache-only mode pulls verdicts
+// out of either layout.
+
+describe("extractCachedRatification", () => {
+  it("reads the canonical nested shape (production bulk path)", () => {
+    // Shape produced by ingestion/src/lib/ratification-store.ts: the verdict
+    // lives under `ratified: BlendedSignal`, with no flat top-level fields.
+    const item = {
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      validation: { ok: true },
+      ratified: {
+        type: "buy",
+        confidence: 0.72,
+        verdictKind: "ratify",
+        // BlendedSignal also carries pair/asOf/rulesFired/etc. — we only need
+        // type+confidence+verdictKind for cache-only mode.
+        pair: "BTC/USDT",
+        rulesFired: ["ema-cross"],
+        asOf: 1_700_000_000_000,
+      },
+      cacheHit: false,
+      invokedAt: "2026-01-15T10:00:00.000Z",
+    };
+
+    const result = extractCachedRatification(item);
+
+    expect(result).not.toBeNull();
+    expect(result!.ratifiedType).toBe("buy");
+    expect(result!.ratifiedConfidence).toBe(0.72);
+    expect(result!.verdictKind).toBe("ratify");
+  });
+
+  it("reads the flat admin-debug shape when `ratified` is null", () => {
+    // Shape produced by backend/src/services/admin-debug.service.ts on a
+    // FALLBACK row — `ratified: null` but flat fields still carry the verdict.
+    const item = {
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      validation: { ok: true },
+      ratified: null,
+      ratifiedType: "sell",
+      ratifiedConfidence: 0.65,
+      verdictKind: "downgrade",
+      invokedReason: "manual",
+      invokedAt: "2026-01-15T10:00:00.000Z",
+    };
+
+    const result = extractCachedRatification(item);
+
+    expect(result).not.toBeNull();
+    expect(result!.ratifiedType).toBe("sell");
+    expect(result!.ratifiedConfidence).toBe(0.65);
+    expect(result!.verdictKind).toBe("downgrade");
+  });
+
+  it("prefers the nested shape when both nested and flat fields exist", () => {
+    // Admin-debug writes BOTH shapes simultaneously. The nested shape is
+    // canonical, so it must win — flat is a back-compat fallback only.
+    const item = {
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      validation: { ok: true },
+      ratified: {
+        type: "buy",
+        confidence: 0.9,
+        verdictKind: "ratify",
+        pair: "BTC/USDT",
+        rulesFired: [],
+        asOf: 1_700_000_000_000,
+      },
+      ratifiedType: "sell", // stale/divergent value — must be ignored
+      ratifiedConfidence: 0.3,
+      verdictKind: "downgrade",
+      invokedAt: "2026-01-15T10:00:00.000Z",
+    };
+
+    const result = extractCachedRatification(item);
+
+    expect(result).not.toBeNull();
+    expect(result!.ratifiedType).toBe("buy");
+    expect(result!.ratifiedConfidence).toBe(0.9);
+    expect(result!.verdictKind).toBe("ratify");
+  });
+
+  it("returns null when neither shape has usable verdict data", () => {
+    // Pure fallback row from canonical path: ratified=null, no flat fields.
+    const item = {
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      validation: { ok: false, reason: "bedrock_fallback" },
+      ratified: null,
+      cacheHit: false,
+      fellBackToAlgo: true,
+      invokedAt: "2026-01-15T10:00:00.000Z",
+    };
+
+    expect(extractCachedRatification(item)).toBeNull();
+  });
+
+  it("normalises unknown verdictKind values to 'ratify'", () => {
+    const item = {
+      pair: "BTC/USDT",
+      timeframe: "1h",
+      validation: { ok: true },
+      ratified: {
+        type: "buy",
+        confidence: 0.7,
+        verdictKind: "some-future-value", // unknown — must fall back
+        pair: "BTC/USDT",
+        rulesFired: [],
+        asOf: 1_700_000_000_000,
+      },
+      invokedAt: "2026-01-15T10:00:00.000Z",
+    };
+
+    const result = extractCachedRatification(item);
+    expect(result!.verdictKind).toBe("ratify");
   });
 });
