@@ -582,133 +582,98 @@ describe("select-row effect: pushRecentSymbol bumps Recent", () => {
 // ── fetchSignalsAllSymbols (issue #332 — cross-symbol label search) ───────────
 
 describe("fetchSignalsAllSymbols", () => {
-  beforeEach(() => {
-    __resetSignalCacheForTests();
+  beforeEach(() => __resetSignalCacheForTests());
+
+  const row = (pair = "BTC/USDT"): BlendedSignal => ({
+    pair,
+    type: "buy",
+    confidence: 0.6,
+    volatilityFlag: false,
+    gateReason: null,
+    rulesFired: [],
+    perTimeframe: {} as BlendedSignal["perTimeframe"],
+    weightsUsed: {} as BlendedSignal["weightsUsed"],
+    asOf: Date.now(),
+    emittingTimeframe: "15m" as BlendedSignal["emittingTimeframe"],
+    risk: null,
   });
+  const ok = (signals: BlendedSignal[]) => ({ success: true as const, data: { signals } });
+  const err = (code: string) => ({ success: false as const, error: { code, message: code } });
 
-  function makeSignalRow(pair = "BTC/USDT"): BlendedSignal {
-    return {
-      pair,
-      type: "buy",
-      confidence: 0.6,
-      volatilityFlag: false,
-      gateReason: null,
-      rulesFired: [],
-      perTimeframe: {} as BlendedSignal["perTimeframe"],
-      weightsUsed: {} as BlendedSignal["weightsUsed"],
-      asOf: Date.now(),
-      emittingTimeframe: "15m" as BlendedSignal["emittingTimeframe"],
-      risk: null,
-    };
-  }
-
-  it("returns [] for an empty query without calling the fetcher", async () => {
-    const fetcher: SignalsFetcher = vi.fn();
-    const result = await fetchSignalsAllSymbols("", fetcher);
-    expect(result).toEqual([]);
-    expect(fetcher).not.toHaveBeenCalled();
-  });
-
-  it("calls /api/admin/signals?q=<label>&limit=20 and returns signals", async () => {
-    const rows = [makeSignalRow("BTC/USDT"), makeSignalRow("ETH/USDT")];
-    const fetcher: SignalsFetcher = vi
-      .fn()
-      .mockResolvedValue({ success: true, data: { signals: rows } });
-
-    const result = await fetchSignalsAllSymbols("bull div", fetcher);
-
-    expect(result).toEqual(rows);
-    expect(fetcher).toHaveBeenCalledOnce();
-    const url = (fetcher as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
-    expect(url).toContain("q=bull%20div");
-    expect(url).toContain("limit=20");
-  });
-
-  it("caches a successful response — second call with same q does not re-invoke fetcher", async () => {
-    const rows = [makeSignalRow("BTC/USDT")];
-    const fetcher: SignalsFetcher = vi
-      .fn()
-      .mockResolvedValue({ success: true, data: { signals: rows } });
-
-    const first = await fetchSignalsAllSymbols("strong", fetcher);
-    const second = await fetchSignalsAllSymbols("strong", fetcher);
-
-    expect(first).toEqual(rows);
-    expect(second).toEqual(rows);
-    expect(fetcher).toHaveBeenCalledOnce();
-  });
-
-  it("uses independent cache keys for different queries", async () => {
-    const buyRows = [makeSignalRow("BTC/USDT")];
-    const sellRows = [makeSignalRow("ETH/USDT")];
-    const fetcher: SignalsFetcher = vi.fn().mockImplementation(async (path: string) => {
-      if ((path as string).includes("q=buy")) return { success: true, data: { signals: buyRows } };
-      if ((path as string).includes("q=sell"))
-        return { success: true, data: { signals: sellRows } };
-      return { success: false, error: { code: "x", message: "x" } };
-    });
-
-    const buyResult = await fetchSignalsAllSymbols("buy", fetcher);
-    const sellResult = await fetchSignalsAllSymbols("sell", fetcher);
-
-    expect(buyResult).toEqual(buyRows);
-    expect(sellResult).toEqual(sellRows);
-    expect(fetcher).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns [] and does not cache on an error envelope", async () => {
-    const fetcher: SignalsFetcher = vi
-      .fn()
-      .mockResolvedValue({ success: false, error: { code: "HTTP_500", message: "server error" } });
-
-    const result = await fetchSignalsAllSymbols("buy", fetcher);
-    expect(result).toEqual([]);
-    expect(__getSignalCacheSizeForTests()).toBe(0);
-  });
-
-  it("returns null when the AbortSignal fires after the fetch resolves", async () => {
-    const ctrl = new AbortController();
-    const fetcher: SignalsFetcher = vi.fn().mockImplementation(async () => {
-      ctrl.abort();
-      return { success: true, data: { signals: [makeSignalRow()] } };
-    });
-
-    const result = await fetchSignalsAllSymbols("buy", fetcher, ctrl.signal);
-    expect(result).toBeNull();
-  });
-
-  it("returns null when the fetcher reports ABORTED", async () => {
-    const fetcher: SignalsFetcher = vi
-      .fn()
-      .mockResolvedValue({ success: false, error: { code: "ABORTED", message: "aborted" } });
-
-    const result = await fetchSignalsAllSymbols("buy", fetcher);
-    expect(result).toBeNull();
-  });
-
-  it("returns [] and logs a warning when the fetcher throws", async () => {
-    const fetcher: SignalsFetcher = vi.fn().mockRejectedValue(new Error("network fail"));
+  // Table-driven return-value cases: empty-query (no fetch), error envelope,
+  // ABORTED code, fetcher-throws. AbortSignal case is separate (needs ctrl).
+  it.each([
+    ["empty q → [] without calling fetcher", "", () => vi.fn(), [], 0, undefined],
+    [
+      "error envelope → [] and no cache entry",
+      "buy",
+      () => vi.fn().mockResolvedValue(err("HTTP_500")),
+      [],
+      1,
+      0,
+    ],
+    [
+      "ABORTED envelope → null",
+      "buy",
+      () => vi.fn().mockResolvedValue(err("ABORTED")),
+      null,
+      1,
+      undefined,
+    ],
+    [
+      "fetcher throws → [] (warn)",
+      "buy",
+      () => vi.fn().mockRejectedValue(new Error("net")),
+      [],
+      1,
+      undefined,
+    ],
+  ] as const)("%s", async (_n, q, mkFetcher, expected, calls, cacheSize) => {
+    const fetcher = mkFetcher() as unknown as SignalsFetcher;
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    const result = await fetchSignalsAllSymbols("buy", fetcher);
-    expect(result).toEqual([]);
+    expect(await fetchSignalsAllSymbols(q, fetcher)).toEqual(expected);
+    expect((fetcher as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(calls);
+    if (cacheSize !== undefined) expect(__getSignalCacheSizeForTests()).toBe(cacheSize);
     warnSpy.mockRestore();
   });
 
-  it("per-pair cache entries are independent of cross-symbol entries", async () => {
-    // Fill a per-pair cache entry via fetchSignalsForPair.
-    const pairRows = [makeSignalRow("BTC/USDT")];
-    const allRows = [makeSignalRow("ETH/USDT")];
-    const fetcher: SignalsFetcher = vi.fn().mockImplementation(async (path: string) => {
-      if ((path as string).includes("pair=")) return { success: true, data: { signals: pairRows } };
-      return { success: true, data: { signals: allRows } };
+  it("AbortSignal firing after fetch resolves → null", async () => {
+    const ctrl = new AbortController();
+    const fetcher: SignalsFetcher = vi.fn().mockImplementation(async () => {
+      ctrl.abort();
+      return ok([row()]);
     });
+    expect(await fetchSignalsAllSymbols("buy", fetcher, ctrl.signal)).toBeNull();
+  });
 
+  it("hits /api/admin/signals?q=<label>&limit=20, caches per-q, and stays independent from per-pair entries", async () => {
+    const sameQ = [row("BTC/USDT"), row("ETH/USDT")];
+    const otherQ = [row("ETH/USDT")];
+    const pair = [row("BTC/USDT")];
+    const fetcher: SignalsFetcher = vi.fn().mockImplementation(async (path: string) => {
+      if (path.includes("pair=")) return ok(pair);
+      if (path.includes("q=sell")) return ok(otherQ);
+      return ok(sameQ);
+    });
+    const calls = () => (fetcher as ReturnType<typeof vi.fn>).mock.calls;
+
+    // First call: URL encoded correctly + returns signals.
+    expect(await fetchSignalsAllSymbols("bull div", fetcher)).toEqual(sameQ);
+    const url = calls()[0]?.[0] as string;
+    expect(url).toContain("q=bull%20div");
+    expect(url).toContain("limit=20");
+
+    // Same q again → cached (still 1 fetch).
+    expect(await fetchSignalsAllSymbols("bull div", fetcher)).toEqual(sameQ);
+    expect(calls()).toHaveLength(1);
+
+    // Different q → another fetch (independent cache keys).
+    expect(await fetchSignalsAllSymbols("sell", fetcher)).toEqual(otherQ);
+    expect(calls()).toHaveLength(2);
+
+    // Per-pair entry coexists with cross-symbol entries → 3 distinct cache keys.
     await fetchSignalsForPair("BTC/USDT", fetcher);
-    await fetchSignalsAllSymbols("buy", fetcher);
-
-    // Both should be in the cache independently.
-    expect(__getSignalCacheSizeForTests()).toBe(2);
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(__getSignalCacheSizeForTests()).toBe(3);
+    expect(calls()).toHaveLength(3);
   });
 });
