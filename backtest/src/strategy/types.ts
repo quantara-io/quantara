@@ -81,9 +81,30 @@ export const strategySchema = z.object({
 // TypeScript interface (inferred from schema)
 // ---------------------------------------------------------------------------
 
+/**
+ * Rule identifier — the `name` field of a Rule in @quantara/shared RULES array.
+ * Typed as `string` rather than a union to avoid tight coupling to the rule list.
+ */
+export type RuleId = string;
+
 export type Strategy = z.infer<typeof strategySchema> & {
   /** Partial override: only the specified TFs are overridden; others use DEFAULT_TIMEFRAME_WEIGHTS. */
   timeframeWeights?: Partial<Record<Timeframe, number>>;
+  /**
+   * Optional emission gate hook.
+   *
+   * Called right before the engine emits a signal, with the set of rule names
+   * that fired for the candidate bar. Return "emit" to allow the signal through,
+   * or "suppress" to discard it entirely (no signal is recorded for that bar).
+   *
+   * When absent, the engine preserves existing behavior — every bar that scores
+   * above the confluence threshold is emitted without any additional filtering.
+   *
+   * Functions cannot be serialized and are therefore not part of the Zod schema;
+   * the loader assigns them as a post-parse augmentation when present in the
+   * module export.
+   */
+  emissionGate?: (rulesFired: Set<RuleId>) => "emit" | "suppress";
 };
 
 // ---------------------------------------------------------------------------
@@ -113,5 +134,13 @@ export async function loadStrategy(filePath: string): Promise<Strategy> {
     throw new Error(`Strategy file "${filePath}" failed validation:\n${issues}`);
   }
 
-  return result.data as Strategy;
+  // Functions can't be encoded in the Zod schema — preserve emissionGate from
+  // the raw module export when present.
+  const parsed = result.data as Strategy;
+  const raw = candidate as Record<string, unknown>;
+  if (typeof raw["emissionGate"] === "function") {
+    parsed.emissionGate = raw["emissionGate"] as Strategy["emissionGate"];
+  }
+
+  return parsed;
 }

@@ -635,6 +635,15 @@ export class BacktestEngine {
         }
       }
 
+      // emissionGate: call the strategy hook (if present) right before emission.
+      // "suppress" → discard this bar's signal entirely; "emit" (or no gate) → proceed.
+      if (strategy?.emissionGate !== undefined) {
+        const rulesFiredSet = new Set(blended.rulesFired);
+        if (strategy.emissionGate(rulesFiredSet) === "suppress") {
+          continue;
+        }
+      }
+
       // Ratify (skip / cache-only / replay-bedrock) before pushing so the
       // signal carries the verdict if one exists, and so a cost-ceiling
       // exceed terminates the loop here rather than after another bar.
@@ -867,6 +876,15 @@ export class BacktestEngine {
             signal.priceMovePct = outcomeRecord.priceMovePct;
             signal.priceAtResolution = priceAtResolution;
           }
+        }
+      }
+
+      // emissionGate: call the strategy hook (if present) right before emission.
+      // "suppress" → discard this bar's signal entirely; "emit" (or no gate) → proceed.
+      if (input.strategy?.emissionGate !== undefined) {
+        const rulesFiredSet = new Set(vote.rulesFired);
+        if (input.strategy.emissionGate(rulesFiredSet) === "suppress") {
+          continue;
         }
       }
 

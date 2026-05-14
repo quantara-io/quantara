@@ -24,8 +24,10 @@ import type { Strategy } from "../src/strategy/types.js";
 
 import productionDefault from "./production-default.js";
 import aggressive1dWeighted from "./aggressive-1d-weighted.js";
+import confluenceGated from "./confluence-gated.js";
 
 export const STRATEGIES: ReadonlyArray<Strategy> = [
   productionDefault,
   aggressive1dWeighted,
+  confluenceGated,
 ] as const;
