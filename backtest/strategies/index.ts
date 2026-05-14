@@ -24,8 +24,14 @@ import type { Strategy } from "../src/strategy/types.js";
 
 import productionDefault from "./production-default.js";
 import aggressive1dWeighted from "./aggressive-1d-weighted.js";
+import disableBollingerTouchUpper from "./disable-bollinger-touch-upper.js";
+import weightTheWinners from "./weight-the-winners.js";
+import longerHold from "./longer-hold.js";
 
 export const STRATEGIES: ReadonlyArray<Strategy> = [
   productionDefault,
   aggressive1dWeighted,
+  disableBollingerTouchUpper,
+  weightTheWinners,
+  longerHold,
 ] as const;
