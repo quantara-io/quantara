@@ -194,7 +194,20 @@ const TF_MS: Record<Timeframe, number> = {
   "1d": 86_400_000,
 };
 
-const EXPIRY_BARS = 4;
+/** Default expiry bars when a strategy does not specify an n-bars exit policy. */
+const DEFAULT_EXPIRY_BARS = 4;
+
+/**
+ * Resolve the number of bars to use for signal expiry from the strategy's
+ * exitPolicy. Falls back to DEFAULT_EXPIRY_BARS (4) when the strategy is
+ * absent or uses a non-n-bars exit kind.
+ */
+function resolveExpiryBars(strategy: Strategy | undefined): number {
+  if (strategy?.exitPolicy?.kind === "n-bars") {
+    return strategy.exitPolicy.nBars;
+  }
+  return DEFAULT_EXPIRY_BARS;
+}
 
 /**
  * Warmup bars: max lookback for EMA200 + extra padding.
@@ -560,7 +573,7 @@ export class BacktestEngine {
 
       const priceAtSignal = emitCanon.consensus.close;
       const emittingTfMs = TF_MS[emittingTf];
-      const expiresAtMs = closeTime + EXPIRY_BARS * emittingTfMs;
+      const expiresAtMs = closeTime + resolveExpiryBars(strategy) * emittingTfMs;
       const expiresAt = new Date(expiresAtMs).toISOString();
 
       // Compute ATR from the emitting TF state.
@@ -807,7 +820,7 @@ export class BacktestEngine {
 
       const priceAtSignal = canon.consensus.close;
       const atrPct = state.atr14 !== null && priceAtSignal > 0 ? state.atr14 / priceAtSignal : 0;
-      const expiresAtMs = closeTime + EXPIRY_BARS * tfMs;
+      const expiresAtMs = closeTime + resolveExpiryBars(input.strategy) * tfMs;
       const expiresAt = new Date(expiresAtMs).toISOString();
 
       const signal: BacktestSignal = {

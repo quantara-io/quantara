@@ -313,4 +313,59 @@ describe("BacktestEngine multi-TF blend", () => {
     const sum = byOutcome.correct + byOutcome.incorrect + byOutcome.neutral + byOutcome.unresolved;
     expect(sum).toBe(totalSignals);
   });
+
+  it("expiresAt uses strategy.exitPolicy.nBars=8 (not the hardcoded 4)", async () => {
+    // Provide enough candles so the engine emits at least one signal.
+    const store = mockMultiTfStore({ "15m": 280, "1h": 70, "4h": 18, "1d": 5 });
+    const engine = new BacktestEngine(store);
+
+    const eightBarStrategy: Strategy = {
+      name: "8-bar-hold",
+      description: "Strategy with nBars=8 exit policy.",
+      exitPolicy: { kind: "n-bars", nBars: 8 },
+      sizing: { kind: "fixed-pct", pct: 0.01 },
+    };
+
+    const result = await engine.run({
+      pair: "BTC/USDT",
+      timeframe: "15m",
+      from: new Date(BASE_TIME + 205 * TF_MS_15M),
+      to: new Date(BASE_TIME + 279 * TF_MS_15M),
+      strategy: eightBarStrategy,
+    });
+
+    // Every signal must expire exactly 8 × 15m after its closeTime.
+    expect(result.signals.length).toBeGreaterThan(0);
+    for (const sig of result.signals) {
+      const expiresMs = new Date(sig.expiresAt).getTime();
+      expect(expiresMs - sig.closeTime).toBe(8 * TF_MS_15M);
+    }
+  });
+
+  it("expiresAt uses strategy.exitPolicy.nBars=4 (default baseline)", async () => {
+    // Symmetry check: nBars=4 produces the same result as the legacy hardcoded constant.
+    const store = mockMultiTfStore({ "15m": 280, "1h": 70, "4h": 18, "1d": 5 });
+    const engine = new BacktestEngine(store);
+
+    const fourBarStrategy: Strategy = {
+      name: "4-bar-hold",
+      description: "Strategy with nBars=4 exit policy (default equivalent).",
+      exitPolicy: { kind: "n-bars", nBars: 4 },
+      sizing: { kind: "fixed-pct", pct: 0.01 },
+    };
+
+    const result = await engine.run({
+      pair: "BTC/USDT",
+      timeframe: "15m",
+      from: new Date(BASE_TIME + 205 * TF_MS_15M),
+      to: new Date(BASE_TIME + 279 * TF_MS_15M),
+      strategy: fourBarStrategy,
+    });
+
+    expect(result.signals.length).toBeGreaterThan(0);
+    for (const sig of result.signals) {
+      const expiresMs = new Date(sig.expiresAt).getTime();
+      expect(expiresMs - sig.closeTime).toBe(4 * TF_MS_15M);
+    }
+  });
 });
